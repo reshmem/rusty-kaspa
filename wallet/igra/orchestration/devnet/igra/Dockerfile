@@ -7,22 +7,20 @@ RUN apt-get update \
       git \
       clang \
       cmake \
+      protobuf-compiler \
       pkg-config \
       libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG IGRA_REPO=git@github.com:reshmem/rusty-kaspa.git
+ARG IGRA_REPO=https://github.com/reshmem/rusty-kaspa.git
 ARG IGRA_REF=devel
 
 WORKDIR /src
 
-# Requires SSH forwarding: docker build --ssh default
-RUN --mount=type=ssh git clone --depth 1 --branch ${IGRA_REF} ${IGRA_REPO} /src/rusty-kaspa
+# Clone the repo (public HTTPS by default; override IGRA_REPO/IGRA_REF if needed).
+RUN git clone --depth 1 --branch ${IGRA_REF} ${IGRA_REPO} /src/rusty-kaspa
 
 WORKDIR /src/rusty-kaspa
-
-COPY wallet/igra/orchestration/devnet/igra/fake_hyperlane_ism_api.rs \
-    /src/rusty-kaspa/wallet/igra/igra-service/src/bin/fake_hyperlane_ism_api.rs
 
 RUN cargo build --release -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api
 
