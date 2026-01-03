@@ -12,15 +12,9 @@ RUN apt-get update \
       libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG IGRA_REPO=https://github.com/reshmem/rusty-kaspa.git
-ARG IGRA_REF=devel
-
 WORKDIR /src
-
-# Clone the repo (public HTTPS by default; override IGRA_REPO/IGRA_REF if needed).
-RUN git clone --depth 1 --branch ${IGRA_REF} ${IGRA_REPO} /src/rusty-kaspa
-
-WORKDIR /src/rusty-kaspa
+# Use the local build context (already contains the repo); avoids cloning a remote and ensures local changes are built.
+COPY . /src
 
 RUN cargo build --release -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api
 

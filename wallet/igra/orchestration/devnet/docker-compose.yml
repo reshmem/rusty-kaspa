@@ -5,9 +5,6 @@ services:
     build:
       context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/igra/Dockerfile
-      args:
-        IGRA_REPO: https://github.com/reshmem/rusty-kaspa.git
-        IGRA_REF: devel
     image: igra-service-devnet
     depends_on:
       - kaspad
