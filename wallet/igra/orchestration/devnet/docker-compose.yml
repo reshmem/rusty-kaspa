@@ -13,6 +13,7 @@ services:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8088/rpc
       - KASPA_IGRA_PROFILE=signer-1
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
@@ -37,6 +38,7 @@ services:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8089/rpc
       - KASPA_IGRA_PROFILE=signer-2
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
@@ -61,6 +63,7 @@ services:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8090/rpc
       - KASPA_IGRA_PROFILE=signer-3
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
@@ -105,8 +108,7 @@ services:
     depends_on:
       - kaspad
     command:
-      - --kaspad-address=kaspad
-      - --port=16110
+      - --kaspad-address=grpc://kaspad:16110
       - --devfund-percent=0
       - --mining-address=${KASPA_MINING_ADDRESS}
       - --mine-when-not-synced

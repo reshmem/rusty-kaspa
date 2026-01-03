@@ -30,6 +30,7 @@ RUN mkdir -p ${CARGO_TARGET_DIR}
 RUN cargo build --release -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api
 
 FROM debian:bookworm-slim AS runtime
+ARG CARGO_TARGET_DIR=/src/target
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
