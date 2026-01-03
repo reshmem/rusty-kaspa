@@ -358,6 +358,14 @@ fn apply_hyperlane_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<
     if let Some(value) = ini_value(ini, "hyperlane", "events_dir") {
         config.hyperlane.events_dir = non_empty(&value);
     }
+    if let Some(value) = ini_value(ini, "hyperlane", "threshold") {
+        config.hyperlane.threshold = Some(
+            value
+                .trim()
+                .parse::<u8>()
+                .map_err(|_| ThresholdError::Message("invalid hyperlane.threshold".to_string()))?,
+        );
+    }
     if let Some(value) = ini_value(ini, "hyperlane", "poll_secs") {
         config.hyperlane.poll_secs = value
             .trim()
@@ -492,7 +500,7 @@ fn ini_value(ini: &IniView<'_>, section: &str, key: &str) -> Option<String> {
 
 fn split_csv(value: &str) -> Vec<String> {
     value
-        .split(',')
+        .split(|c| c == ',' || c == '|')
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
         .collect()

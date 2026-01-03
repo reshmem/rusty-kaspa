@@ -5,14 +5,14 @@ This folder provides a devnet environment with a Kaspa node, a miner, and a Roth
 ## What It Runs
 
 - **kaspad**: devnet node with UTXO index enabled.
-- **kaspaminer**: connects to the node and produces blocks.
+- **kaspaminer**: connects to the node and produces blocks. Built from `tmrlvi/kaspa-miner` (CPU miner); override with `KASPA_MINER_REPO`/`KASPA_MINER_REF` if you need a different fork/tag.
 - **rothschild**: wallet CLI used to initialize a devnet wallet and send funds to multisig addresses.
 - **igra-service**: containerized kaspa-threshold-service built from the forked repo.
 
 ## How Components Connect
 
 - `kaspad` exposes `grpc://localhost:16110` which is used by Igra services for UTXO reads and PSKT construction.
-- `kaspaminer` mines blocks and pays rewards to `KASPA_MINING_ADDRESS` (owned by the Rothschild wallet).
+- `kaspaminer` mines blocks and pays rewards to `KASPA_MINING_ADDRESS` (owned by the Rothschild wallet). The default command uses `--kaspad-address=kaspad --port=16110 --mine-when-not-synced`.
 - `rothschild` holds the devnet wallet keys and funds multisig addresses; it only needs access to the wallet volume.
 - Hyperlane is **not** part of devnet; we mock events via JSON-RPC with a local fake Hyperlane loop inside `igra-service`.
 

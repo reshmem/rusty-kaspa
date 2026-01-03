@@ -1,37 +1,87 @@
-version: "3.9"
-
 services:
-  igra-service:
+  igra-signer-1:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/igra/Dockerfile
       args:
-        IGRA_REPO: ${IGRA_REPO}
-        IGRA_REF: ${IGRA_REF}
+        IGRA_REPO: "https://github.com/reshmem/rusty-kaspa.git"
+        IGRA_REF: "${IGRA_REF:-devel}"
     image: igra-service-devnet
     depends_on:
       - kaspad
     environment:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8088/rpc
+      - KASPA_IGRA_PROFILE=signer-1
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
-      - HYPERLANE_AMOUNT_SOMPI=5000000000
-      - HYPERLANE_DESTINATION=kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3
-      - HYPERLANE_DOMAIN=devnet
-      - HYPERLANE_SENDER=hyperlane-bridge
-      - HYPERLANE_COORDINATOR_PEER_ID=coordinator-1
+      - HYPERLANE_AMOUNT_SOMPI=10000000
+      - HYPERLANE_RECIPIENT_PAYLOAD=000000000000000000000000000000000000000000000000000000000000dead
+      - HYPERLANE_DOMAIN=5
+      - HYPERLANE_DESTINATION_DOMAIN=7
+      - HYPERLANE_SENDER=0x0
     ports:
       - "8088:8088"
     volumes:
-      - igra-data:/data/igra
+      - igra-data-1:/data/igra
+      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
+
+  igra-signer-2:
+    image: igra-service-devnet
+    depends_on:
+      - kaspad
+      - igra-signer-1
+    environment:
+      - KASPA_DATA_DIR=/data/igra
+      - IGRA_RPC_URL=http://127.0.0.1:8089/rpc
+      - KASPA_IGRA_PROFILE=signer-2
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
+      - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
+      - HYPERLANE_INTERVAL_SECS=10
+      - HYPERLANE_START_EPOCH_SECS=0
+      - HYPERLANE_AMOUNT_SOMPI=10000000
+      - HYPERLANE_RECIPIENT_PAYLOAD=000000000000000000000000000000000000000000000000000000000000dead
+      - HYPERLANE_DOMAIN=5
+      - HYPERLANE_DESTINATION_DOMAIN=7
+      - HYPERLANE_SENDER=0x0
+    ports:
+      - "8089:8089"
+    volumes:
+      - igra-data-2:/data/igra
+      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
+
+  igra-signer-3:
+    image: igra-service-devnet
+    depends_on:
+      - kaspad
+      - igra-signer-1
+    environment:
+      - KASPA_DATA_DIR=/data/igra
+      - IGRA_RPC_URL=http://127.0.0.1:8090/rpc
+      - KASPA_IGRA_PROFILE=signer-3
+      - KASPA_IGRA_WALLET_SECRET=devnet-secret
+      - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
+      - HYPERLANE_INTERVAL_SECS=10
+      - HYPERLANE_START_EPOCH_SECS=0
+      - HYPERLANE_AMOUNT_SOMPI=10000000
+      - HYPERLANE_RECIPIENT_PAYLOAD=000000000000000000000000000000000000000000000000000000000000dead
+      - HYPERLANE_DOMAIN=5
+      - HYPERLANE_DESTINATION_DOMAIN=7
+      - HYPERLANE_SENDER=0x0
+    ports:
+      - "8090:8090"
+    volumes:
+      - igra-data-3:/data/igra
       - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
       - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
 
   kaspad:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspad
     image: kaspa-devnet-kaspad
     command:
@@ -49,20 +99,23 @@ services:
 
   kaspaminer:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspaminer
+      args:
+        KASPA_MINER_REPO: "${KASPA_MINER_REPO:-https://github.com/IgraLabs/kaspa-miner.git}"
+        KASPA_MINER_REF: "${KASPA_MINER_REF:-main}"
     image: kaspa-devnet-kaspaminer
     depends_on:
       - kaspad
     command:
-      - kaspaminer
-      - --devnet
-      - --server=kaspad:16110
-      - --miningaddr=${KASPA_MINING_ADDRESS}
+      - --kaspad-address=grpc://kaspad:16110
+      - --devfund-percent=0
+      - --mining-address=${KASPA_MINING_ADDRESS}
+      - --mine-when-not-synced
 
   wallet:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.rothschild
     image: kaspa-devnet-rothschild
     depends_on:
@@ -78,4 +131,6 @@ services:
 volumes:
   kaspad-data:
   wallet-data:
-  igra-data:
+  igra-data-1:
+  igra-data-2:
+  igra-data-3:

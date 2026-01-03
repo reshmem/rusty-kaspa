@@ -36,6 +36,16 @@ pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
     Ok(app_config)
 }
 
+pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<Arc<AppConfig>, ThresholdError> {
+    let app_config = Arc::new(igra_core::config::load_app_config_from_profile_path(path, profile)?);
+    if let Err(errors) = app_config.validate() {
+        for err in errors {
+            warn!("config validation error: {}", err);
+        }
+    }
+    Ok(app_config)
+}
+
 pub fn validate_startup_config(app_config: &AppConfig) -> bool {
     if app_config.service.pskt.source_addresses.is_empty()
         || (app_config.service.pskt.redeem_script_hex.is_empty() && app_config.service.hd.is_none())

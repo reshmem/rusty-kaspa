@@ -1,51 +1,44 @@
-# ---------------------------------------- Chef image -------------------------------------------
-FROM rust:1.90-alpine AS chef
-RUN apk --no-cache add \
-  musl-dev \
-  protobuf-dev \
-  g++ \
-  clang15-dev \
-  linux-headers \
-  wasm-pack \
-  openssl-dev
-RUN cargo install cargo-chef --locked
+# syntax=docker/dockerfile:1.4
+
+FROM rust:1.90-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      git \
+      pkg-config \
+      libssl-dev \
+      clang \
+      cmake \
+      protobuf-compiler \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG KASPA_MINER_REPO=https://github.com/IgraLabs/kaspa-miner.git
+ARG KASPA_MINER_REF=main
+ARG CARGO_TARGET_DIR=/build/target
+
+WORKDIR /build
+RUN git clone --depth 1 --branch ${KASPA_MINER_REF} ${KASPA_MINER_REPO} /build/kaspa-miner
+
+ENV CARGO_BUILD_JOBS=1 \
+    CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="-C codegen-units=1" \
+    CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
+
+WORKDIR /build/kaspa-miner
+RUN mkdir -p ${CARGO_TARGET_DIR}
+
+RUN cargo build --release -p kaspa-miner --locked --features no-asm
+
+FROM debian:bookworm-slim AS runtime
+ARG CARGO_TARGET_DIR=/build/target
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+COPY --from=builder ${CARGO_TARGET_DIR}/release/kaspa-miner /app/kaspa-miner
 
-# ---------------------------------------- Planner image ----------------------------------------
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-# ---------------------------------------- Builder image ----------------------------------------
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-
-ENV RUSTFLAGS="-C target-feature=-crt-static" \
-  CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse"
-
-# Build dependencies - this is the caching Docker layer
-RUN cargo chef cook --release --recipe-path recipe.json -p kaspad --bin kaspaminer
-
-COPY . .
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=cargo-target,target=/app/target,sharing=locked \
-    cargo build --release --bin kaspaminer \
-    && cp /app/target/release/kaspaminer /app/kaspaminer   # <-- outside the mount, persists
-
-
-# ---------------------------------------- Runtime image ----------------------------------------
-FROM alpine AS runtime
-WORKDIR /app
-
-RUN apk --no-cache add \
-  libgcc \
-  libstdc++ \
-  tini \
-  ca-certificates
-
-COPY --from=builder /app/kaspaminer .
-
-USER root
-ENTRYPOINT [ "/sbin/tini", "--" ]
-CMD [ "/app/kaspaminer" ]
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/kaspa-miner"]
+CMD ["--help"]

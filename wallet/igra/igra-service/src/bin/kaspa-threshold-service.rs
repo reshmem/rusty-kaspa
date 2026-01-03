@@ -26,7 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup::init_logging(&args.log_level)?;
     args.apply_to_env();
 
-    let app_config = setup::load_app_config()?;
+    // If a profile is provided (via KASPA_IGRA_PROFILE), load the profiled section of the INI.
+    let app_config = if let Ok(profile) = std::env::var("KASPA_IGRA_PROFILE") {
+        let data_dir = igra_core::config::resolve_data_dir()?;
+        let config_path = igra_core::config::resolve_config_path(&data_dir)?;
+        setup::load_app_config_profile(&config_path, profile.trim())?
+    } else {
+        setup::load_app_config()?
+    };
     if !setup::validate_startup_config(&app_config) {
         return Ok(());
     }

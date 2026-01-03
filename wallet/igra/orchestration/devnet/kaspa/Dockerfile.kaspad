@@ -21,7 +21,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 ENV RUSTFLAGS="-C target-feature=-crt-static" \
-  CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse" \
+  CARGO_BUILD_JOBS=1 \
+  CARGO_INCREMENTAL=0
 
 # Build dependencies - this is the caching Docker layer
 RUN cargo chef cook --release --recipe-path recipe.json -p kaspad --bin kaspad
@@ -33,19 +35,21 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     cargo build --release --bin kaspad \
     && cp /app/target/release/kaspad /app/kaspad   # <-- outside the mount, persists
 
+RUN test -x /app/kaspad
+
 
 # ---------------------------------------- Runtime image ----------------------------------------
-FROM alpine AS runtime
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
-RUN apk --no-cache add \
-  libgcc \
-  libstdc++ \
-  tini \
-  ca-certificates
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+     tini \
+     ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/kaspad .
 
 USER root
-ENTRYPOINT [ "/sbin/tini", "--" ]
+ENTRYPOINT [ "/usr/bin/tini", "--" ]
 CMD [ "/app/kaspad" ]

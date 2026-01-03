@@ -2,13 +2,13 @@
   "validators": [
     {
       "name": "validator-1",
-      "private_key_hex": "b28a9910e88e129ff5ec06ace54226f5d532da3e090d9ba25b321da388904273",
-      "public_key_hex": "039a8d46063004a62914db7eb40e445e2500331c7f1263d4596e3e3cc6bc7bc82c"
+      "private_key_hex": "3ce2c6ad9be681ebad802ed28421efe2cb8afe81854a56303e1945b408288a6d",
+      "public_key_hex": "039f2a9fc209ba1799fc5357fe5dfca854dde929fd89dd79060a681c34d7aea00a"
     },
     {
       "name": "validator-2",
-      "private_key_hex": "1766ad20b14c6ce94c861a8320311733a7ec6a8844683f115b04b488afb9b612",
-      "public_key_hex": "02f5c3507cd1dc83a1e890a830bcfd452ea12ee93537e76bc30a3130ac7138203c"
+      "private_key_hex": "3121152508ebc49a28759172e856f108879990533dd74f233636c7bfb2c363e3",
+      "public_key_hex": "021cfecd890cda594d5c0e14ee6fb4669a93c37e6a502dc847609fcd4f8fc99e34"
     }
   ]
 }

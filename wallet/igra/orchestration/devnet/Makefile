@@ -9,7 +9,7 @@ bootstrap:
 	./scripts/bootstrap_wallet.sh
 
 up:
-	docker compose up -d kaspad kaspaminer igra-service
+	docker compose up --build -d kaspad kaspaminer igra-signer-1 igra-signer-2 igra-signer-3
 
 up-miner:
 	docker compose up -d kaspaminer
