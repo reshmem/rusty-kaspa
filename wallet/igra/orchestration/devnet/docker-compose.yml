@@ -6,7 +6,7 @@ services:
       context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/igra/Dockerfile
       args:
-        IGRA_REPO: "${IGRA_REPO:-https://github.com/reshmem/rusty-kaspa.git}"
+        IGRA_REPO: "https://github.com/reshmem/rusty-kaspa.git"
         IGRA_REF: "${IGRA_REF:-devel}"
     image: igra-service-devnet
     depends_on:
@@ -100,14 +100,17 @@ services:
     build:
       context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspaminer
+      args:
+        KASPA_MINER_REPO: "${KASPA_MINER_REPO:-https://github.com/tmrlvi/kaspa-miner.git}"
+        KASPA_MINER_REF: "${KASPA_MINER_REF:-main}"
     image: kaspa-devnet-kaspaminer
     depends_on:
       - kaspad
     command:
-      - kaspaminer
-      - --devnet
-      - --server=kaspad:16110
-      - --miningaddr=${KASPA_MINING_ADDRESS}
+      - --kaspad-address=kaspad
+      - --port=16110
+      - --mining-address=${KASPA_MINING_ADDRESS}
+      - --mine-when-not-synced
 
   wallet:
     build:
