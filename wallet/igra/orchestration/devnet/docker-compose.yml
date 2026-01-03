@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  igra-service:
+    build:
+      context: ../../..
+      dockerfile: wallet/igra/orchestration/devnet/igra/Dockerfile
+      args:
+        IGRA_REPO: ${IGRA_REPO}
+        IGRA_REF: ${IGRA_REF}
+    image: igra-service-devnet
+    depends_on:
+      - kaspad
+    environment:
+      - KASPA_DATA_DIR=/data/igra
+      - IGRA_RPC_URL=http://127.0.0.1:8088/rpc
+      - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
+      - HYPERLANE_INTERVAL_SECS=10
+      - HYPERLANE_START_EPOCH_SECS=0
+      - HYPERLANE_AMOUNT_SOMPI=5000000000
+      - HYPERLANE_DESTINATION=kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3
+      - HYPERLANE_DOMAIN=devnet
+      - HYPERLANE_SENDER=hyperlane-bridge
+      - HYPERLANE_COORDINATOR_PEER_ID=coordinator-1
+    ports:
+      - "8088:8088"
+    volumes:
+      - igra-data:/data/igra
+      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
+
+  kaspad:
+    build:
+      context: ../../..
+      dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspad
+    image: kaspa-devnet-kaspad
+    command:
+      - kaspad
+      - --devnet
+      - --utxoindex
+      - --appdir=/data
+      - --rpcserver=0.0.0.0:16110
+      - --listen=0.0.0.0:16111
+    ports:
+      - "16110:16110"
+      - "16111:16111"
+    volumes:
+      - kaspad-data:/data
+
+  kaspaminer:
+    build:
+      context: ../../..
+      dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspaminer
+    image: kaspa-devnet-kaspaminer
+    depends_on:
+      - kaspad
+    command:
+      - kaspaminer
+      - --devnet
+      - --server=kaspad:16110
+      - --miningaddr=${KASPA_MINING_ADDRESS}
+
+  wallet:
+    build:
+      context: ../../..
+      dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.rothschild
+    image: kaspa-devnet-rothschild
+    depends_on:
+      - kaspad
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    environment:
+      - ROTHSCHILD_WALLET_DIR=/wallet
+      - KASPA_NODE_RPC_URL=grpc://kaspad:16110
+    volumes:
+      - wallet-data:/wallet
+
+volumes:
+  kaspad-data:
+  wallet-data:
+  igra-data:

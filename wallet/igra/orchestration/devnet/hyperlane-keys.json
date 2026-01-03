@@ -1,0 +1,14 @@
+{
+  "validators": [
+    {
+      "name": "validator-1",
+      "private_key_hex": "b28a9910e88e129ff5ec06ace54226f5d532da3e090d9ba25b321da388904273",
+      "public_key_hex": "039a8d46063004a62914db7eb40e445e2500331c7f1263d4596e3e3cc6bc7bc82c"
+    },
+    {
+      "name": "validator-2",
+      "private_key_hex": "1766ad20b14c6ce94c861a8320311733a7ec6a8844683f115b04b488afb9b612",
+      "public_key_hex": "02f5c3507cd1dc83a1e890a830bcfd452ea12ee93537e76bc30a3130ac7138203c"
+    }
+  ]
+}

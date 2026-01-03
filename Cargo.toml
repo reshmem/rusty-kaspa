@@ -11,6 +11,9 @@ members = [
     "wallet/bip32",
     "wallet/keys",
     "wallet/pskt",
+    "wallet/igra",
+    "wallet/igra/igra-core",
+    "wallet/igra/igra-service",
     "consensus",
     "consensus/core",
     "consensus/client",
@@ -260,7 +263,7 @@ toml = "0.8.8"
 tonic = { version = "0.12.3", features = ["tls-webpki-roots", "gzip", "transport"] }
 tonic-build = { version = "0.12.3", features = ["prost"] }
 triggered = "0.1.2"
-uuid = { version = "1.16.0", features = ["v4", "fast-rng", "serde", "js"] }
+uuid = { version = "1.11.0", features = ["v4", "fast-rng", "serde", "js"] }
 wasm-bindgen = { version = "0.2.100", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.43"
 wasm-bindgen-test = "0.3.50"
