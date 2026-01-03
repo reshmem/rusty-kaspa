@@ -28,7 +28,7 @@ ENV CARGO_BUILD_JOBS=1 \
 WORKDIR /build/kaspa-miner
 RUN mkdir -p ${CARGO_TARGET_DIR}
 
-RUN cargo build --release -p kaspa-miner --locked
+RUN cargo build --release -p kaspa-miner --locked --features no-asm
 
 FROM debian:bookworm-slim AS runtime
 
