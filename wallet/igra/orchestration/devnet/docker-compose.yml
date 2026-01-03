@@ -101,7 +101,7 @@ services:
       context: ../../../..
       dockerfile: wallet/igra/orchestration/devnet/kaspa/Dockerfile.kaspaminer
       args:
-        KASPA_MINER_REPO: "${KASPA_MINER_REPO:-https://github.com/tmrlvi/kaspa-miner.git}"
+        KASPA_MINER_REPO: "${KASPA_MINER_REPO:-https://github.com/IgraLabs/kaspa-miner.git}"
         KASPA_MINER_REF: "${KASPA_MINER_REF:-main}"
     image: kaspa-devnet-kaspaminer
     depends_on:

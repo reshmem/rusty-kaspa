@@ -13,7 +13,7 @@ RUN apt-get update \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ARG KASPA_MINER_REPO=https://github.com/tmrlvi/kaspa-miner.git
+ARG KASPA_MINER_REPO=https://github.com/IgraLabs/kaspa-miner.git
 ARG KASPA_MINER_REF=main
 ARG CARGO_TARGET_DIR=/build/target
 
@@ -31,6 +31,7 @@ RUN mkdir -p ${CARGO_TARGET_DIR}
 RUN cargo build --release -p kaspa-miner --locked --features no-asm
 
 FROM debian:bookworm-slim AS runtime
+ARG CARGO_TARGET_DIR=/build/target
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \
