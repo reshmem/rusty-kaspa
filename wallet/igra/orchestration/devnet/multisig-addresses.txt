@@ -1,0 +1,3 @@
+# One address per line. Replace with real multisig addresses when ready.
+kaspadev:qpjfl8wzj94zc6wtdy6fh8yy7apywvnpqdfnvay8s460gd56yx5rwegde7cxa
+kaspadev:qrz9yajzk65v0wyrk0s54drcauzd8rlgaagrl74cjmj042w4crqkust5wycfq

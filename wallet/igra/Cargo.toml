@@ -1,0 +1,14 @@
+[package]
+name = "kaspa-igra"
+description = "Kaspa igra workspace container"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+include.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+igra-core = { path = "igra-core" }
+igra-service = { path = "igra-service" }

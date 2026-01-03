@@ -1,0 +1,42 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      build-essential \
+      clang \
+      pkg-config \
+      libssl-dev \
+      nodejs \
+      npm \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH=/root/.cargo/bin:${PATH}
+
+# pnpm via corepack
+RUN corepack enable
+
+# Foundry (for anvil)
+RUN curl -L https://foundry.paradigm.xyz | bash \
+    && /root/.foundry/bin/foundryup
+ENV PATH=/root/.foundry/bin:${PATH}
+
+ARG HYPERLANE_REPO=https://github.com/hyperlane-xyz/hyperlane-monorepo.git
+ARG HYPERLANE_REF=main
+
+WORKDIR /hyperlane
+RUN git clone --depth 1 --branch ${HYPERLANE_REF} ${HYPERLANE_REPO} /hyperlane
+
+# Install JS deps for kathy scripts used by run-locally
+RUN pnpm install --frozen-lockfile
+
+WORKDIR /hyperlane/rust/main
+RUN cargo build --release -p run-locally --bin run-locally
+
+CMD ["/hyperlane/rust/main/target/release/run-locally"]

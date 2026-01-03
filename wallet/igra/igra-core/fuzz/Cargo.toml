@@ -1,0 +1,13 @@
+[package]
+name = "igra-core-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+arbitrary = { version = "1.4", features = ["derive"] }
+igra-core = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[workspace]
+members = ["."]
