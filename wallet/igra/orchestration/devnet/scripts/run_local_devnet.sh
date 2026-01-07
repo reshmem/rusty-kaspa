@@ -44,12 +44,13 @@ Options:
 
 Commands:
   (no command)        Show this help
-  setup               Build binaries, stage, generate keys (ready-to-run)
-  build               Build binaries only
-  generate-keys       Regenerate keys and configs
-  start [target]      Start services (default: all)
+  build               Clone (if needed), build, and stage binaries into bin/
+  setup               Assume binaries are staged; prepare configs and validate (no build/keygen)
+  default             Build + stage + generate keys/configs (one-shot init)
+  generate-keys       Regenerate keys/configs (requires binaries already built)
+  start [target]      Start services (expects staged binaries/configs)
   stop [target]       Stop services
-  restart [target]    Restart services
+  restart [target]    Restart services (no build)
   status              Show process status
   clean               Remove all devnet data
   help                Show this help
@@ -465,11 +466,12 @@ resolve_binaries_from_target() {
     log_info "[DRY-RUN] Skipping binary resolution"
     return
   fi
-  KASPAD_BIN="${BIN_DIR}/kaspad"
-  KASPA_MINER_BIN="${BIN_DIR}/kaspa-miner"
-  IGRA_BIN="${BIN_DIR}/kaspa-threshold-service"
-  FAKE_HYPERLANE_BIN="${BIN_DIR}/fake_hyperlane_ism_api"
-  ROTHSCHILD_BIN="${BIN_DIR}/rothschild"
+  KASPAD_BIN="${TARGET_DIR}/release/kaspad"
+  KASPA_MINER_BIN="${TARGET_DIR}/release/kaspa-miner"
+  IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
+  FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
+  ROTHSCHILD_BIN="${TARGET_DIR}/release/rothschild"
+  DEVNET_KEYGEN_BIN="${TARGET_DIR}/release/devnet-keygen"
 }
 
 require_binaries_present() {
@@ -482,6 +484,7 @@ require_binaries_present() {
   IGRA_BIN="${BIN_DIR}/kaspa-threshold-service"
   FAKE_HYPERLANE_BIN="${BIN_DIR}/fake_hyperlane_ism_api"
   ROTHSCHILD_BIN="${BIN_DIR}/rothschild"
+  DEVNET_KEYGEN_BIN="${BIN_DIR}/devnet-keygen"
 }
 
 mkdir -p "${LOG_DIR}" "${PIDS_DIR}" "${KASPAD_DATA}" "${KASPAD_APPDIR}" "${IGRA_DATA}" "${WALLET_DATA}" "${BIN_DIR}"
@@ -513,26 +516,24 @@ stage_binaries() {
     log_info "[DRY-RUN] Skipping binary staging"
     return
   fi
-  copy_if_changed() {
-    local src="$1" dest="$2"
-    [[ "${src}" == "${dest}" ]] && return
-    if [[ ! -f "${dest}" ]] || ! cmp -s "${src}" "${dest}"; then
-      log_info "Updating ${dest}"
-      cp -f "${src}" "${dest}"
-    fi
-  }
-
-  copy_if_changed "${KASPAD_BIN}" "${BIN_DIR}/kaspad"
-  copy_if_changed "${KASPA_MINER_BIN}" "${BIN_DIR}/kaspa-miner"
-  copy_if_changed "${IGRA_BIN}" "${BIN_DIR}/kaspa-threshold-service"
-  copy_if_changed "${FAKE_HYPERLANE_BIN}" "${BIN_DIR}/fake_hyperlane_ism_api"
-  copy_if_changed "${ROTHSCHILD_BIN}" "${BIN_DIR}/rothschild"
+  log_info "Staging binaries into ${BIN_DIR} (overwriting if present)"
+  cp -f "${KASPAD_BIN}" "${BIN_DIR}/kaspad"
+  cp -f "${KASPA_MINER_BIN}" "${BIN_DIR}/kaspa-miner"
+  cp -f "${IGRA_BIN}" "${BIN_DIR}/kaspa-threshold-service"
+  cp -f "${FAKE_HYPERLANE_BIN}" "${BIN_DIR}/fake_hyperlane_ism_api"
+  cp -f "${ROTHSCHILD_BIN}" "${BIN_DIR}/rothschild"
+  if [[ -n "${DEVNET_KEYGEN_BIN:-}" && -f "${DEVNET_KEYGEN_BIN}" ]]; then
+    cp -f "${DEVNET_KEYGEN_BIN}" "${BIN_DIR}/devnet-keygen"
+  fi
 }
 
 run_keygen() {
-  local repo_path="${REPO_ROOT}"
-  log_error "run_keygen is disabled in non-build commands; please run 'build' or 'default' to regenerate keys."
-  return 1
+  local keygen_bin="${BIN_DIR}/devnet-keygen"
+  if [[ ! -x "${keygen_bin}" ]]; then
+    log_error "Missing devnet-keygen in ${BIN_DIR}. Run 'build' first to stage binaries."
+    return 1
+  fi
+  "${keygen_bin}"
 }
 
 validate_json() {
@@ -895,6 +896,7 @@ case "${COMMAND}" in
     setup_config_source
     require_binaries_present
     prepare_igra_config
+    generate_keys
     ensure_configs
     log_success "Setup complete. Configs in ${CONFIG_DIR}. Binaries expected in ${BIN_DIR}."
     exit 0
