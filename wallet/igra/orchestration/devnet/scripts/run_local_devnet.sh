@@ -753,6 +753,14 @@ generate_keys() {
     log_info "[DRY-RUN] Would regenerate keys and update configs"
     return
   fi
+
+  # Remove stale data directories so persisted configs don't conflict with regenerated keys.
+  if [[ -d "${IGRA_DATA}" ]]; then
+    log_warn "Clearing existing IGRA data directory at ${IGRA_DATA} to avoid stale group/config state"
+    rm -rf "${IGRA_DATA}"
+    mkdir -p "${IGRA_DATA}"
+  fi
+
   local backup_dir
   if [[ -d "${CONFIG_DIR}" && -n "$(ls -A "${CONFIG_DIR}" 2>/dev/null)" ]]; then
     backup_dir="${CONFIG_DIR}/config_bak_$(date +%Y%m%d_%H%M%S)"

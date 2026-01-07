@@ -58,9 +58,9 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
   section = None
   signer_map = {s["profile"]: s for s in data["signers"]}
 
+  group_id = data.get("group_id", "")
   group_preimage_str = "|".join(sorted(data["member_pubkeys"]))
   group_preimage_bytes = group_preimage_str.encode()
-  group_id = hashlib.blake2b(group_preimage_bytes, digest_size=32).hexdigest()
   verifier_keys = [f"{s['profile']}:{s['iroh_pubkey_hex']}" for s in data["signers"]]
 
   comments = {
@@ -71,8 +71,10 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
       "group.member_pubkeys": f"generated {generated_ts}: pubkeys derived from signer mnemonics (ordered signer-1..3)",
       "hyperlane.validators": f"generated {generated_ts}: public keys for hyperlane validators from hyperlane-keys.json",
       "iroh.group_id": (
-          f"generated {generated_ts}: blake2b-256 over sorted member_pubkeys joined with '|'. "
-          f"inputs (sorted pubkeys)={group_preimage_str}; preimage_bytes={group_preimage_bytes.hex()}"
+          f"generated {generated_ts}: group_id from devnet-keygen compute_group_id (threshold_m=2, threshold_n=3, "
+          f"network_id=0, fee_rate=0, finality=0, dust=0, min_recipient=0, session_timeout=60, "
+          f"policy_version=1, allowed_destinations empty for devnet, policy min/max/max_daily as in template, "
+          f"member_pubkeys(sorted)={group_preimage_str})"
       ),
       "iroh.verifier_keys": f"generated {generated_ts}: signer verifier keys = ed25519 pubkeys derived from signer iroh seeds (profile:ed25519_pubkey)",
   }
