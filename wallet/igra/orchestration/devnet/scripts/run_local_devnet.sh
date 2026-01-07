@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
 
 # Basic logging helpers with timestamps and optional color (only if stdout is a TTY)
 if [[ -t 1 ]]; then
@@ -664,6 +664,13 @@ start_igra() {
       --config "${IGRA_CONFIG}" \
       --data-dir "${profile_data_dir}" \
       --node-url "grpc://127.0.0.1:16110"
+}
+
+start_fake_hyperlane() {
+  local profile="$1"
+  local rpc_port="$2"
+  local rpc_url="http://127.0.0.1:${rpc_port}/rpc"
+  local log_path="${LOG_DIR}/fake-hyperlane-${profile}.log"
 
   start_process "fake-hyperlane-${profile}" \
     env \
@@ -678,6 +685,21 @@ start_igra() {
       HYPERLANE_COORDINATOR_PEER_ID="${FAKE_HYPERLANE_COORDINATOR}" \
       HYPERLANE_DERIVATION_PATH="${FAKE_HYPERLANE_PATH}" \
       "${FAKE_HYPERLANE_BIN}"
+
+  # Brief liveness check to avoid silent failures.
+  sleep 1
+  local pid_file="${PIDS_DIR}/fake-hyperlane-${profile}.pid"
+  if [[ ! -f "${pid_file}" ]]; then
+    log_error "fake-hyperlane-${profile} did not create a pid file (log: ${log_path})"
+    return 1
+  fi
+  local fh_pid
+  fh_pid=$(cat "${pid_file}")
+  if ! kill -0 "${fh_pid}" >/dev/null 2>&1; then
+    log_error "fake-hyperlane-${profile} exited immediately (log: ${log_path})"
+    return 1
+  fi
+  log_info "fake-hyperlane-${profile} running (pid ${fh_pid}); log: ${log_path}"
 }
 
 wait_for_kaspad() {
@@ -842,14 +864,17 @@ start_targets() {
       signer-1)
         start_igra "signer-1" "8088"
         wait_for_igra "signer-1" "8088"
+        start_fake_hyperlane "signer-1" "8088"
         ;;
       signer-2)
         start_igra "signer-2" "8089"
         wait_for_igra "signer-2" "8089"
+        start_fake_hyperlane "signer-2" "8089"
         ;;
       signer-3)
         start_igra "signer-3" "8090"
         wait_for_igra "signer-3" "8090"
+        start_fake_hyperlane "signer-3" "8090"
         ;;
     esac
   done

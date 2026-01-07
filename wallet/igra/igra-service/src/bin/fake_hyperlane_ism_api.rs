@@ -187,6 +187,20 @@ async fn main() -> Result<(), String> {
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;
+    eprintln!(
+        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} origin_domain={} dest_domain={} sender={}",
+        rpc_url,
+        keys.validators.len(),
+        interval_secs,
+        start_epoch_secs,
+        amount_sompi,
+        domain,
+        destination_domain,
+        hex::encode(sender)
+    );
+    if keys.validators.is_empty() {
+        eprintln!("[fake-hyperlane] WARNING: no validators loaded from {}", keys_path);
+    }
 
     let client = Client::new();
     loop {
@@ -199,6 +213,15 @@ async fn main() -> Result<(), String> {
         let version = 3u8;
         let origin = domain.parse::<u32>().unwrap_or(5);
         let destination = destination_domain;
+        eprintln!(
+            "[fake-hyperlane] tick slot={} nonce={} origin={} dest={} amount={} validators={}",
+            slot,
+            nonce,
+            origin,
+            destination,
+            amount_sompi,
+            keys.validators.len()
+        );
         let msg = build_hyperlane_message(
             version,
             nonce,

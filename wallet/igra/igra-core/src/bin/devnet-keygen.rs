@@ -161,6 +161,21 @@ fn main() {
         });
     }
 
+    // Build policy to match the devnet template (empty allowlist, devnet limits).
+    let policy = GroupPolicy {
+        allowed_destinations: Vec::new(),
+        min_amount_sompi: Some(1_000_000),
+        max_amount_sompi: Some(100_000_000_000),
+        max_daily_volume_sompi: Some(500_000_000_000),
+        require_reason: false,
+    };
+    let group_metadata = GroupMetadata {
+        creation_timestamp_nanos: 0,
+        group_name: None,
+        policy_version: 1,
+        extra: Default::default(),
+    };
+
     let output = Output {
         wallet,
         signers,
@@ -170,19 +185,6 @@ fn main() {
         change_address,
         hyperlane_keys,
         group_id: {
-            let policy = GroupPolicy {
-                allowed_destinations: vec!["kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string()],
-                min_amount_sompi: Some(1_000_000),
-                max_amount_sompi: Some(100_000_000_000),
-                max_daily_volume_sompi: Some(500_000_000_000),
-                require_reason: false,
-            };
-            let group_metadata = GroupMetadata {
-                creation_timestamp_nanos: 0,
-                group_name: None,
-                policy_version: 1,
-                extra: Default::default(),
-            };
             let member_pubkeys_bytes: Vec<Vec<u8>> = member_pubkeys
                 .iter()
                 .map(|hex_pk| hex::decode(hex_pk).expect("pubkey hex decode"))

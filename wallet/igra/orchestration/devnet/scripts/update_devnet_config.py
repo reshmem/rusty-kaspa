@@ -179,6 +179,7 @@ def write_keyset(keyset_out: pathlib.Path, config_dir: pathlib.Path, data: dict,
       "source_addresses": data["source_addresses"],
       "change_address": data["change_address"],
       "hyperlane_keys": data["hyperlane_keys"],
+      "group_id": data.get("group_id", ""),
   }
   content = json.dumps(payload, indent=2) + "\n"
   keyset_out.write_text(content)
