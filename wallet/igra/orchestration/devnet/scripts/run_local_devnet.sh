@@ -649,10 +649,12 @@ start_igra() {
 
   mkdir -p "${IGRA_DATA}/${profile}"
 
+  local profile_data_dir="${IGRA_DATA}/${profile}"
+
   start_process "igra-${profile}" \
     env \
       KASPA_CONFIG_PATH="${IGRA_CONFIG}" \
-      KASPA_DATA_DIR="${IGRA_DATA}" \
+      KASPA_DATA_DIR="${profile_data_dir}" \
       KASPA_NODE_URL="grpc://127.0.0.1:16110" \
       KASPA_IGRA_WALLET_SECRET="${KASPA_IGRA_WALLET_SECRET}" \
       KASPA_IGRA_PROFILE="${profile}" \
@@ -660,7 +662,7 @@ start_igra() {
       HYPERLANE_KEYS_PATH="${HYPERLANE_KEYS}" \
       "${IGRA_BIN}" \
       --config "${IGRA_CONFIG}" \
-      --data-dir "${IGRA_DATA}" \
+      --data-dir "${profile_data_dir}" \
       --node-url "grpc://127.0.0.1:16110"
 
   start_process "fake-hyperlane-${profile}" \
