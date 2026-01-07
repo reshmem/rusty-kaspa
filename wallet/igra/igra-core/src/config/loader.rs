@@ -492,7 +492,7 @@ fn ini_value(ini: &IniView<'_>, section: &str, key: &str) -> Option<String> {
 
 fn split_csv(value: &str) -> Vec<String> {
     value
-        .split(',')
+        .split(|c| c == ',' || c == '|')
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
         .collect()

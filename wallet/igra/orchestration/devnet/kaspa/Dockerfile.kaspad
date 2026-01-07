@@ -21,7 +21,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 ENV RUSTFLAGS="-C target-feature=-crt-static" \
-  CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse" \
+  CARGO_BUILD_JOBS=1 \
+  CARGO_INCREMENTAL=0
 
 # Build dependencies - this is the caching Docker layer
 RUN cargo chef cook --release --recipe-path recipe.json -p kaspad --bin kaspad
