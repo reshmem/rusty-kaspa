@@ -6,8 +6,8 @@ mod types;
 mod validation;
 
 pub use env::{
-    get_audit_request_id, get_finalize_pskt_json_path, AUDIT_REQUEST_ID_ENV, CONFIG_PATH_ENV, DATA_DIR_ENV,
-    FINALIZE_PSKT_JSON_ENV, HD_WALLET_SECRET_ENV, NODE_URL_ENV, TEST_NOW_NANOS_ENV,
+    get_audit_request_id, get_finalize_pskt_json_path, resolve_config_path, resolve_data_dir, AUDIT_REQUEST_ID_ENV,
+    CONFIG_PATH_ENV, DATA_DIR_ENV, FINALIZE_PSKT_JSON_ENV, HD_WALLET_SECRET_ENV, NODE_URL_ENV, TEST_NOW_NANOS_ENV,
 };
 pub use types::*;
 

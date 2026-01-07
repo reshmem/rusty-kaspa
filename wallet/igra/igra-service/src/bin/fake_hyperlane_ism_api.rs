@@ -26,6 +26,7 @@ const DEFAULT_ORIGIN_DOMAIN: u32 = 5;
 const DEFAULT_DESTINATION_DOMAIN: u32 = 7;
 const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000000000000000000000000dead"; // burn-like payload
 
+#[allow(dead_code)]
 fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -33,6 +34,7 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
+#[allow(dead_code)]
 fn hash_to_hex(hash: Hash) -> String {
     hex::encode(hash.as_bytes())
 }
