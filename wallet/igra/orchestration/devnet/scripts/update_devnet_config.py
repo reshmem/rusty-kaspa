@@ -61,7 +61,7 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
   group_preimage_str = "|".join(sorted(data["member_pubkeys"]))
   group_preimage_bytes = group_preimage_str.encode()
   group_id = hashlib.blake2b(group_preimage_bytes, digest_size=32).hexdigest()
-  verifier_keys = [f"{s['profile']}:{s['pubkey_hex']}" for s in data["signers"]]
+  verifier_keys = [f"{s['profile']}:{s['iroh_pubkey_hex']}" for s in data["signers"]]
 
   comments = {
       "hd.mnemonics": f"generated {generated_ts}: signer mnemonics from devnet-keygen at {data['signers'][0]['derivation_path']} (comma-delimited)",
@@ -74,7 +74,7 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
           f"generated {generated_ts}: blake2b-256 over sorted member_pubkeys joined with '|'. "
           f"inputs (sorted pubkeys)={group_preimage_str}; preimage_bytes={group_preimage_bytes.hex()}"
       ),
-      "iroh.verifier_keys": f"generated {generated_ts}: signer verifier keys = signer pubkeys (profile:pubkey)",
+      "iroh.verifier_keys": f"generated {generated_ts}: signer verifier keys = ed25519 pubkeys derived from signer iroh seeds (profile:ed25519_pubkey)",
   }
 
   for line in lines:
@@ -128,13 +128,13 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
       out_lines.append(f"; generated {generated_ts}: iroh seed for {profile}")
       out_lines.append(f"signer_seed_hex = {signer_map[profile]['iroh_seed_hex']}")
       continue
-    if section and section.startswith("signer-") and ".iroh" in section and key == "group_id":
-      out_lines.append(f"; {comments['iroh.group_id']}")
-      out_lines.append(f"group_id = {group_id}")
-      continue
     if section and section.startswith("signer-") and ".iroh" in section and key == "verifier_keys":
       out_lines.append(f"; {comments['iroh.verifier_keys']}")
       out_lines.append(f"verifier_keys = {','.join(verifier_keys)}")
+      continue
+    if section and section.startswith("signer-") and ".iroh" in section and key == "group_id":
+      out_lines.append(f"; {comments['iroh.group_id']}")
+      out_lines.append(f"group_id = {group_id}")
       continue
     if section == "runtime" and key == "test_mode":
       out_lines.append(f"; generated {generated_ts}: test mode off for devnet realism")
