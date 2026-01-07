@@ -43,7 +43,7 @@ Options:
   --dry-run        Print what would be done without executing.
 
 Commands:
-  (no command)        Build binaries, stage, generate keys (full init)
+  (no command)        Show this help
   setup               Build binaries, stage, generate keys (ready-to-run)
   build               Build binaries only
   generate-keys       Regenerate keys and configs
@@ -125,8 +125,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-COMMAND="${COMMAND:-default}"
-TARGET_ARG="${POSITIONAL[0]:-all}"
+if [[ ${#POSITIONAL[@]} -eq 0 && -z "${COMMAND}" ]]; then
+  usage
+  exit 0
+fi
+
+COMMAND="${COMMAND:-${POSITIONAL[0]:-}}"
+TARGET_ARG="${POSITIONAL[1]:-all}"
 
 case "${COMMAND}" in
   help|-h|--help) usage; exit 0 ;;
