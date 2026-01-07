@@ -6,6 +6,8 @@ use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use kaspa_wallet_keys::derivation::gen1::{PubkeyDerivationManager, WalletDerivationManager};
 use kaspa_wallet_keys::derivation::traits::WalletDerivationManagerTrait;
+use igra_core::group_id::compute_group_id;
+use igra_core::model::{GroupConfig, GroupMetadata, GroupPolicy};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -46,6 +48,7 @@ struct Output {
     source_addresses: Vec<String>,
     change_address: String,
     hyperlane_keys: Vec<HyperlaneKeyOut>,
+    group_id: String,
 }
 
 fn mnemonic_phrase() -> Mnemonic {
@@ -161,11 +164,44 @@ fn main() {
     let output = Output {
         wallet,
         signers,
-        member_pubkeys,
+        member_pubkeys: member_pubkeys.clone(),
         redeem_script_hex,
         source_addresses,
         change_address,
         hyperlane_keys,
+        group_id: {
+            let policy = GroupPolicy {
+                allowed_destinations: vec!["kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string()],
+                min_amount_sompi: Some(1_000_000),
+                max_amount_sompi: Some(100_000_000_000),
+                max_daily_volume_sompi: Some(500_000_000_000),
+                require_reason: false,
+            };
+            let group_metadata = GroupMetadata {
+                creation_timestamp_nanos: 0,
+                group_name: None,
+                policy_version: 1,
+                extra: Default::default(),
+            };
+            let member_pubkeys_bytes: Vec<Vec<u8>> = member_pubkeys
+                .iter()
+                .map(|hex_pk| hex::decode(hex_pk).expect("pubkey hex decode"))
+                .collect();
+            let group_cfg = GroupConfig {
+                network_id: 0,
+                threshold_m: 2,
+                threshold_n: 3,
+                member_pubkeys: member_pubkeys_bytes,
+                fee_rate_sompi_per_gram: 0,
+                finality_blue_score_threshold: 0,
+                dust_threshold_sompi: 0,
+                min_recipient_amount_sompi: 0,
+                session_timeout_seconds: 60,
+                group_metadata,
+                policy,
+            };
+            hex::encode(compute_group_id(&group_cfg).expect("group id"))
+        },
     };
 
     let json = serde_json::to_string_pretty(&output).expect("json");
