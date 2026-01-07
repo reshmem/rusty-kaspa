@@ -563,6 +563,7 @@ start_process() {
     return
   fi
   log_info "Starting ${name}..."
+  mkdir -p "$(dirname "${LOG_DIR}/${name}.log")"
   "$@" >"${LOG_DIR}/${name}.log" 2>&1 &
   local pid=$!
   PIDS+=("${pid}")
@@ -624,6 +625,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 start_kaspad() {
+  # Clear stale RocksDB lock files if present.
+  if find "${KASPAD_APPDIR}/kaspa-devnet" -name LOCK -type f -print -quit >/dev/null 2>&1; then
+    log_warn "Removing stale kaspad lock files under ${KASPAD_APPDIR}/kaspa-devnet"
+    find "${KASPAD_APPDIR}/kaspa-devnet" -name LOCK -type f -print -delete || true
+  fi
   start_process "kaspad" \
     "${KASPAD_BIN}" \
     --devnet \
@@ -770,6 +776,119 @@ stop_igra() {
   stop_process "igra-${profile}"
 }
 
+update_bootstrap_from_identities() {
+  local profiles=("signer-1" "signer-2" "signer-3")
+  local ids=()
+  local keyset_json="${KEYSET_JSON}"
+  local keyset_tmp=""
+  if [[ -f "${keyset_json}" ]]; then
+    keyset_tmp="${keyset_json}"
+  else
+    log_warn "Keyset JSON not found at ${keyset_json}; bootstrap update may be incomplete"
+  fi
+  for profile in "${profiles[@]}"; do
+    local id_file="${IGRA_DATA}/${profile}/iroh/identity.json"
+    mkdir -p "$(dirname "${id_file}")"
+    if [[ ! -f "${id_file}" ]]; then
+      if [[ -f "${keyset_tmp}" ]]; then
+        log_info "Seeding missing iroh identity for ${profile} from keyset ${keyset_tmp}"
+        python3 - <<'PY' "${keyset_tmp}" "${profile}" "${id_file}"
+import json, sys, os
+keyset_path, profile, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(open(keyset_path))
+signer = next((s for s in data.get("signers", []) if s.get("profile") == profile), None)
+if not signer:
+    sys.exit(0)
+seed_hex = signer.get("iroh_seed_hex")
+peer_id = signer.get("iroh_peer_id")
+if seed_hex and peer_id:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump({"peer_id": peer_id, "seed_hex": seed_hex}, f, indent=2)
+PY
+      else
+        log_warn "Missing identity.json for ${profile} and no keyset to derive from; skipping"
+        continue
+      fi
+    fi
+    local pid
+    pid=$(python3 - <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+print(data.get("peer_id","").strip())
+PY
+"${id_file}")
+    if [[ -z "${pid}" ]]; then
+      log_warn "No peer_id in ${id_file}; skipping"
+      continue
+    fi
+    ids+=("${profile}:${pid}")
+  done
+
+  if [[ ${#ids[@]} -lt 2 ]]; then
+    log_warn "Not enough identities to set bootstrap (found ${#ids[@]}); skipping"
+    return
+  fi
+
+  python3 - <<'PY' "${IGRA_CONFIG}" "${IGRA_DATA}" "${ids[@]}"
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+profiles_ids = dict(arg.split(":", 1) for arg in sys.argv[3:])
+profiles = list(profiles_ids.keys())
+global_bootstrap = ",".join(profiles_ids.values())
+
+lines = cfg_path.read_text().splitlines()
+out = []
+current = None
+inserted_global = False
+inserted_profiles = {p: False for p in profiles}
+
+def maybe_insert(current_section):
+    global inserted_global, inserted_profiles
+    if current_section == "iroh" and not inserted_global:
+        out.append(f"; generated bootstrap from existing identities")
+        out.append(f"bootstrap = {global_bootstrap}")
+        inserted_global = True
+    if current_section in [f"{p}.iroh" for p in profiles]:
+        p = current_section.split(".")[0]
+        if not inserted_profiles[p]:
+            others = [profiles_ids[o] for o in profiles if o != p]
+            out.append(f"; generated bootstrap from existing identities for {p}")
+            out.append(f"bootstrap = {','.join(others)}")
+            inserted_profiles[p] = True
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        maybe_insert(current)
+        current = stripped[1:-1]
+        out.append(line)
+        continue
+    key = line.split("=", 1)[0].strip() if "=" in line else ""
+    if key == "bootstrap" and current in (["iroh"] + [f"{p}.iroh" for p in profiles]):
+        continue
+    out.append(line)
+
+maybe_insert(current)
+
+# Ensure sections exist if missing
+if not inserted_global:
+    out.append("[iroh]")
+    maybe_insert("iroh")
+for p in profiles:
+    if not inserted_profiles[p]:
+        out.append(f"[{p}.iroh]")
+        maybe_insert(f"{p}.iroh")
+
+cfg_path.write_text("\n".join(out) + "\n")
+PY
+
+  log_info "Updated bootstrap peers in ${IGRA_CONFIG} from existing identity.json files"
+}
+
 generate_keys() {
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] Would regenerate keys and update configs"
@@ -794,6 +913,9 @@ generate_keys() {
       find "${CONFIG_DIR}" -maxdepth 1 ! -name 'config_bak_*' -type f -exec cp -a {} "${backup_dir}/" \;
     fi
   fi
+
+  # Force regeneration of igra-config.ini to drop stale bootstrap entries.
+  rm -f "${IGRA_CONFIG}"
 
   local keygen_json
   if ! keygen_json="$(run_keygen)"; then
@@ -964,6 +1086,9 @@ case "${COMMAND}" in
     require_binaries_present
     ensure_configs
     start_targets
+    # Keep processes running after script exits: disable cleanup trap and clear PIDS.
+    trap - EXIT INT TERM
+    PIDS=()
     ;;
   stop)
     stop_targets
@@ -975,6 +1100,8 @@ case "${COMMAND}" in
     require_binaries_present
     ensure_configs
     start_targets
+    trap - EXIT INT TERM
+    PIDS=()
     ;;
   status)
     show_status

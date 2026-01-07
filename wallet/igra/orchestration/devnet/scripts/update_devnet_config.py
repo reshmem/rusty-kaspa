@@ -15,11 +15,11 @@ Args:
 """
 
 import datetime
-import hashlib
 import json
 import pathlib
 import shutil
 import sys
+from typing import Optional
 
 
 def read_keygen(path: pathlib.Path) -> dict:
@@ -50,18 +50,31 @@ def write_env(env_path: pathlib.Path, config_dir: pathlib.Path, data: dict) -> N
   output_env.write_text("\n".join(lines) + "\n")
 
 
-def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: pathlib.Path, data: dict,
-                generated_ts: str, igra_data: pathlib.Path, run_root: pathlib.Path) -> None:
+def rewrite_ini(
+    ini_template: pathlib.Path,
+    ini_out: pathlib.Path,
+    config_dir: pathlib.Path,
+    data: dict,
+    generated_ts: str,
+    igra_data: pathlib.Path,
+    run_root: pathlib.Path,
+) -> None:
   text = ini_template.read_text()
   lines = text.splitlines()
   out_lines = []
-  section = None
+  section: Optional[str] = None
+  seen_global_bootstrap = False
+  seen_profile_bootstrap: dict[str, bool] = {}
   signer_map = {s["profile"]: s for s in data["signers"]}
 
   group_id = data.get("group_id", "")
   group_preimage_str = "|".join(sorted(data["member_pubkeys"]))
-  group_preimage_bytes = group_preimage_str.encode()
   verifier_keys = [f"{s['profile']}:{s['iroh_pubkey_hex']}" for s in data["signers"]]
+  peer_map = {s["profile"]: s["iroh_peer_id"] for s in data["signers"]}
+  peer_ids = list(peer_map.values())
+  profile_bootstrap = {
+      profile: [peer_map[p] for p in peer_map if p != profile] for profile in peer_map
+  }
 
   comments = {
       "hd.mnemonics": f"generated {generated_ts}: signer mnemonics from devnet-keygen at {data['signers'][0]['derivation_path']} (comma-delimited)",
@@ -77,14 +90,31 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
           f"member_pubkeys(sorted)={group_preimage_str})"
       ),
       "iroh.verifier_keys": f"generated {generated_ts}: signer verifier keys = ed25519 pubkeys derived from signer iroh seeds (profile:ed25519_pubkey)",
+      "iroh.bootstrap": f"generated {generated_ts}: bootstrap peers derived from signer iroh seeds",
   }
+
+  def flush_bootstrap(current_section: Optional[str]):
+    nonlocal seen_global_bootstrap, seen_profile_bootstrap
+    if current_section == "iroh" and not seen_global_bootstrap and peer_ids:
+      out_lines.append(f"; {comments['iroh.bootstrap']}")
+      out_lines.append(f"bootstrap = {','.join(peer_ids)}")
+      seen_global_bootstrap = True
+    if current_section and current_section.startswith("signer-") and current_section.endswith(".iroh"):
+      profile = current_section.split(".")[0]
+      if not seen_profile_bootstrap.get(profile) and profile in profile_bootstrap:
+        out_lines.append(f"; {comments['iroh.bootstrap']} for {profile}")
+        out_lines.append(f"bootstrap = {','.join(profile_bootstrap[profile])}")
+        seen_profile_bootstrap[profile] = True
 
   for line in lines:
     if line.strip().startswith("; generated "):
       continue
     if line.strip().startswith("[") and line.strip().endswith("]"):
+      flush_bootstrap(section)
       section = line.strip()[1:-1]
     key = line.split("=", 1)[0].strip() if "=" in line else ""
+    if key == "bootstrap":
+      continue
 
     if section == "hd" and key == "mnemonics":
       joined = ", ".join(s["mnemonic"] for s in data["signers"])
@@ -130,6 +160,11 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
       out_lines.append(f"; generated {generated_ts}: iroh seed for {profile}")
       out_lines.append(f"signer_seed_hex = {signer_map[profile]['iroh_seed_hex']}")
       continue
+    if section and section.startswith("signer-") and ".iroh" in section and key == "peer_id":
+      profile = section.split(".")[0]
+      out_lines.append(f"; generated {generated_ts}: deterministic peer_id from iroh_seed for {profile}")
+      out_lines.append(f"peer_id = {peer_map[profile]}")
+      continue
     if section and section.startswith("signer-") and ".iroh" in section and key == "verifier_keys":
       out_lines.append(f"; {comments['iroh.verifier_keys']}")
       out_lines.append(f"verifier_keys = {','.join(verifier_keys)}")
@@ -150,8 +185,11 @@ def rewrite_ini(ini_template: pathlib.Path, ini_out: pathlib.Path, config_dir: p
       profile = section.split(".")[0]
       out_lines.append(f"; generated {generated_ts}: data dir for {profile} rooted at {run_root}")
       out_lines.append(f"data_dir = {igra_data / profile}")
+      out_lines.append(f"iroh_dir = {igra_data / profile / 'iroh'}")
       continue
     out_lines.append(line)
+
+  flush_bootstrap(section)
 
   new_text = "\n".join(out_lines) + "\n"
   ini_out.write_text(new_text)
@@ -185,6 +223,21 @@ def write_keyset(keyset_out: pathlib.Path, config_dir: pathlib.Path, data: dict,
   keyset_out.write_text(content)
 
 
+def write_identities(igra_data: pathlib.Path, data: dict) -> None:
+  for signer in data["signers"]:
+    profile = signer["profile"]
+    seed_hex = signer["iroh_seed_hex"]
+    peer_id = signer["iroh_peer_id"]
+    identity_dir = igra_data / profile / "iroh"
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    identity_path = identity_dir / "identity.json"
+    identity = {
+        "peer_id": peer_id,
+        "seed_hex": seed_hex,
+    }
+    identity_path.write_text(json.dumps(identity, indent=2) + "\n")
+
+
 def main(argv: list[str]) -> int:
   if len(argv) != 9:
     print(__doc__, file=sys.stderr)
@@ -204,6 +257,7 @@ def main(argv: list[str]) -> int:
   data = read_keygen(keygen_path)
   generated_ts = datetime.datetime.utcnow().isoformat() + "Z"
 
+  write_identities(igra_data, data)
   write_env(env_path, config_dir, data)
   rewrite_ini(ini_template, ini_out, config_dir, data, generated_ts, igra_data, run_root)
   write_hyperlane_keys(hyperlane_out, config_dir, data)

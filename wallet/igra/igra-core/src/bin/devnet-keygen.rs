@@ -26,6 +26,7 @@ struct SignerOut {
     profile: String,
     mnemonic: String,
     iroh_seed_hex: String,
+    iroh_peer_id: String,
     iroh_pubkey_hex: String,
     pubkey_hex: String,
     address: String,
@@ -63,6 +64,13 @@ fn random_seed_hex() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+fn peer_id_from_seed(seed_hex: &str) -> String {
+    let bytes = hex::decode(seed_hex).expect("seed hex decode");
+    let digest = blake3::hash(&bytes);
+    let prefix = &digest.as_bytes()[..8];
+    format!("peer-{}", hex::encode(prefix))
 }
 
 fn derive_pubkey_and_address(mnemonic: &Mnemonic, is_multisig: bool, account_index: u64, cosigner_index: Option<u32>) -> (PublicKey, String) {
@@ -114,11 +122,13 @@ fn main() {
             .expect("32-byte seed");
         let iroh_signing = SigningKey::from_bytes(&iroh_seed_bytes);
         let iroh_pubkey_hex = hex::encode(iroh_signing.verifying_key().to_bytes());
+        let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex);
 
         let signer = SignerOut {
             profile: profile.to_string(),
             mnemonic: mnemonic.phrase().to_string(),
             iroh_seed_hex,
+            iroh_peer_id,
             iroh_pubkey_hex,
             pubkey_hex: pubkey_hex(&pubkey),
             address,
