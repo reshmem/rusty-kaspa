@@ -6,8 +6,7 @@ usage() {
 Usage: check_balance.sh [--root PATH] [--rpc HOST:PORT] [--addresses addr1,addr2,...]
 
 Queries balances via devnet-balance (gRPC). By default it uses the miner and multisig addresses from:
-  <root>/config/devnet-keys.json (wallet.mining_address + multisig_address/source_addresses)
-  <root>/config/.env (KASPA_MINING_ADDRESS as fallback)
+  <root>/config/devnet-keys.json (wallet.mining_address + multisig_address)
 
 Options:
   --root PATH        Devnet root (default: $(pwd)/igra_devnet)

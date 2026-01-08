@@ -64,7 +64,7 @@ Environment overrides:
   IGRA_BIN                 Path to kaspa-threshold-service binary (skip build/clone)
   FAKE_HYPERLANE_BIN       Path to fake_hyperlane_ism_api binary (skip build/clone)
   ROTHSCHILD_BIN           Path to rothschild binary (skip build/clone)
-  IGRA_REPO / IGRA_REF     Clone source for --clone mode (default: https://github.com/reshmem/rusty-kaspa.git / devel)
+IGRA_REPO / IGRA_REF     Clone source for --clone mode (default: https://github.com/reshmem/rusty-kaspa.git / devel)
   KASPA_MINER_REPO/REF     Clone source for --clone mode (default: https://github.com/IgraLabs/kaspa-miner.git / main)
 
 Security notes:
@@ -174,7 +174,7 @@ WALLET_DATA="${RUN_ROOT}/wallet"
 CONFIG_DIR="${RUN_ROOT}/config"
 BIN_DIR="${RUN_ROOT}/bin"
 
-ENV_FILE=""
+ENV_FILE="${CONFIG_DIR}/.env"
 IGRA_CONFIG_TEMPLATE=""
 IGRA_CONFIG="${CONFIG_DIR}/igra-config.ini"
 HYPERLANE_KEYS_SRC=""
@@ -195,6 +195,12 @@ fi
 # Honor user-provided CARGO_TARGET_DIR if set elsewhere by letting TARGET_DIR be explicit above,
 # and ensure cargo uses our resolved target dir for all child commands.
 export CARGO_TARGET_DIR="${TARGET_DIR}"
+
+# Hardcoded clone sources (env overrides intentionally ignored for reproducibility).
+IGRA_REPO="https://github.com/reshmem/rusty-kaspa.git"
+IGRA_REF="devel"
+KASPA_MINER_REPO="${KASPA_MINER_REPO:-https://github.com/IgraLabs/kaspa-miner.git}"
+KASPA_MINER_REF="${KASPA_MINER_REF:-main}"
 
 load_env() { :; } # no-op; repo/ref and keys are hardcoded/auto-generated now
 
@@ -293,7 +299,9 @@ build_rusty_repo() {
   local repo_path="$1"
   log_info "Building kaspa binaries from ${repo_path}..."
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p kaspa-cli -p kaspa-wallet -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
+    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p kaspa-cli -p kaspa-wallet"
+    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-core --bin devnet-balance"
+    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
   else
     # Clear RUSTC_WRAPPER to avoid sccache/wrappers interfering with target dir
     if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
@@ -301,9 +309,15 @@ build_rusty_repo() {
         -p kaspad \
         -p rothschild \
         -p kaspa-cli \
-        -p kaspa-wallet \
+        -p kaspa-wallet); then
+      log_error "Failed to build kaspad/rothschild/kaspa-cli/kaspa-wallet from ${repo_path}"
+      exit 1
+    fi
+
+    if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
+      cargo build --release --locked \
         -p igra-core --bin devnet-balance); then
-      log_error "Failed to build kaspad/rothschild/kaspa-cli/kaspa-wallet/devnet-balance from ${repo_path}"
+      log_error "Failed to build devnet-balance from ${repo_path}"
       exit 1
     fi
 
@@ -371,11 +385,11 @@ prepare_sources() {
       require_cmd git
       mkdir -p "${SRC_ROOT}"
       local fallback_local=""
-      if ! clone_repo "${IGRA_REPO:-https://github.com/reshmem/rusty-kaspa.git}" "${IGRA_REF:-devel}" "${RUSTY_SRC}"; then
+      if ! clone_repo "${IGRA_REPO}" "${IGRA_REF}" "${RUSTY_SRC}"; then
         echo "Clone failed for rusty-kaspa; falling back to --build local if sources are available." >&2
         fallback_local="yes"
       fi
-      if [[ -z "${fallback_local}" ]] && ! clone_repo "${KASPA_MINER_REPO:-https://github.com/IgraLabs/kaspa-miner.git}" "${KASPA_MINER_REF:-main}" "${MINER_SRC}"; then
+      if [[ -z "${fallback_local}" ]] && ! clone_repo "${KASPA_MINER_REPO}" "${KASPA_MINER_REF}" "${MINER_SRC}"; then
         echo "Clone failed for kaspa-miner; falling back to --build local if sources are available." >&2
         fallback_local="yes"
       fi
@@ -476,10 +490,6 @@ mkdir -p "${CONFIG_DIR}"
 chmod 700 "${LOG_DIR}" >/dev/null 2>&1 || true
 
 prepare_igra_config() {
-  if [[ ! -f "${CONFIG_DIR}/.env" ]]; then
-    log_info "Seeding .env from template into ${CONFIG_DIR}"
-    cp -f "${ENV_FILE}" "${CONFIG_DIR}/.env"
-  fi
   if [[ ! -f "${HYPERLANE_KEYS}" ]]; then
     log_info "Seeding hyperlane-keys.json from template into ${CONFIG_DIR}"
     cp -f "${HYPERLANE_KEYS_SRC}" "${HYPERLANE_KEYS}"
@@ -948,7 +958,7 @@ generate_keys() {
 }
 
 ensure_configs() {
-  local required_files=("${CONFIG_DIR}/.env" "${IGRA_CONFIG}" "${HYPERLANE_KEYS}" "${KEYSET_JSON}")
+  local required_files=("${IGRA_CONFIG}" "${HYPERLANE_KEYS}" "${KEYSET_JSON}")
   for file in "${required_files[@]}"; do
     if [[ ! -f "${file}" ]]; then
       log_error "Missing required config: ${file}"
