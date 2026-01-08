@@ -634,6 +634,7 @@ start_kaspad() {
     "${KASPAD_BIN}" \
     --devnet \
     --utxoindex \
+    --enable-unsynced-mining \
     --appdir="${KASPAD_APPDIR}" \
     --rpclisten=127.0.0.1:16110 \
     --listen=0.0.0.0:16111

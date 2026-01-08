@@ -127,7 +127,7 @@ pub async fn init_iroh_gossip(
     static_addrs: Vec<EndpointAddr>,
     secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    let mut builder = iroh::Endpoint::builder().secret_key(secret_key);
+    let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
     let static_provider = iroh::discovery::static_provider::StaticProvider::new();
     if !static_addrs.is_empty() {
         for addr in &static_addrs {
