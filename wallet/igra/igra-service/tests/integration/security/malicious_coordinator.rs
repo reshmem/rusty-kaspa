@@ -1,5 +1,5 @@
 use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::model::{EventSource, SigningEvent};
 use igra_core::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::storage::rocks::RocksStorage;
@@ -86,17 +86,15 @@ async fn malicious_coordinator_tampered_pskt_is_rejected() {
     let request_id = RequestId::from("req-1");
     let ack = signer
         .validate_proposal(
-            &request_id,
-            SessionId::from([1u8; 32]),
-            event.clone(),
-            expected_event_hash,
-            &tampered_blob,
-            tx_hash,
-            expected_validation,
-            PeerId::from("peer-1"),
-            0,
-            None,
-            None,
+            ProposalValidationRequestBuilder::new(request_id.clone(), SessionId::from([1u8; 32]), event.clone())
+                .expected_event_hash(expected_event_hash)
+                .kpsbt_blob(&tampered_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(expected_validation)
+                .coordinator_peer_id(PeerId::from("peer-1"))
+                .expires_at_nanos(0)
+                .build()
+                .expect("build request"),
         )
         .expect("validate proposal");
 

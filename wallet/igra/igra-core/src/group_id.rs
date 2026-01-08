@@ -21,16 +21,10 @@ pub fn compute_group_id(config: &GroupConfig) -> Result<Hash32, ThresholdError> 
     hasher.update(&config.min_recipient_amount_sompi.to_le_bytes());
     hasher.update(&config.session_timeout_seconds.to_le_bytes());
 
-    let metadata = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&config.group_metadata)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let metadata = bincode::DefaultOptions::new().with_fixint_encoding().serialize(&config.group_metadata)?;
     hasher.update(&metadata);
 
-    let policy = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(&config.policy)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let policy = bincode::DefaultOptions::new().with_fixint_encoding().serialize(&config.policy)?;
     hasher.update(&policy);
 
     Ok(*hasher.finalize().as_bytes())

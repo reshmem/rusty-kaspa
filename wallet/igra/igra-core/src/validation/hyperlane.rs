@@ -3,7 +3,7 @@ use crate::error::ThresholdError;
 use crate::model::{EventSource, SigningEvent};
 use secp256k1::ecdsa::Signature as SecpSignature;
 use secp256k1::{Message, PublicKey, Secp256k1};
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<(), ThresholdError> {
     if !matches!(event.event_source, EventSource::Hyperlane { .. }) {
@@ -19,7 +19,7 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<()
     }
     let signature = event.signature.as_ref().ok_or(ThresholdError::EventSignatureInvalid)?;
     let hash = event_hash_without_signature(event)?;
-    let message = Message::from_digest_slice(&hash).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let message = Message::from_digest_slice(&hash)?;
     let signatures = match signature.len() {
         64 => vec![SecpSignature::from_compact(signature).map_err(|err| ThresholdError::Message(err.to_string()))?],
         len if len > 64 && len % 64 == 0 => {
@@ -37,7 +37,8 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<()
     let mut used = vec![false; validators.len()];
     let mut matched = 0usize;
 
-    for sig in signatures {
+    let signature_chunks = signatures.len();
+    for sig in &signatures {
         for (idx, validator) in validators.iter().enumerate() {
             if used[idx] {
                 continue;
@@ -53,5 +54,13 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<()
         }
     }
 
+    warn!(
+        event_id = %event.event_id,
+        signature_chunks = signature_chunks,
+        validator_count = validators.len(),
+        matched,
+        required = min_required,
+        "hyperlane signature verification failed"
+    );
     Err(ThresholdError::EventSignatureInvalid)
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_constants)]
+
 use iroh::{PublicKey as IrohPublicKey, SecretKey as IrohSecretKey};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_txscript::standard::multisig_redeem_script;

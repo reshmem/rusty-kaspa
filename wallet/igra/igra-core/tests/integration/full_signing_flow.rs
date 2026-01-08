@@ -1,6 +1,6 @@
 use igra_core::coordination::coordinator::Coordinator;
 use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::model::{EventSource, SigningEvent};
 use igra_core::pskt::multisig::{build_pskt, deserialize_pskt_signer, serialize_pskt, MultisigInput, MultisigOutput};
 use igra_core::signing::ThresholdSigner;
@@ -108,17 +108,15 @@ async fn signing_flow_propagates_partial_sig() {
 
     let ack = signer
         .validate_proposal(
-            &proposal.request_id,
-            envelope.session_id,
-            proposal.signing_event.clone(),
-            proposal.event_hash,
-            &proposal.kpsbt_blob,
-            tx_hash,
-            proposal.validation_hash,
-            proposal.coordinator_peer_id.clone(),
-            proposal.expires_at_nanos,
-            None,
-            None,
+            ProposalValidationRequestBuilder::new(proposal.request_id.clone(), envelope.session_id, proposal.signing_event.clone())
+                .expected_event_hash(proposal.event_hash)
+                .kpsbt_blob(&proposal.kpsbt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(proposal.validation_hash)
+                .coordinator_peer_id(proposal.coordinator_peer_id.clone())
+                .expires_at_nanos(proposal.expires_at_nanos)
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
     assert!(ack.accept);

@@ -152,7 +152,7 @@ pub fn parse_bootstrap_addrs(addrs: &[String]) -> Result<Vec<EndpointAddr>, Thre
 }
 
 fn parse_seed_hex(value: &str) -> Result<[u8; 32], ThresholdError> {
-    let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = hex::decode(value.trim())?;
     let array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex seed".to_string()))?;
     Ok(array)
 }
@@ -163,7 +163,7 @@ pub fn derive_iroh_secret(seed_hex: &str) -> Result<IrohSecretKey, ThresholdErro
 }
 
 fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
-    let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = hex::decode(value.trim())?;
     let array: [u8; 32] =
         bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
     Ok(array)
@@ -178,7 +178,7 @@ fn parse_verifier_keys(values: &[String]) -> Result<HashMap<PeerId, VerifyingKey
         if peer_id.is_empty() || key_hex.is_empty() {
             return Err(ThresholdError::Message("expected verifier entry as peer_id:hex_pubkey".to_string()));
         }
-        let bytes = hex::decode(key_hex).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let bytes = hex::decode(key_hex)?;
         let array: [u8; 32] =
             bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte ed25519 public key".to_string()))?;
         let key = VerifyingKey::from_bytes(&array).map_err(|err| ThresholdError::Message(err.to_string()))?;
@@ -204,7 +204,7 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     let identity_path = identity_dir.join("identity.json");
     if identity_path.exists() {
         let bytes = std::fs::read(&identity_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let record: IdentityRecord = serde_json::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let record: IdentityRecord = serde_json::from_slice(&bytes)?;
         if record.peer_id.trim().is_empty() || record.seed_hex.trim().is_empty() {
             return Err(ThresholdError::Message("identity.json is missing peer_id or seed_hex".to_string()));
         }
@@ -217,7 +217,7 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     let mut peer_id_bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut peer_id_bytes);
     let record = IdentityRecord { peer_id: format!("peer-{}", hex::encode(peer_id_bytes)), seed_hex: hex::encode(seed) };
-    let json = serde_json::to_vec_pretty(&record).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let json = serde_json::to_vec_pretty(&record)?;
     std::fs::write(&identity_path, json).map_err(|err| ThresholdError::Message(err.to_string()))?;
     info!("created iroh identity at {}", identity_path.display());
     Ok((PeerId::from(record.peer_id), record.seed_hex))

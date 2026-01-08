@@ -10,7 +10,10 @@ pub fn has_threshold(partials: &[PartialSigRecord], input_count: usize, required
     }
     let mut per_input: Vec<HashSet<Vec<u8>>> = (0..input_count).map(|_| HashSet::new()).collect();
     for sig in partials {
-        let idx = sig.input_index as usize;
+        let idx = match usize::try_from(sig.input_index) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         if idx >= input_count {
             continue;
         }

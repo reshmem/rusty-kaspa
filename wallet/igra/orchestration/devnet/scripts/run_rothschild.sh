@@ -30,6 +30,7 @@ TPS=1
 RPCSERVER="127.0.0.1:16110"
 THREADS=2
 PRIVATE_KEY=""
+NETWORK_ARG=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,11 +48,6 @@ done
 
 if [[ -z "${ROOT}" ]]; then
   ROOT="$(pwd)/igra_devnet"
-fi
-
-if [[ -z "${TO_ADDR}" ]]; then
-  usage
-  exit 1
 fi
 
 BIN_DIR="${ROOT}/bin"
@@ -82,7 +78,34 @@ PY
   ) || exit 1
 fi
 
-CMD=("${ROTHSCHILD_BIN}" --rpcserver "${RPCSERVER}" --tps "${TPS}" --threads "${THREADS}" --private-key "${PRIVATE_KEY}" --to-addr "${TO_ADDR}")
+if [[ -z "${TO_ADDR}" ]]; then
+  if [[ ! -f "${KEYS_JSON}" ]]; then
+    echo "Destination address missing and key file not found at ${KEYS_JSON}; provide --to or generate keys." >&2
+    exit 1
+  fi
+  TO_ADDR=$(python3 - "${KEYS_JSON}" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+to_addr = data.get("multisig_address") or next(iter(data.get("source_addresses") or []), None)
+if not to_addr:
+    sys.stderr.write("multisig_address/source_addresses missing in devnet-keys.json\n")
+    sys.exit(1)
+print(to_addr)
+PY
+  ) || exit 1
+fi
+
+prefix_part="${TO_ADDR%%:*}"
+case "${prefix_part}" in
+  kaspa) NETWORK_ARG=(--network mainnet) ;;
+  kaspatest) NETWORK_ARG=(--network testnet) ;;
+  kaspadev) NETWORK_ARG=(--network devnet) ;;
+  *) NETWORK_ARG=() ;; # unknown prefix, leave default
+esac
+
+CMD=("${ROTHSCHILD_BIN}" --rpcserver "${RPCSERVER}" --tps "${TPS}" --threads "${THREADS}" --private-key "${PRIVATE_KEY}" --to-addr "${TO_ADDR}" "${NETWORK_ARG[@]}")
 if [[ -n "${AMOUNT}" ]]; then
   CMD+=(--amount "${AMOUNT}")
 fi

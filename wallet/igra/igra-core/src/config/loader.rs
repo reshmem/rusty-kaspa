@@ -51,6 +51,11 @@ pub fn load_from_toml(path: &Path, data_dir: &Path) -> Result<AppConfig, Thresho
     Ok(config)
 }
 
+/// Returns default configuration seeded with data_dir.
+pub fn load_default(data_dir: &Path) -> Result<AppConfig, ThresholdError> {
+    Ok(default_app_config(data_dir))
+}
+
 fn apply_defaults(config: &mut AppConfig, data_dir: &Path) {
     if config.service.data_dir.trim().is_empty() {
         config.service.data_dir = data_dir.to_string_lossy().to_string();
@@ -275,7 +280,7 @@ fn apply_group_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), 
 
     let mut pubkeys = Vec::new();
     for hex_key in member_pubkeys {
-        let bytes = hex::decode(hex_key.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let bytes = hex::decode(hex_key.trim())?;
         pubkeys.push(bytes);
     }
 
@@ -477,15 +482,24 @@ fn parse_bool(value: &str) -> bool {
 
 fn parse_fee_payment_mode(value: &str) -> Result<crate::model::FeePaymentMode, ThresholdError> {
     let trimmed = value.trim().to_lowercase();
-    if trimmed.starts_with("split:") {
-        let portion = trimmed
-            .trim_start_matches("split:")
+    if let Some(rest) = trimmed.strip_prefix("split:") {
+        let tokens: Vec<&str> = rest.split(':').collect();
+        if tokens.len() == 2 {
+            let recipient_parts = tokens[0].parse::<u32>().map_err(|_| ThresholdError::Message("invalid split parts".to_string()))?;
+            let signer_parts = tokens[1].parse::<u32>().map_err(|_| ThresholdError::Message("invalid split parts".to_string()))?;
+            return Ok(crate::model::FeePaymentMode::Split { recipient_parts, signer_parts });
+        }
+        // backward compatibility: split:<fraction>
+        let portion = rest
             .parse::<f64>()
             .map_err(|_| ThresholdError::Message("invalid pskt.fee_payment_mode split".to_string()))?;
         if !(0.0..=1.0).contains(&portion) {
             return Err(ThresholdError::Message("recipient_portion must be 0.0 to 1.0".to_string()));
         }
-        return Ok(crate::model::FeePaymentMode::Split { recipient_portion: portion });
+        let scale: u32 = 1_000;
+        let recipient_parts = ((portion * scale as f64).round() as u32).min(scale);
+        let signer_parts = scale.saturating_sub(recipient_parts);
+        return Ok(crate::model::FeePaymentMode::Split { recipient_parts, signer_parts });
     }
     match trimmed.as_str() {
         "recipient_pays" => Ok(crate::model::FeePaymentMode::RecipientPays),

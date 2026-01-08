@@ -48,6 +48,8 @@ pub struct Args {
     pub priority_fee: u64,
     pub randomize_fee: bool,
     pub payload_size: usize,
+    pub amount: Option<u64>,
+    pub network: Option<String>,
 }
 
 impl Args {
@@ -63,6 +65,8 @@ impl Args {
             priority_fee: m.get_one::<u64>("priority-fee").cloned().unwrap_or(0),
             randomize_fee: m.get_one::<bool>("randomize-fee").cloned().unwrap_or(false),
             payload_size: m.get_one::<usize>("payload-size").cloned().unwrap_or(0),
+            amount: m.get_one::<u64>("amount").cloned(),
+            network: m.get_one::<String>("network").cloned(),
         }
     }
 }
@@ -126,6 +130,19 @@ pub fn cli() -> Command {
                 .value_parser(clap::value_parser!(usize))
                 .help("Randomized payload size"),
         )
+        .arg(
+            Arg::new("amount")
+                .long("amount")
+                .value_name("sompi")
+                .value_parser(clap::value_parser!(u64))
+                .help("Amount per transaction output in sompi (defaults to 10 KAS)"),
+        )
+        .arg(
+            Arg::new("network")
+                .long("network")
+                .value_name("network")
+                .help("Network prefix: mainnet|testnet|devnet (default uses compiled ADDRESS_PREFIX)"),
+        )
 }
 
 async fn new_rpc_client(subscription_context: &SubscriptionContext, address: &str) -> GrpcClient {
@@ -162,6 +179,13 @@ struct TxConfig {
 async fn main() {
     kaspa_core::log::init_logger(None, "");
     let args = Args::parse();
+    let network_prefix = match args.network.as_deref() {
+        Some("mainnet") => Prefix::Mainnet,
+        Some("testnet") => Prefix::Testnet,
+        Some("devnet") => Prefix::Devnet,
+        Some(other) => panic!("Unsupported network '{other}'"),
+        None => ADDRESS_PREFIX,
+    };
     let stats = Arc::new(Mutex::new(Stats { num_txs: 0, since: unix_now(), num_utxos: 0, utxos_amount: 0, num_outs: 0 }));
     let subscription_context = SubscriptionContext::new();
     let rpc_client = GrpcClient::connect_with_args(
@@ -187,7 +211,7 @@ async fn main() {
         Keypair::from_seckey_slice(secp256k1::SECP256K1, &private_key_bytes).unwrap()
     } else {
         let (sk, pk) = &secp256k1::generate_keypair(&mut thread_rng());
-        let kaspa_addr = Address::new(ADDRESS_PREFIX, ADDRESS_VERSION, &pk.x_only_public_key().0.serialize());
+        let kaspa_addr = Address::new(network_prefix, ADDRESS_VERSION, &pk.x_only_public_key().0.serialize());
         info!(
             "Generated private key {} and address {}. Send some funds to this address and rerun rothschild with `--private-key {}`",
             sk.display_secret(),
@@ -197,11 +221,13 @@ async fn main() {
         return;
     };
 
-    let kaspa_addr = Address::new(ADDRESS_PREFIX, ADDRESS_VERSION, &schnorr_key.x_only_public_key().0.serialize());
+    let kaspa_addr = Address::new(network_prefix, ADDRESS_VERSION, &schnorr_key.x_only_public_key().0.serialize());
 
     let kaspa_to_addr = args.addr.as_ref().map_or_else(|| kaspa_addr.clone(), |addr_str| Address::try_from(addr_str.clone()).unwrap());
 
     (args.payload_size <= 20000).then_some(()).expect("payload-size can be max 20000");
+    let send_amount = args.amount.unwrap_or(DEFAULT_SEND_AMOUNT);
+    (send_amount > 0).then_some(()).expect("amount must be greater than zero");
 
     let tx_config = TxConfig { priority_fee: args.priority_fee, randomize_fee: args.randomize_fee, payload_size: args.payload_size };
 
@@ -214,6 +240,7 @@ async fn main() {
         schnorr_key.display_secret(),
         String::from(&kaspa_addr)
     );
+    log_message.push_str(&format!("\n\tamount per tx: {} sompi", send_amount));
     if args.addr.is_some() {
         log_message.push_str(&format!("\n\tto address: {}", String::from(&kaspa_to_addr)));
     }
@@ -334,6 +361,7 @@ async fn main() {
             maximize_inputs,
             &mut next_available_utxo_index,
             &tx_config,
+            send_amount,
         )
         .await;
         if !has_funds {
@@ -449,6 +477,7 @@ async fn maybe_send_tx(
     maximize_inputs: bool,
     next_available_utxo_index: &mut usize,
     tx_config: &TxConfig,
+    send_amount: u64,
 ) -> bool {
     let num_outs = if maximize_inputs { 1 } else { 2 };
 
@@ -457,7 +486,7 @@ async fn maybe_send_tx(
     let selected_utxos_groups = (0..txs_to_send)
         .map(|_| {
             let (selected_utxos, selected_amount) =
-                select_utxos(utxos, DEFAULT_SEND_AMOUNT, num_outs, maximize_inputs, next_available_utxo_index, tx_config);
+                select_utxos(utxos, send_amount, num_outs, maximize_inputs, next_available_utxo_index, tx_config);
             if selected_amount == 0 {
                 return None;
             }

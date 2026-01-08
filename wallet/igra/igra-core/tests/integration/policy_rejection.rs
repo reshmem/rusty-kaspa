@@ -1,5 +1,5 @@
 use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::model::{EventSource, GroupPolicy, SigningEvent};
 use igra_core::pskt::multisig::{build_pskt, deserialize_pskt_signer, serialize_pskt, MultisigInput, MultisigOutput};
 use igra_core::storage::rocks::RocksStorage;
@@ -80,17 +80,16 @@ fn policy_rejects_disallowed_destination() {
 
     let ack = signer
         .validate_proposal(
-            "req-1",
-            [2u8; 32],
-            event,
-            ev_hash,
-            &pskt_blob,
-            tx_hash,
-            val_hash,
-            "peer-1".to_string(),
-            0,
-            Some(&policy),
-            None,
+            ProposalValidationRequestBuilder::new("req-1".into(), [2u8; 32], event)
+                .expected_event_hash(ev_hash)
+                .kpsbt_blob(&pskt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(val_hash)
+                .coordinator_peer_id("peer-1".to_string())
+                .expires_at_nanos(0)
+                .policy(Some(&policy))
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
 

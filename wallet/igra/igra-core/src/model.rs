@@ -27,7 +27,7 @@ pub struct GroupMetadata {
     pub extra: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct GroupPolicy {
     pub allowed_destinations: Vec<String>,
     pub min_amount_sompi: Option<u64>,
@@ -113,7 +113,7 @@ pub struct PartialSigRecord {
 pub enum FeePaymentMode {
     RecipientPays,
     SignersPay,
-    Split { recipient_portion: f64 },
+    Split { recipient_parts: u32, signer_parts: u32 },
 }
 
 impl Default for FeePaymentMode {

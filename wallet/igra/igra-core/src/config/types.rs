@@ -3,6 +3,7 @@ use kaspa_wallet_core::encryption::Encryptable;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use serde::{Deserialize, Serialize};
 
+/// Base configuration for the application.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ServiceConfig {
     #[serde(default)]
@@ -179,4 +180,209 @@ pub struct IrohRuntimeConfig {
 
 pub fn default_ism_mode() -> HyperlaneIsmMode {
     HyperlaneIsmMode::MessageIdMultisig
+}
+
+impl AppConfig {
+    /// Merge fields from `other`, overriding only when `other` provides a non-empty value.
+    pub fn merge_from(&mut self, other: &AppConfig) {
+        self.service.merge_from(&other.service);
+        self.runtime.merge_from(&other.runtime);
+        self.signing.merge_from(&other.signing);
+        self.rpc.merge_from(&other.rpc);
+        if other.policy != GroupPolicy::default() {
+            self.policy = other.policy.clone();
+        }
+        if let Some(ref grp) = other.group {
+            self.group = Some(grp.clone());
+        }
+        self.hyperlane.merge_from(&other.hyperlane);
+        self.layerzero.merge_from(&other.layerzero);
+        self.iroh.merge_from(&other.iroh);
+    }
+}
+
+impl ServiceConfig {
+    fn merge_from(&mut self, other: &ServiceConfig) {
+        if !other.node_rpc_url.trim().is_empty() {
+            self.node_rpc_url = other.node_rpc_url.clone();
+        }
+        if !other.data_dir.trim().is_empty() {
+            self.data_dir = other.data_dir.clone();
+        }
+        self.pskt.merge_from(&other.pskt);
+        match (&mut self.hd, &other.hd) {
+            (Some(existing), Some(incoming)) => existing.merge_from(incoming),
+            (slot @ None, Some(incoming)) => *slot = Some(incoming.clone()),
+            _ => {}
+        }
+    }
+}
+
+impl PsktHdConfig {
+    fn merge_from(&mut self, other: &PsktHdConfig) {
+        if let Some(ref enc) = other.encrypted_mnemonics {
+            self.encrypted_mnemonics = Some(enc.clone());
+        }
+        if !other.xpubs.is_empty() {
+            self.xpubs = other.xpubs.clone();
+        }
+        if other.required_sigs != 0 {
+            self.required_sigs = other.required_sigs;
+        }
+        if let Some(ref pass) = other.passphrase {
+            self.passphrase = Some(pass.clone());
+        }
+    }
+}
+
+impl PsktBuildConfig {
+    fn merge_from(&mut self, other: &PsktBuildConfig) {
+        if !other.node_rpc_url.trim().is_empty() {
+            self.node_rpc_url = other.node_rpc_url.clone();
+        }
+        if !other.source_addresses.is_empty() {
+            self.source_addresses = other.source_addresses.clone();
+        }
+        if !other.redeem_script_hex.trim().is_empty() {
+            self.redeem_script_hex = other.redeem_script_hex.clone();
+        }
+        if other.sig_op_count != 0 {
+            self.sig_op_count = other.sig_op_count;
+        }
+        if !other.outputs.is_empty() {
+            self.outputs = other.outputs.clone();
+        }
+        self.fee_payment_mode = other.fee_payment_mode.clone();
+        if other.fee_sompi.is_some() {
+            self.fee_sompi = other.fee_sompi;
+        }
+        if let Some(ref change) = other.change_address {
+            self.change_address = Some(change.clone());
+        }
+    }
+}
+
+impl RuntimeConfig {
+    fn merge_from(&mut self, other: &RuntimeConfig) {
+        if other.test_mode {
+            self.test_mode = true;
+        }
+        if other.test_recipient.is_some() {
+            self.test_recipient = other.test_recipient.clone();
+        }
+        if other.test_amount_sompi.is_some() {
+            self.test_amount_sompi = other.test_amount_sompi;
+        }
+        if other.hd_test_derivation_path.is_some() {
+            self.hd_test_derivation_path = other.hd_test_derivation_path.clone();
+        }
+        if other.session_timeout_seconds != 0 {
+            self.session_timeout_seconds = other.session_timeout_seconds;
+        }
+    }
+}
+
+impl SigningConfig {
+    fn merge_from(&mut self, other: &SigningConfig) {
+        if !other.backend.trim().is_empty() {
+            self.backend = other.backend.clone();
+        }
+    }
+}
+
+impl RpcConfig {
+    fn merge_from(&mut self, other: &RpcConfig) {
+        if !other.addr.trim().is_empty() {
+            self.addr = other.addr.clone();
+        }
+        if other.token.is_some() {
+            self.token = other.token.clone();
+        }
+        self.enabled = other.enabled;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_overrides_non_empty() {
+        let mut base = AppConfig::default();
+        base.service.node_rpc_url = "base".into();
+        base.runtime.session_timeout_seconds = 10;
+        let mut incoming = AppConfig::default();
+        incoming.service.node_rpc_url = "new".into();
+        incoming.runtime.session_timeout_seconds = 20;
+
+        base.merge_from(&incoming);
+        assert_eq!(base.service.node_rpc_url, "new");
+        assert_eq!(base.runtime.session_timeout_seconds, 20);
+    }
+
+    #[test]
+    fn merge_keeps_base_when_incoming_empty() {
+        let mut base = AppConfig::default();
+        base.service.node_rpc_url = "base".into();
+        let incoming = AppConfig::default();
+        base.merge_from(&incoming);
+        assert_eq!(base.service.node_rpc_url, "base");
+    }
+}
+
+impl HyperlaneConfig {
+    fn merge_from(&mut self, other: &HyperlaneConfig) {
+        if !other.validators.is_empty() {
+            self.validators = other.validators.clone();
+        }
+        if other.threshold.is_some() {
+            self.threshold = other.threshold;
+        }
+        if other.events_dir.is_some() {
+            self.events_dir = other.events_dir.clone();
+        }
+        if other.poll_secs != 0 {
+            self.poll_secs = other.poll_secs;
+        }
+        if !other.domains.is_empty() {
+            self.domains = other.domains.clone();
+        }
+    }
+}
+
+impl LayerZeroConfig {
+    fn merge_from(&mut self, other: &LayerZeroConfig) {
+        if !other.endpoint_pubkeys.is_empty() {
+            self.endpoint_pubkeys = other.endpoint_pubkeys.clone();
+        }
+    }
+}
+
+impl IrohRuntimeConfig {
+    fn merge_from(&mut self, other: &IrohRuntimeConfig) {
+        if other.peer_id.is_some() {
+            self.peer_id = other.peer_id.clone();
+        }
+        if other.signer_seed_hex.is_some() {
+            self.signer_seed_hex = other.signer_seed_hex.clone();
+        }
+        if !other.verifier_keys.is_empty() {
+            self.verifier_keys = other.verifier_keys.clone();
+        }
+        if other.group_id.is_some() {
+            self.group_id = other.group_id.clone();
+        }
+        if other.network_id != 0 {
+            self.network_id = other.network_id;
+        }
+        if !other.bootstrap.is_empty() {
+            self.bootstrap = other.bootstrap.clone();
+        }
+        if !other.bootstrap_addrs.is_empty() {
+            self.bootstrap_addrs = other.bootstrap_addrs.clone();
+        }
+        if other.bind_port.is_some() {
+            self.bind_port = other.bind_port;
+        }
+    }
 }

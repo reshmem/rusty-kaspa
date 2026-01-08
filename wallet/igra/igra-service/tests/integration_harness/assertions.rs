@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use igra_core::model::RequestDecision;
 use igra_core::storage::Storage;
 use igra_core::types::RequestId;

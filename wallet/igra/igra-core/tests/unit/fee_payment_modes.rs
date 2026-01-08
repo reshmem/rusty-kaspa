@@ -82,7 +82,7 @@ async fn fee_split() {
     let addr = Address::constructor(address);
     let rpc = build_rpc(2000, &addr);
     let mut config = base_config(address);
-    config.fee_payment_mode = FeePaymentMode::Split { recipient_portion: 0.5 };
+    config.fee_payment_mode = FeePaymentMode::Split { recipient_parts: 1, signer_parts: 1 };
     let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt");
     assert_eq!(pskt.outputs[0].amount, 950);
     assert_eq!(pskt.outputs[1].amount, 1000);

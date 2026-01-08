@@ -40,9 +40,9 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
     match value {
         Some(bytes) => {
             let json_value: serde_json::Value =
-                serde_json::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+                serde_json::from_slice(&bytes)?;
             let legacy_mnemonics = extract_legacy_mnemonics(&json_value);
-            let mut config: AppConfig = serde_json::from_value(json_value).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let mut config: AppConfig = serde_json::from_value(json_value)?;
 
             if let Some(mnemonics) = legacy_mnemonics {
                 if !mnemonics.is_empty() {
@@ -72,7 +72,7 @@ pub fn store_config_in_db(data_dir: &Path, config: &AppConfig) -> Result<(), Thr
         std::fs::create_dir_all(parent).map_err(|err| ThresholdError::Message(err.to_string()))?;
     }
     let db = open_config_db(&db_path, true)?;
-    let bytes = serde_json::to_vec_pretty(config).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(config)?;
     db.put(CONFIG_KEY, bytes).map_err(|err| ThresholdError::Message(err.to_string()))
 }
 

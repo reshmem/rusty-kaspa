@@ -98,8 +98,12 @@ impl ConfiguredIsm {
         if validators.is_empty() {
             return Err(ThresholdError::ConfigError(format!("hyperlane domain {} has no validators", cfg.domain)));
         }
-        let threshold = if cfg.threshold == 0 { validators.len() as u8 } else { cfg.threshold };
-        if threshold as usize > validators.len() {
+        let threshold = if cfg.threshold == 0 {
+            u8::try_from(validators.len()).unwrap_or(u8::MAX)
+        } else {
+            cfg.threshold
+        };
+        if usize::from(threshold) > validators.len() {
             return Err(ThresholdError::ConfigError(format!(
                 "hyperlane domain {} threshold {} exceeds validator count {}",
                 cfg.domain,
@@ -144,7 +148,12 @@ impl IsmVerifier for ConfiguredIsm {
                 return Err("merkle proof leaf != message_id".to_string());
             }
             let depth = proof.path.len();
-            if proof.index != metadata.checkpoint.index as usize {
+            let checkpoint_index: usize = metadata
+                .checkpoint
+                .index
+                .try_into()
+                .map_err(|_| "checkpoint index too large".to_string())?;
+            if proof.index != checkpoint_index {
                 return Err("merkle proof index mismatch checkpoint index".to_string());
             }
             if !hyperlane_core::accumulator::merkle::verify_merkle_proof(
@@ -199,7 +208,8 @@ fn recover_validator(secp: &Secp256k1<secp256k1::VerifyOnly>, sig: &Signature, m
         0 | 1 => rec_id_raw,
         _ => return Err("invalid recovery id".to_string()),
     };
-    let rid = secp256k1::ecdsa::RecoveryId::from_i32(rec_id as i32).map_err(|e| format!("recovery id: {e}"))?;
+    let rid_i32: i32 = rec_id.try_into().map_err(|_| "recovery id out of range".to_string())?;
+    let rid = secp256k1::ecdsa::RecoveryId::from_i32(rid_i32).map_err(|e| format!("recovery id: {e}"))?;
     let rec_sig = RecoverableSignature::from_compact(&sig_bytes[0..64], rid).map_err(|e| format!("signature parse: {e}"))?;
     secp.recover_ecdsa(msg, &rec_sig).map_err(|e| format!("recover: {e}"))
 }

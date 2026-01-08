@@ -2,7 +2,7 @@ use crate::service::flow::ServiceFlow;
 use igra_core::audit::{audit, AuditEvent};
 use igra_core::coordination::hashes::event_hash;
 use igra_core::coordination::monitoring::TransactionMonitor;
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::coordination::threshold::has_threshold;
 use igra_core::error::ThresholdError;
 use igra_core::hd::{derive_keypair_from_key_data, derive_pubkeys, HdInputs};
@@ -22,6 +22,7 @@ use secp256k1::PublicKey;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 pub async fn run_coordination_loop(
     app_config: Arc<igra_core::config::AppConfig>,
@@ -39,11 +40,18 @@ pub async fn run_coordination_loop(
     let layerzero_validators = parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
     let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, layerzero_validators));
 
+    info!(
+        group_id = %hex::encode(group_id),
+        peer_id = %local_peer_id,
+        network_id = app_config.iroh.network_id,
+        "coordination loop started"
+    );
+
     while let Some(item) = subscription.next().await {
         let envelope = match item {
             Ok(envelope) => envelope,
             Err(err) => {
-                tracing::warn!(error = %err, "proposal stream error");
+                warn!(error = %err, "proposal stream error");
                 continue;
             }
         };
@@ -56,29 +64,72 @@ pub async fn run_coordination_loop(
         metrics.inc_session_stage("proposal_received");
         let signer_pskt = pskt_multisig::deserialize_pskt_signer(&proposal.kpsbt_blob)?;
         let tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
+        info!(
+            session_id = %hex::encode(session_id.as_hash()),
+            request_id = %proposal.request_id,
+            event_id = %proposal.signing_event.event_id,
+            input_count = signer_pskt.inputs.len(),
+            expire_at_ns = proposal.expires_at_nanos,
+            "received proposal"
+        );
+        debug!(
+            session_id = %hex::encode(session_id.as_hash()),
+            request_id = %proposal.request_id,
+            validation_hash = %hex::encode(proposal.validation_hash),
+            coordinator_peer_id = %proposal.coordinator_peer_id,
+            tx_template_hash = %hex::encode(tx_template_hash),
+            "proposal details"
+        );
 
-        let ack = match signer.validate_proposal(
-            &proposal.request_id,
+        let validation_request = match ProposalValidationRequestBuilder::new(
+            proposal.request_id.clone(),
             session_id,
             proposal.signing_event.clone(),
-            proposal.event_hash,
-            &proposal.kpsbt_blob,
-            tx_template_hash,
-            proposal.validation_hash,
-            proposal.coordinator_peer_id.clone(),
-            proposal.expires_at_nanos,
-            Some(&app_config.policy),
-            Some(message_verifier.as_ref()),
-        ) {
-            Ok(ack) => ack,
+        )
+        .expected_event_hash(proposal.event_hash)
+        .kpsbt_blob(&proposal.kpsbt_blob)
+        .tx_template_hash(tx_template_hash)
+        .expected_validation_hash(proposal.validation_hash)
+        .coordinator_peer_id(proposal.coordinator_peer_id.clone())
+        .expires_at_nanos(proposal.expires_at_nanos)
+        .policy(Some(&app_config.policy))
+        .message_verifier(Some(message_verifier.clone()))
+        .build()
+        {
+            Ok(req) => req,
             Err(err) => {
-                tracing::warn!(error = %err, "proposal validation error");
+                warn!(
+                    session_id = %hex::encode(session_id.as_hash()),
+                    request_id = %proposal.request_id,
+                    error = %err,
+                    "failed to build validation request"
+                );
                 continue;
             }
         };
 
+        let ack = match signer.validate_proposal(validation_request) {
+            Ok(ack) => ack,
+            Err(err) => {
+                warn!(
+                    session_id = %hex::encode(session_id.as_hash()),
+                    request_id = %proposal.request_id,
+                    error = %err,
+                    "proposal validation error"
+                );
+                continue;
+            }
+        };
+
+        info!(
+            session_id = %hex::encode(session_id.as_hash()),
+            request_id = %ack.request_id,
+            accept = ack.accept,
+            reason = ?ack.reason,
+            "sending signer ack"
+        );
         if let Err(err) = signer.submit_ack(session_id, ack.clone(), local_peer_id.clone()).await {
-            tracing::warn!(error = %err, "failed to submit ack");
+            warn!(error = %err, "failed to submit ack");
         }
         metrics.inc_signer_ack(ack.accept);
 
@@ -88,13 +139,29 @@ pub async fn run_coordination_loop(
                     if let Err(err) =
                         signer.sign_and_submit_backend(session_id, &proposal.request_id, &proposal.kpsbt_blob, backend.as_ref()).await
                     {
-                        tracing::warn!(error = %err, "failed to submit partial sigs");
+                        warn!(
+                            session_id = %hex::encode(session_id.as_hash()),
+                            request_id = %proposal.request_id,
+                            error = %err,
+                            "failed to submit partial sigs"
+                        );
                     }
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "signing backend unavailable");
+                    warn!(
+                        session_id = %hex::encode(session_id.as_hash()),
+                        request_id = %proposal.request_id,
+                        error = %err,
+                        "signing backend unavailable"
+                    );
                 }
             }
+        } else {
+            debug!(
+                session_id = %hex::encode(session_id.as_hash()),
+                request_id = %proposal.request_id,
+                "proposal rejected by local policy"
+            );
         }
 
         if envelope.sender_peer_id == local_peer_id {
@@ -107,12 +174,29 @@ pub async fn run_coordination_loop(
             let signing_event = proposal.signing_event.clone();
             tokio::spawn(async move {
                 if !mark_session_active(&active, session_id).await {
+                    debug!(
+                        session_id = %hex::encode(session_id.as_hash()),
+                        "session already active, skipping finalize task"
+                    );
                     return;
                 }
-                if let Err(err) =
-                    collect_and_finalize(app_config, flow, transport, storage, session_id, request_id, signing_event).await
+                if let Err(err) = collect_and_finalize(
+                    app_config,
+                    flow,
+                    transport,
+                    storage,
+                    session_id,
+                    request_id.clone(),
+                    signing_event,
+                )
+                .await
                 {
-                    tracing::warn!(error = %err, "collect/finalize error");
+                    warn!(
+                        session_id = %hex::encode(session_id.as_hash()),
+                        request_id = %request_id,
+                        error = %err,
+                        "collect/finalize error"
+                    );
                 }
                 clear_session_active(&active, session_id).await;
             });
@@ -147,11 +231,12 @@ pub async fn collect_and_finalize(
 ) -> Result<(), ThresholdError> {
     if let Some(request) = storage.get_request(&request_id)? {
         if matches!(request.decision, RequestDecision::Finalized) {
+            debug!(request_id = %request_id, "ignoring finalize for already finalized request");
             return Ok(());
         }
     }
 
-    let required = app_config.service.pskt.sig_op_count as usize;
+    let required = usize::from(app_config.service.pskt.sig_op_count);
     if required == 0 {
         return Err(ThresholdError::ConfigError("sig_op_count must be > 0".to_string()));
     }
@@ -159,6 +244,13 @@ pub async fn collect_and_finalize(
     let proposal = storage.get_proposal(&request_id)?.ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
     let pskt = pskt_multisig::deserialize_pskt_signer(&proposal.kpsbt_blob)?;
     let input_count = pskt.inputs.len();
+    info!(
+        session_id = %hex::encode(session_id.as_hash()),
+        request_id = %request_id,
+        required_signatures = required,
+        input_count,
+        "collecting partial signatures"
+    );
 
     let mut last_partial_len = 0usize;
     if has_threshold(&storage.list_partial_sigs(&request_id)?, input_count, required) {
@@ -195,17 +287,30 @@ pub async fn collect_and_finalize(
                 }
             }
             Ok(Some(Err(err))) => {
-                tracing::warn!(error = %err, "session stream error");
+                warn!(
+                    session_id = %hex::encode(session_id.as_hash()),
+                    request_id = %request_id,
+                    error = %err,
+                    "session stream error"
+                );
             }
             Ok(None) => break,
             Err(_) => break,
         }
 
         let partials = storage.list_partial_sigs(&request_id)?;
-        if partials.len() == last_partial_len {
+        if partials.len() != last_partial_len {
+            info!(
+                session_id = %hex::encode(session_id.as_hash()),
+                request_id = %request_id,
+                collected = partials.len(),
+                required = required,
+                "partial signatures updated"
+            );
+            last_partial_len = partials.len();
+        } else {
             continue;
         }
-        last_partial_len = partials.len();
         if has_threshold(&partials, input_count, required) {
             return finalize_with_partials(
                 &app_config,
@@ -230,6 +335,14 @@ pub async fn collect_and_finalize(
         duration_seconds: app_config.runtime.session_timeout_seconds,
         timestamp_ns: igra_core::audit::now_nanos(),
     });
+    warn!(
+        session_id = %hex::encode(session_id.as_hash()),
+        request_id = %request_id,
+        collected = last_partial_len,
+        required = required,
+        timeout_secs = app_config.runtime.session_timeout_seconds,
+        "session timed out without threshold"
+    );
     flow.lifecycle().on_failed(&request_id, "session_timeout");
 
     Ok(())
@@ -255,6 +368,14 @@ async fn finalize_with_partials(
     let final_tx_id = TransactionId::from(tx_id);
     flow.lifecycle().on_finalized(request_id, &final_tx_id);
     flow.metrics().inc_session_stage("finalized");
+    info!(
+        session_id = %hex::encode(session_id.as_hash()),
+        request_id = %request_id,
+        signatures = partials.len(),
+        required = required,
+        tx_id = %tx_id,
+        "finalized transaction with threshold signatures"
+    );
     let event_hash = event_hash(signing_event)?;
     audit(AuditEvent::TransactionFinalized {
         request_id: request_id.to_string(),
@@ -286,10 +407,16 @@ async fn finalize_with_partials(
                         let monitor = TransactionMonitor::new(Arc::new(rpc), confirmations, Duration::from_secs(5));
                         if let Ok(score) = monitor.monitor_until_confirmed(accepted_blue_score).await {
                             let _ = storage.update_request_final_tx_score(&request_id, score);
+                            info!(
+                                request_id = %request_id,
+                                confirmations = confirmations,
+                                blue_score = score,
+                                "transaction reached confirmation threshold"
+                            );
                         }
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, "monitor rpc connect failed");
+                        warn!(error = %err, "monitor rpc connect failed");
                     }
                 }
             });

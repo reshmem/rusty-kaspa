@@ -160,7 +160,7 @@ pub fn audit(event: AuditEvent) {
 }
 
 pub fn now_nanos() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+    current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
 }
 
 #[macro_export]
@@ -189,3 +189,4 @@ macro_rules! audit_policy_enforced {
         })
     };
 }
+use crate::util::time::current_timestamp_nanos_env;

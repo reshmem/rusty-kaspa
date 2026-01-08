@@ -158,7 +158,7 @@ async fn run_test_pskt_mode(app_config: &igra_core::config::AppConfig, _flow: &S
     test_pskt_config.outputs = test_outputs;
 
     let pskt = igra_service::service::build_pskt_via_rpc(&test_pskt_config).await?;
-    let json = serde_json::to_string_pretty(&pskt).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let json = serde_json::to_string_pretty(&pskt)?;
     println!("{}", json);
     Ok(())
 }

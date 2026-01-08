@@ -1,5 +1,7 @@
 use crate::error::ThresholdError;
-use crate::model::RequestDecision;
+use crate::model::{Hash32, RequestDecision, SigningRequest};
+use crate::types::{PeerId, RequestId, SessionId, TransactionId};
+use std::marker::PhantomData;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum DecisionState {
@@ -50,6 +52,112 @@ pub fn is_terminal(decision: &RequestDecision) -> bool {
         decision,
         RequestDecision::Finalized | RequestDecision::Rejected { .. } | RequestDecision::Expired | RequestDecision::Aborted { .. }
     )
+}
+
+// Typestate wrappers for SigningRequest lifecycle
+pub struct Pending;
+pub struct Approved;
+pub struct Finalized;
+pub struct Rejected;
+pub struct Expired;
+pub struct Aborted;
+
+#[derive(Clone, Debug)]
+pub struct TypedSigningRequest<State> {
+    inner: SigningRequest,
+    _state: PhantomData<State>,
+}
+
+impl TypedSigningRequest<Pending> {
+    pub fn new(
+        request_id: RequestId,
+        session_id: SessionId,
+        event_hash: Hash32,
+        coordinator_peer_id: PeerId,
+        tx_template_hash: Hash32,
+        validation_hash: Hash32,
+        expires_at_nanos: u64,
+    ) -> Self {
+        let inner = SigningRequest {
+            request_id,
+            session_id,
+            event_hash,
+            coordinator_peer_id,
+            tx_template_hash,
+            validation_hash,
+            decision: RequestDecision::Pending,
+            expires_at_nanos,
+            final_tx_id: None,
+            final_tx_accepted_blue_score: None,
+        };
+        Self { inner, _state: PhantomData }
+    }
+
+    pub fn approve(self) -> Result<TypedSigningRequest<Approved>, ThresholdError> {
+        transition(self.inner, RequestDecision::Approved)
+    }
+
+    pub fn reject(self, reason: String) -> Result<TypedSigningRequest<Rejected>, ThresholdError> {
+        transition(self.inner, RequestDecision::Rejected { reason })
+    }
+
+    pub fn expire(self) -> Result<TypedSigningRequest<Expired>, ThresholdError> {
+        transition(self.inner, RequestDecision::Expired)
+    }
+
+    pub fn finalize(
+        self,
+        tx_id: TransactionId,
+        accepted_blue_score: Option<u64>,
+    ) -> Result<TypedSigningRequest<Finalized>, ThresholdError> {
+        transition_with_tx(self.inner, RequestDecision::Finalized, Some(tx_id), accepted_blue_score)
+    }
+}
+
+impl TypedSigningRequest<Approved> {
+    pub fn finalize(
+        self,
+        tx_id: TransactionId,
+        accepted_blue_score: Option<u64>,
+    ) -> Result<TypedSigningRequest<Finalized>, ThresholdError> {
+        transition_with_tx(self.inner, RequestDecision::Finalized, Some(tx_id), accepted_blue_score)
+    }
+
+    pub fn abort(self, reason: String) -> Result<TypedSigningRequest<Aborted>, ThresholdError> {
+        transition(self.inner, RequestDecision::Aborted { reason })
+    }
+}
+
+impl<State> TypedSigningRequest<State> {
+    pub fn into_inner(self) -> SigningRequest {
+        self.inner
+    }
+
+    pub fn as_inner(&self) -> &SigningRequest {
+        &self.inner
+    }
+}
+
+fn transition<TargetState>(
+    mut inner: SigningRequest,
+    next: RequestDecision,
+) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
+    validate_transition(&inner.decision, &next)?;
+    inner.decision = next;
+    Ok(TypedSigningRequest { inner, _state: PhantomData })
+}
+
+fn transition_with_tx<TargetState>(
+    mut inner: SigningRequest,
+    next: RequestDecision,
+    tx_id: Option<TransactionId>,
+    accepted_blue_score: Option<u64>,
+) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
+    validate_transition(&inner.decision, &next)?;
+    inner.decision = next;
+    inner.final_tx_id = tx_id;
+    inner.final_tx_accepted_blue_score = accepted_blue_score;
+    Ok(TypedSigningRequest { inner, _state: PhantomData })
 }
 
 #[cfg(test)]

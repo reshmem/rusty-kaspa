@@ -1,4 +1,7 @@
 use thiserror::Error;
+use std::fmt;
+use std::io;
+use secp256k1::Error as SecpError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
@@ -28,6 +31,10 @@ pub enum ErrorCode {
     NodeRpcError,
     NodeNotSynced,
     Unimplemented,
+    InvalidInputIndex,
+    MessageTooLarge,
+    EncodingError,
+    NetworkError,
     Message,
 }
 
@@ -117,9 +124,23 @@ pub enum ThresholdError {
     #[error("feature not implemented: {0}")]
     Unimplemented(String),
 
+    #[error("invalid input index: {index} (max {max})")]
+    InvalidInputIndex { index: u32, max: u32 },
+
+    #[error("message too large: {size} exceeds max {max}")]
+    MessageTooLarge { size: usize, max: usize },
+
+    #[error("encoding error: {0}")]
+    EncodingError(String),
+
+    #[error("network error: {0}")]
+    NetworkError(String),
+
     #[error("{0}")]
     Message(String),
 }
+
+pub type Result<T> = std::result::Result<T, ThresholdError>;
 
 impl ThresholdError {
     pub fn code(&self) -> ErrorCode {
@@ -150,11 +171,74 @@ impl ThresholdError {
             ThresholdError::NodeRpcError(_) => ErrorCode::NodeRpcError,
             ThresholdError::NodeNotSynced => ErrorCode::NodeNotSynced,
             ThresholdError::Unimplemented(_) => ErrorCode::Unimplemented,
+            ThresholdError::InvalidInputIndex { .. } => ErrorCode::InvalidInputIndex,
+            ThresholdError::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
+            ThresholdError::EncodingError(_) => ErrorCode::EncodingError,
+            ThresholdError::NetworkError(_) => ErrorCode::NetworkError,
             ThresholdError::Message(_) => ErrorCode::Message,
         }
     }
 
     pub fn context(&self) -> ErrorContext {
         ErrorContext { code: self.code(), message: self.to_string() }
+    }
+}
+
+impl From<hex::FromHexError> for ThresholdError {
+    fn from(err: hex::FromHexError) -> Self {
+        ThresholdError::Message(format!("hex decode error: {}", err))
+    }
+}
+
+impl From<toml::de::Error> for ThresholdError {
+    fn from(err: toml::de::Error) -> Self {
+        ThresholdError::ConfigError(format!("TOML parsing error: {}", err))
+    }
+}
+
+impl From<rocksdb::Error> for ThresholdError {
+    fn from(err: rocksdb::Error) -> Self {
+        ThresholdError::StorageError(err.to_string())
+    }
+}
+
+impl From<bincode::Error> for ThresholdError {
+    fn from(err: bincode::Error) -> Self {
+        ThresholdError::StorageError(format!("serialization error: {}", err))
+    }
+}
+
+impl From<io::Error> for ThresholdError {
+    fn from(err: io::Error) -> Self {
+        ThresholdError::Message(format!("IO error: {}", err))
+    }
+}
+
+impl From<serde_json::Error> for ThresholdError {
+    fn from(err: serde_json::Error) -> Self {
+        ThresholdError::Message(format!("JSON error: {}", err))
+    }
+}
+
+impl From<kaspa_addresses::AddressError> for ThresholdError {
+    fn from(err: kaspa_addresses::AddressError) -> Self {
+        ThresholdError::Message(format!("address error: {}", err))
+    }
+}
+
+impl From<SecpError> for ThresholdError {
+    fn from(err: SecpError) -> Self {
+        ThresholdError::Message(format!("secp256k1 error: {}", err))
+    }
+}
+
+
+pub trait IntoThresholdError {
+    fn into_threshold_error(self) -> ThresholdError;
+}
+
+impl<E: fmt::Display> IntoThresholdError for E {
+    fn into_threshold_error(self) -> ThresholdError {
+        ThresholdError::Message(self.to_string())
     }
 }

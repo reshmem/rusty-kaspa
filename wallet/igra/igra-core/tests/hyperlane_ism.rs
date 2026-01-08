@@ -1,25 +1,25 @@
 #![cfg(feature = "hyperlane")]
 
-use hyperlane_core::accumulator::merkle::merkle_root_from_branch;
-use hyperlane_core::types::{checkpoint::Checkpoint, HyperlaneMessage, H256, U256};
+use hyperlane_core::accumulator::merkle::{merkle_root_from_branch, Proof};
+use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, Signature, H256, U256};
 use igra_core::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode};
-use igra_core::hyperlane::ism::{ConfiguredIsm, IsmMode, ProofMetadata};
+use igra_core::hyperlane::ism::{ConfiguredIsm, IsmMode, IsmVerifier, ProofMetadata};
 use secp256k1::{rand::rngs::OsRng, Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
 
 fn pk_hex(pk: &PublicKey) -> String {
     format!("{}", hex::encode(pk.serialize()))
 }
 
-fn make_sig(hash: H256, sk: &SecretKey) -> hyperlane_core::types::Signature {
+fn make_sig(hash: H256, sk: &SecretKey) -> Signature {
     let secp = Secp256k1::new();
-    let msg = SecpMessage::from_slice(hash.as_ref()).expect("msg");
+    let msg = SecpMessage::from_digest_slice(hash.as_ref()).expect("msg");
     let rec = secp.sign_ecdsa_recoverable(&msg, sk);
-    let (bytes, rec_id) = rec.serialize_compact();
+    let (rec_id, bytes) = rec.serialize_compact();
     let mut r = [0u8; 32];
     r.copy_from_slice(&bytes[0..32]);
     let mut s = [0u8; 32];
     s.copy_from_slice(&bytes[32..64]);
-    hyperlane_core::types::Signature {
+    Signature {
         r: U256::from_big_endian(&r),
         s: U256::from_big_endian(&s),
         v: rec_id.to_i32() as u64, // 0/1 form (mapped to 27/28 in verifier)
@@ -64,7 +64,7 @@ fn message_id_multisig_succeeds() {
         root: H256::from_low_u64_be(123),
         index: 0,
     };
-    let cp_with_msg = hyperlane_core::types::checkpoint::CheckpointWithMessageId { checkpoint, message_id: message.id() };
+    let cp_with_msg = CheckpointWithMessageId { checkpoint, message_id: message.id() };
     let signing_hash = cp_with_msg.signing_hash();
 
     let sig1 = make_sig(signing_hash, &sk1);
@@ -96,7 +96,7 @@ fn message_id_multisig_insufficient_quorum() {
         root: H256::from_low_u64_be(123),
         index: 0,
     };
-    let cp_with_msg = hyperlane_core::types::checkpoint::CheckpointWithMessageId { checkpoint, message_id: message.id() };
+    let cp_with_msg = CheckpointWithMessageId { checkpoint, message_id: message.id() };
     let signing_hash = cp_with_msg.signing_hash();
 
     let sig1 = make_sig(signing_hash, &sk1);
@@ -119,11 +119,11 @@ fn merkle_root_multisig_succeeds() {
 
     let message = make_message();
     let leaf = message.id();
-    let mut path = [H256::zero(); 32];
+    let path = [H256::zero(); 32];
     // simple path with zeros; compute root accordingly
     let root = merkle_root_from_branch(leaf, &path, path.len(), 0);
     let checkpoint = Checkpoint { merkle_tree_hook_address: H256::zero(), mailbox_domain: message.origin, root, index: 0 };
-    let cp_with_msg = hyperlane_core::types::checkpoint::CheckpointWithMessageId { checkpoint, message_id: leaf };
+    let cp_with_msg = CheckpointWithMessageId { checkpoint, message_id: leaf };
     let signing_hash = cp_with_msg.signing_hash();
 
     let sig1 = make_sig(signing_hash, &sk1);
@@ -131,7 +131,7 @@ fn merkle_root_multisig_succeeds() {
 
     let meta = ProofMetadata {
         checkpoint: cp_with_msg,
-        merkle_proof: Some(hyperlane_core::accumulator::merkle::Proof { leaf, index: 0, path }),
+        merkle_proof: Some(Proof { leaf, index: 0, path }),
         signatures: vec![sig1, sig2],
     };
 
@@ -148,7 +148,12 @@ fn legacy_flat_validators_require_threshold() {
     let sk2 = SecretKey::new(&mut OsRng);
     let pks = vec![PublicKey::from_secret_key(&secp, &sk1), PublicKey::from_secret_key(&secp, &sk2)];
 
-    let cfg = HyperlaneConfig { validators: pks.iter().map(pk_hex).collect(), threshold: Some(2), ..Default::default() };
+    let cfg = HyperlaneConfig {
+        validators: pks.iter().map(pk_hex).collect(),
+        threshold: Some(2),
+        domains: vec![domain_cfg(0, &pks, 2, HyperlaneIsmMode::MessageIdMultisig)],
+        ..Default::default()
+    };
     let ism = ConfiguredIsm::from_config(&cfg).expect("config ok");
     let set = ism.validators_and_threshold(0, H256::zero()).expect("set");
     assert_eq!(set.domain, 0);

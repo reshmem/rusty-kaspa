@@ -1,5 +1,6 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Token bucket rate limiter implementation
@@ -84,7 +85,9 @@ impl RateLimiter {
     /// Check if a request from the given peer is allowed
     /// Returns true if allowed, false if rate limited
     pub fn check_rate_limit(&self, peer_id: &str) -> bool {
-        let mut limiters = self.limiters.lock().unwrap_or_else(|err| err.into_inner());
+        let mut limiters = match self.limiters.lock() {
+            guard => guard,
+        };
         let bucket = limiters.entry(peer_id.to_string()).or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
         bucket.try_consume()
     }
@@ -92,7 +95,9 @@ impl RateLimiter {
     /// Check if a request with custom token cost is allowed
     /// Useful for size-based rate limiting (e.g., bytes / 1024 tokens)
     pub fn check_rate_limit_tokens(&self, peer_id: &str, tokens: f64) -> bool {
-        let mut limiters = self.limiters.lock().unwrap_or_else(|err| err.into_inner());
+        let mut limiters = match self.limiters.lock() {
+            guard => guard,
+        };
         let bucket = limiters.entry(peer_id.to_string()).or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
         bucket.try_consume_tokens(tokens)
     }
@@ -100,14 +105,16 @@ impl RateLimiter {
     /// Remove old entries to prevent unbounded growth
     /// Call periodically from a cleanup task
     pub fn cleanup_old_entries(&self, max_age: Duration) {
-        let mut limiters = self.limiters.lock().unwrap_or_else(|err| err.into_inner());
+        let mut limiters = match self.limiters.lock() {
+            guard => guard,
+        };
         let cutoff = Instant::now() - max_age;
         limiters.retain(|_, bucket| bucket.last_refill > cutoff);
     }
 
     /// Get the number of tracked peers (for monitoring)
     pub fn peer_count(&self) -> usize {
-        self.limiters.lock().unwrap_or_else(|err| err.into_inner()).len()
+        self.limiters.lock().len()
     }
 }
 

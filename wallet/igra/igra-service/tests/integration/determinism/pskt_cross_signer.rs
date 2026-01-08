@@ -74,7 +74,11 @@ async fn test_pskt_determinism_across_signers() {
     let event = build_event(&recipient_address.to_string(), 10_000_000_000);
     let ev_hash = event_hash(&event).expect("event hash");
 
-    let fee_modes = [FeePaymentMode::RecipientPays, FeePaymentMode::SignersPay, FeePaymentMode::Split { recipient_portion: 0.5 }];
+    let fee_modes = [
+        FeePaymentMode::RecipientPays,
+        FeePaymentMode::SignersPay,
+        FeePaymentMode::Split { recipient_parts: 1, signer_parts: 1 },
+    ];
 
     for mode in fee_modes {
         let config = build_config(

@@ -60,7 +60,7 @@ struct AuditPartialSig {
 pub fn dump_audit_trail(request_id: &str, storage: &RocksStorage) -> Result<(), ThresholdError> {
     tracing::info!("Audit mode: dumping trail for {}", request_id);
     let report = build_audit_report(storage, &RequestId::from(request_id))?;
-    let json = serde_json::to_string_pretty(&report).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let json = serde_json::to_string_pretty(&report)?;
     println!("{}", json);
     Ok(())
 }
