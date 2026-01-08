@@ -22,8 +22,10 @@ hex.workspace = true
 kaspa-addresses.workspace = true
 kaspa-bip32.workspace = true
 kaspa-consensus-core.workspace = true
+kaspa-core.workspace = true
 kaspa-grpc-client.workspace = true
 kaspa-rpc-core.workspace = true
+kaspa-notify.workspace = true
 kaspa-txscript.workspace = true
 kaspa-wallet-core.workspace = true
 kaspa-wallet-pskt.workspace = true
@@ -55,3 +57,7 @@ layerzero = []
 [[bin]]
 name = "devnet-keygen"
 path = "src/bin/devnet-keygen.rs"
+
+[[bin]]
+name = "devnet-balance"
+path = "src/bin/devnet-balance.rs"

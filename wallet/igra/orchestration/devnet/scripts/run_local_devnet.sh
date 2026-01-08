@@ -196,22 +196,7 @@ fi
 # and ensure cargo uses our resolved target dir for all child commands.
 export CARGO_TARGET_DIR="${TARGET_DIR}"
 
-load_env() {
-  while IFS='=' read -r key value; do
-    [[ -z "${key}" || "${key}" =~ ^[[:space:]]*# ]] && continue
-
-    # Trim whitespace
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-
-    # Strip surrounding quotes
-    if [[ "${value}" =~ ^\"(.*)\"$ ]] || [[ "${value}" =~ ^\'(.*)\'$ ]]; then
-      value="${BASH_REMATCH[1]}"
-    fi
-
-    export "${key}=${value}"
-  done < "${ENV_FILE}"
-}
+load_env() { :; } # no-op; repo/ref and keys are hardcoded/auto-generated now
 
 require_cmd python3 "required for key generation and config rewriting" "brew install python3 or apt install python3"
 if ! python3 - <<'PY' 2>/dev/null; then
@@ -234,6 +219,8 @@ FAKE_HYPERLANE_PATH="${HYPERLANE_DERIVATION_PATH:-m/45h/111111h/0h/0/0}"
 PROCESS_STOP_TIMEOUT="${PROCESS_STOP_TIMEOUT:-10}"
 KASPAD_STARTUP_TIMEOUT="${KASPAD_STARTUP_TIMEOUT:-30}"
 IGRA_STARTUP_TIMEOUT="${IGRA_STARTUP_TIMEOUT:-20}"
+WRPC_BORSH_PORT="${WRPC_BORSH_PORT:-17110}"
+WRPC_JSON_PORT="${WRPC_JSON_PORT:-17111}"
 
 resolve_bin() {
   local name="$1"
@@ -306,14 +293,17 @@ build_rusty_repo() {
   local repo_path="$1"
   log_info "Building kaspa binaries from ${repo_path}..."
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
+    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p kaspa-cli -p kaspa-wallet -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
   else
     # Clear RUSTC_WRAPPER to avoid sccache/wrappers interfering with target dir
     if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
       cargo build --release --locked \
         -p kaspad \
-        -p rothschild); then
-      log_error "Failed to build kaspad and rothschild from ${repo_path}"
+        -p rothschild \
+        -p kaspa-cli \
+        -p kaspa-wallet \
+        -p igra-core --bin devnet-balance); then
+      log_error "Failed to build kaspad/rothschild/kaspa-cli/kaspa-wallet/devnet-balance from ${repo_path}"
       exit 1
     fi
 
@@ -324,7 +314,7 @@ build_rusty_repo() {
       exit 1
     fi
 
-    for binary in kaspad rothschild kaspa-threshold-service fake_hyperlane_ism_api; do
+    for binary in kaspad rothschild kaspa-cli kaspa-wallet devnet-balance kaspa-threshold-service fake_hyperlane_ism_api; do
       if [[ ! -x "${TARGET_DIR}/release/${binary}" ]]; then
         log_error "${binary} not found after build (expected at ${TARGET_DIR}/release/${binary})"
         exit 1
@@ -364,7 +354,7 @@ build_miner_repo() {
   fi
 }
 
-required_bins=(kaspad rothschild kaspa-threshold-service fake_hyperlane_ism_api devnet-keygen kaspa-miner)
+required_bins=(kaspad rothschild kaspa-cli kaspa-wallet kaspa-threshold-service fake_hyperlane_ism_api devnet-keygen kaspa-miner)
 
 have_all_binaries() {
   for bin in "${required_bins[@]}"; do
@@ -400,6 +390,8 @@ prepare_sources() {
       build_miner_repo "${MINER_SRC}"
       DEFAULT_KASPAD_BIN="${TARGET_DIR}/release/kaspad"
       DEFAULT_ROTHSCHILD_BIN="${TARGET_DIR}/release/rothschild"
+      DEFAULT_KASPA_CLI_BIN="${TARGET_DIR}/release/kaspa-cli"
+      DEFAULT_KASPA_WALLET_BIN="${TARGET_DIR}/release/kaspa-wallet"
       DEFAULT_IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
       DEFAULT_FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
       DEFAULT_MINER_BIN="${TARGET_DIR}/release/kaspa-miner"
@@ -413,6 +405,8 @@ prepare_sources() {
       build_rusty_repo "${local_rusty}"
       DEFAULT_KASPAD_BIN="${TARGET_DIR}/release/kaspad"
       DEFAULT_ROTHSCHILD_BIN="${TARGET_DIR}/release/rothschild"
+       DEFAULT_KASPA_CLI_BIN="${TARGET_DIR}/release/kaspa-cli"
+       DEFAULT_KASPA_WALLET_BIN="${TARGET_DIR}/release/kaspa-wallet"
       DEFAULT_IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
       DEFAULT_FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
 
@@ -434,32 +428,15 @@ setup_config_source() {
   local config_source
   if [[ "${BUILD_MODE}" == "clone" ]]; then
     config_source="${RUSTY_SRC}/wallet/igra/orchestration/devnet"
-    if [[ ! -f "${config_source}/.env" ]]; then
-      log_warn "Cloned repo missing config templates at ${config_source}; falling back to local ${DEVNET_DIR}"
-      config_source="${DEVNET_DIR}"
-    fi
   else
     config_source="${DEVNET_DIR}"
   fi
 
-  ENV_FILE="${config_source}/.env"
   IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet.ini"
   HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
   KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
 
   log_info "Using config templates from: ${config_source}"
-
-  if [[ ! -f "${ENV_FILE}" ]]; then
-    log_error "Missing ${ENV_FILE}; copy .env.example or provide configs."
-    exit 1
-  fi
-
-  load_env
-
-  if [[ -z "${KASPA_MINING_ADDRESS:-}" ]]; then
-    log_error "KASPA_MINING_ADDRESS is not set; update ${ENV_FILE}."
-    exit 1
-  fi
 }
 
 resolve_binaries_from_target() {
@@ -469,6 +446,9 @@ resolve_binaries_from_target() {
   fi
   KASPAD_BIN="${TARGET_DIR}/release/kaspad"
   KASPA_MINER_BIN="${TARGET_DIR}/release/kaspa-miner"
+  KASPA_CLI_BIN="${TARGET_DIR}/release/kaspa-cli"
+  KASPA_WALLET_BIN="${TARGET_DIR}/release/kaspa-wallet"
+  DEVNET_BALANCE_BIN="${TARGET_DIR}/release/devnet-balance"
   IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
   FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
   ROTHSCHILD_BIN="${TARGET_DIR}/release/rothschild"
@@ -482,6 +462,9 @@ require_binaries_present() {
   fi
   KASPAD_BIN="${BIN_DIR}/kaspad"
   KASPA_MINER_BIN="${BIN_DIR}/kaspa-miner"
+  KASPA_CLI_BIN="${BIN_DIR}/kaspa-cli"
+  KASPA_WALLET_BIN="${BIN_DIR}/kaspa-wallet"
+  DEVNET_BALANCE_BIN="${BIN_DIR}/devnet-balance"
   IGRA_BIN="${BIN_DIR}/kaspa-threshold-service"
   FAKE_HYPERLANE_BIN="${BIN_DIR}/fake_hyperlane_ism_api"
   ROTHSCHILD_BIN="${BIN_DIR}/rothschild"
@@ -520,6 +503,9 @@ stage_binaries() {
   log_info "Staging binaries into ${BIN_DIR} (overwriting if present)"
   cp -f "${KASPAD_BIN}" "${BIN_DIR}/kaspad"
   cp -f "${KASPA_MINER_BIN}" "${BIN_DIR}/kaspa-miner"
+  cp -f "${KASPA_CLI_BIN}" "${BIN_DIR}/kaspa-cli"
+  cp -f "${KASPA_WALLET_BIN}" "${BIN_DIR}/kaspa-wallet"
+  cp -f "${DEVNET_BALANCE_BIN}" "${BIN_DIR}/devnet-balance"
   cp -f "${IGRA_BIN}" "${BIN_DIR}/kaspa-threshold-service"
   cp -f "${FAKE_HYPERLANE_BIN}" "${BIN_DIR}/fake_hyperlane_ism_api"
   cp -f "${ROTHSCHILD_BIN}" "${BIN_DIR}/rothschild"
@@ -638,10 +624,29 @@ start_kaspad() {
     --enable-unsynced-mining \
     --appdir="${KASPAD_APPDIR}" \
     --rpclisten=127.0.0.1:16110 \
+    --rpclisten-borsh=127.0.0.1:${WRPC_BORSH_PORT} \
+    --rpclisten-json=127.0.0.1:${WRPC_JSON_PORT} \
     --listen=0.0.0.0:16111
 }
 
 start_miner() {
+  # Ensure mining address aligns with current devnet-keys.json to avoid stale .env values.
+  if [[ -f "${KEYSET_JSON}" ]]; then
+    local mined_addr
+    mined_addr=$(
+      KEYSET_JSON="${KEYSET_JSON}" python3 - <<'PY'
+import json, sys
+import os
+path = os.environ.get("KEYSET_JSON")
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+print(data.get("wallet", {}).get("mining_address", ""))
+PY
+    )
+    if [[ -n "${mined_addr}" ]]; then
+      KASPA_MINING_ADDRESS="${mined_addr}"
+    fi
+  fi
   start_process "kaspaminer" \
     "${KASPA_MINER_BIN}" \
     --kaspad-address="grpc://127.0.0.1:16110" \
@@ -1026,6 +1031,7 @@ show_status() {
     local status_symbol="✗"
     local status_text="Not running"
     local pid_info=""
+    local cmdline=""
     if [[ -f "${pid_file}" ]]; then
       local pid
       pid=$(cat "${pid_file}")
@@ -1037,6 +1043,7 @@ show_status() {
           local uptime
           uptime=$(ps -p "${pid}" -o etime= 2>/dev/null | tr -d ' ')
           [[ -n "${uptime}" ]] && pid_info+=" [uptime: ${uptime}]"
+          cmdline=$(ps -ww -p "${pid}" -o args= 2>/dev/null | tr -d '\n')
         fi
       else
         status_symbol="⚠"
@@ -1044,6 +1051,9 @@ show_status() {
       fi
     fi
     printf "  %-28s %s %s%s\n" "${process}" "${status_symbol}" "${status_text}" "${pid_info}"
+    if [[ -n "${cmdline}" ]]; then
+      printf "    cmd: %s\n" "${cmdline}"
+    fi
   done
   log_info "Logs: ${LOG_DIR}"
   log_info "Data: ${RUN_ROOT}"
