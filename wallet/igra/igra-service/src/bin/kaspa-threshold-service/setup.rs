@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::str::FromStr;
 use tracing::{info, warn};
 
-use iroh_base::{EndpointAddr, EndpointId, TransportAddr};
+use iroh_base::{EndpointAddr, EndpointId, SecretKey as IrohSecretKey, TransportAddr};
 
 pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
@@ -125,8 +125,9 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
 pub async fn init_iroh_gossip(
     bind_port: Option<u16>,
     static_addrs: Vec<EndpointAddr>,
+    secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    let mut builder = iroh::Endpoint::builder();
+    let mut builder = iroh::Endpoint::builder().secret_key(secret_key);
     let static_provider = iroh::discovery::static_provider::StaticProvider::new();
     if !static_addrs.is_empty() {
         for addr in &static_addrs {
@@ -176,6 +177,11 @@ fn parse_seed_hex(value: &str) -> Result<[u8; 32], ThresholdError> {
         .try_into()
         .map_err(|_| ThresholdError::Message("expected 32-byte hex seed".to_string()))?;
     Ok(array)
+}
+
+pub fn derive_iroh_secret(seed_hex: &str) -> Result<IrohSecretKey, ThresholdError> {
+    let seed = parse_seed_hex(seed_hex)?;
+    Ok(IrohSecretKey::from(seed))
 }
 
 fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {

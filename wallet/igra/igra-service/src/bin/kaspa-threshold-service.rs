@@ -62,9 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity = setup::init_signer_identity(&app_config)?;
     let group_id = setup::resolve_group_id(&app_config)?;
     let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
+    let iroh_secret = setup::derive_iroh_secret(
+        &app_config
+            .iroh
+            .signer_seed_hex
+            .clone()
+            .unwrap_or_else(|| "".to_string()),
+    )?;
 
     let (gossip, _iroh_router) =
-        setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs).await?;
+        setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
 
     let iroh_config = IrohConfig {
         network_id: app_config.iroh.network_id,
