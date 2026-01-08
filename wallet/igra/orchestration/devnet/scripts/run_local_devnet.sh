@@ -289,7 +289,8 @@ clone_repo() {
   fi
 
   if [[ -d "${dest}/.git" ]]; then
-    log_info "Using existing clone at ${dest}"
+    log_info "Using existing clone at ${dest}; pulling latest ${ref}"
+    (cd "${dest}" && git fetch --all --prune && git checkout "${ref}" && git pull --ff-only origin "${ref}") || log_warn "git pull failed in ${dest}; continuing with existing checkout"
     return
   fi
   mkdir -p "$(dirname "${dest}")"

@@ -6,6 +6,7 @@ use crate::rpc::grpc::GrpcNodeRpc;
 use crate::rpc::NodeRpc;
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
+use tracing::info;
 
 pub async fn build_pskt_via_rpc(
     config: &PsktBuildConfig,
@@ -37,6 +38,13 @@ pub async fn build_pskt_with_client(
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
     let mut utxos = rpc.get_utxos_by_addresses(&addresses).await?;
+    let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
+    info!(
+        "pskt builder: fetched {} utxos totaling {} sompi for {:?}",
+        utxos.len(),
+        total_input,
+        addresses
+    );
 
     // Sort UTXOs deterministically to ensure all nodes build identical transactions
     // Primary sort: by transaction_id (lexicographic)
@@ -48,7 +56,6 @@ pub async fn build_pskt_with_client(
             .then(a.outpoint.index.cmp(&b.outpoint.index))
     });
 
-    let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
     apply_fee_policy(config, total_input, &mut outputs)?;
 
     let inputs = utxos

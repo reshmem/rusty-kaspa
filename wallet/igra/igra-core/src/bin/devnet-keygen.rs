@@ -2,6 +2,7 @@ use ed25519_dalek::SigningKey;
 use kaspa_addresses::Prefix;
 use kaspa_bip32::{Language, Mnemonic, WordCount};
 use kaspa_wallet_core::encryption::EncryptionKind;
+use kaspa_wallet_core::derivation::create_multisig_address;
 use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use kaspa_wallet_keys::derivation::gen1::{PubkeyDerivationManager, WalletDerivationManager};
@@ -50,6 +51,7 @@ struct Output {
     change_address: String,
     hyperlane_keys: Vec<HyperlaneKeyOut>,
     group_id: String,
+    multisig_address: String,
 }
 
 fn mnemonic_phrase() -> Mnemonic {
@@ -213,6 +215,18 @@ fn main() {
                 policy,
             };
             hex::encode(compute_group_id(&group_cfg).expect("group id"))
+        },
+        multisig_address: {
+            let keys: Vec<PublicKey> = member_pubkeys
+                .iter()
+                .map(|hex_pk| {
+                    let bytes = hex::decode(hex_pk).expect("pubkey hex decode");
+                    PublicKey::from_slice(&bytes).expect("pubkey parse")
+                })
+                .collect();
+            create_multisig_address(2, keys, Prefix::Devnet, true)
+                .expect("multisig address")
+                .to_string()
         },
     };
 

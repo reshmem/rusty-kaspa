@@ -200,6 +200,15 @@ async fn main() -> Result<(), String> {
     );
     if keys.validators.is_empty() {
         eprintln!("[fake-hyperlane] WARNING: no validators loaded from {}", keys_path);
+    } else {
+        for (idx, v) in keys.validators.iter().enumerate() {
+            eprintln!(
+                "[fake-hyperlane] validator#{} name={} pubkey={}",
+                idx + 1,
+                v.name,
+                v.public_key_hex
+            );
+        }
     }
 
     let client = Client::new();
@@ -242,8 +251,33 @@ async fn main() -> Result<(), String> {
         };
         let signatures = make_signatures(&checkpoint, &keys.validators, 2)?;
 
+        let mode = "message_id_multisig";
+        eprintln!(
+            "[fake-hyperlane] submit nonce={} mode={} amt={} sender={} dest={} sigs={}/{}",
+            nonce,
+            mode,
+            amount_sompi,
+            hex::encode(sender),
+            destination,
+            signatures.len(),
+            2
+        );
+
         if let Err(err) = submit_mailbox_process(&client, &rpc_url, &msg, &checkpoint, None, &signatures).await {
-            eprintln!("fake-hyperlane-ism submit failed: {err}");
+            eprintln!(
+                "[fake-hyperlane] submit failed rpc={} nonce={} mode={} err={}",
+                rpc_url,
+                nonce,
+                mode,
+                err
+            );
+        } else {
+            eprintln!(
+                "[fake-hyperlane] submit ok rpc={} nonce={} mode={}",
+                rpc_url,
+                nonce,
+                mode
+            );
         }
 
         sleep(Duration::from_secs(interval_secs)).await;
