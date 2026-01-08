@@ -1,15 +1,15 @@
-use crate::coordination::hashes::{event_hash, validation_hash};
 use crate::config::PsktBuildConfig;
+use crate::coordination::hashes::{event_hash, validation_hash};
 use crate::error::ThresholdError;
+use crate::kaspa_integration::build_pskt_from_rpc;
 use crate::lifecycle::{LifecycleObserver, NoopObserver};
 use crate::model::{Hash32, RequestDecision, SigningEvent, SigningRequest};
 use crate::pskt::multisig as pskt_multisig;
 use crate::rpc::NodeRpc;
-use crate::kaspa_integration::build_pskt_from_rpc;
-use kaspa_wallet_pskt::prelude::Updater;
 use crate::storage::Storage;
 use crate::transport::{ProposedSigningSession, SignerAck, Transport};
 use crate::types::{PeerId, RequestId, SessionId, TransactionId};
+use kaspa_wallet_pskt::prelude::Updater;
 use secp256k1::PublicKey;
 use std::sync::Arc;
 
@@ -21,23 +21,11 @@ pub struct Coordinator {
 
 impl Coordinator {
     pub fn new(transport: Arc<dyn Transport>, storage: Arc<dyn Storage>) -> Self {
-        Self {
-            transport,
-            storage,
-            lifecycle: Arc::new(NoopObserver),
-        }
+        Self { transport, storage, lifecycle: Arc::new(NoopObserver) }
     }
 
-    pub fn with_observer(
-        transport: Arc<dyn Transport>,
-        storage: Arc<dyn Storage>,
-        lifecycle: Arc<dyn LifecycleObserver>,
-    ) -> Self {
-        Self {
-            transport,
-            storage,
-            lifecycle,
-        }
+    pub fn with_observer(transport: Arc<dyn Transport>, storage: Arc<dyn Storage>, lifecycle: Arc<dyn LifecycleObserver>) -> Self {
+        Self { transport, storage, lifecycle }
     }
 
     pub fn set_lifecycle_observer(&mut self, observer: Arc<dyn LifecycleObserver>) {
@@ -139,15 +127,7 @@ impl Coordinator {
         coordinator_peer_id: PeerId,
     ) -> Result<Hash32, ThresholdError> {
         let pskt = build_pskt_from_rpc(rpc, pskt_config).await?;
-        self.propose_session_from_pskt(
-            session_id,
-            request_id,
-            signing_event,
-            pskt,
-            expires_at_nanos,
-            coordinator_peer_id,
-        )
-        .await
+        self.propose_session_from_pskt(session_id, request_id, signing_event, pskt, expires_at_nanos, coordinator_peer_id).await
     }
 
     pub async fn finalize_and_submit_multisig(

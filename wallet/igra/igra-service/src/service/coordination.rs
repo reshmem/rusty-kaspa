@@ -35,10 +35,8 @@ pub async fn run_coordination_loop(
     let metrics = flow.metrics();
     let active_sessions = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
     let mut subscription = transport.subscribe_group(group_id).await?;
-    let hyperlane_validators =
-        parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
-    let layerzero_validators =
-        parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
+    let hyperlane_validators = parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
+    let layerzero_validators = parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
     let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, layerzero_validators));
 
     while let Some(item) = subscription.next().await {
@@ -79,10 +77,7 @@ pub async fn run_coordination_loop(
             }
         };
 
-        if let Err(err) = signer
-            .submit_ack(session_id, ack.clone(), local_peer_id.clone())
-            .await
-        {
+        if let Err(err) = signer.submit_ack(session_id, ack.clone(), local_peer_id.clone()).await {
             tracing::warn!(error = %err, "failed to submit ack");
         }
         metrics.inc_signer_ack(ack.accept);
@@ -90,9 +85,8 @@ pub async fn run_coordination_loop(
         if ack.accept {
             match build_signer_backend(&app_config.signing, &app_config.service, &proposal.signing_event) {
                 Ok(backend) => {
-                    if let Err(err) = signer
-                        .sign_and_submit_backend(session_id, &proposal.request_id, &proposal.kpsbt_blob, backend.as_ref())
-                        .await
+                    if let Err(err) =
+                        signer.sign_and_submit_backend(session_id, &proposal.request_id, &proposal.kpsbt_blob, backend.as_ref()).await
                     {
                         tracing::warn!(error = %err, "failed to submit partial sigs");
                     }
@@ -115,16 +109,8 @@ pub async fn run_coordination_loop(
                 if !mark_session_active(&active, session_id).await {
                     return;
                 }
-                if let Err(err) = collect_and_finalize(
-                    app_config,
-                    flow,
-                    transport,
-                    storage,
-                    session_id,
-                    request_id,
-                    signing_event,
-                )
-                .await
+                if let Err(err) =
+                    collect_and_finalize(app_config, flow, transport, storage, session_id, request_id, signing_event).await
                 {
                     tracing::warn!(error = %err, "collect/finalize error");
                 }
@@ -170,9 +156,7 @@ pub async fn collect_and_finalize(
         return Err(ThresholdError::ConfigError("sig_op_count must be > 0".to_string()));
     }
 
-    let proposal = storage
-        .get_proposal(&request_id)?
-        .ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
+    let proposal = storage.get_proposal(&request_id)?.ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
     let pskt = pskt_multisig::deserialize_pskt_signer(&proposal.kpsbt_blob)?;
     let input_count = pskt.inputs.len();
 
@@ -261,17 +245,13 @@ async fn finalize_with_partials(
     signing_event: &SigningEvent,
     required: usize,
 ) -> Result<(), ThresholdError> {
-    let proposal = storage
-        .get_proposal(request_id)?
-        .ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
+    let proposal = storage.get_proposal(request_id)?.ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
     let partials = storage.list_partial_sigs(request_id)?;
     flow.lifecycle().on_threshold_met(request_id, partials.len(), required);
     let pskt = pskt_multisig::apply_partial_sigs(&proposal.kpsbt_blob, &partials)?;
     let ordered_pubkeys = derive_ordered_pubkeys(&app_config.service, signing_event)?;
     let params = params_for_network_id(app_config.iroh.network_id);
-    let tx_id = flow
-        .finalize_and_submit(request_id, pskt, required, &ordered_pubkeys, params)
-        .await?;
+    let tx_id = flow.finalize_and_submit(request_id, pskt, required, &ordered_pubkeys, params).await?;
     let final_tx_id = TransactionId::from(tx_id);
     flow.lifecycle().on_finalized(request_id, &final_tx_id);
     flow.metrics().inc_session_stage("finalized");
@@ -292,9 +272,7 @@ async fn finalize_with_partials(
         timestamp_ns: igra_core::audit::now_nanos(),
     });
     storage.update_request_final_tx_score(request_id, accepted_blue_score)?;
-    transport
-        .publish_finalize(session_id, request_id, *final_tx_id.as_hash())
-        .await?;
+    transport.publish_finalize(session_id, request_id, *final_tx_id.as_hash()).await?;
 
     if let Some(group) = app_config.group.as_ref() {
         let confirmations = group.finality_blue_score_threshold;
@@ -328,14 +306,9 @@ fn build_signer_backend(
     let kind = backend_kind_from_config(signing)?;
     match kind {
         SigningBackendKind::Threshold => {
-            let hd = config
-                .hd
-                .as_ref()
-                .ok_or_else(|| ThresholdError::ConfigError("missing HD config for signer".to_string()))?;
+            let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config for signer".to_string()))?;
             let key_data = hd.decrypt_mnemonics()?;
-            let key_data = key_data
-                .first()
-                .ok_or_else(|| ThresholdError::ConfigError("missing signer mnemonic".to_string()))?;
+            let key_data = key_data.first().ok_or_else(|| ThresholdError::ConfigError("missing signer mnemonic".to_string()))?;
             let payment_secret = hd.passphrase.as_deref().map(Secret::from);
             let keypair = derive_keypair_from_key_data(key_data, &signing_event.derivation_path, payment_secret.as_ref())?;
             Ok(Box::new(ThresholdSigner::new(keypair)))
@@ -350,10 +323,7 @@ pub fn derive_ordered_pubkeys(
     config: &igra_core::config::ServiceConfig,
     signing_event: &SigningEvent,
 ) -> Result<Vec<PublicKey>, ThresholdError> {
-    let hd = config
-        .hd
-        .as_ref()
-        .ok_or_else(|| ThresholdError::ConfigError("missing HD config for pubkeys".to_string()))?;
+    let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config for pubkeys".to_string()))?;
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(Secret::from);
     let inputs = HdInputs {

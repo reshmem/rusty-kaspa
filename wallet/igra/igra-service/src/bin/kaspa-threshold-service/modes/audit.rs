@@ -1,7 +1,7 @@
 use igra_core::error::ThresholdError;
 use igra_core::model::{PartialSigRecord, RequestInput, SignerAckRecord, SigningEvent, SigningRequest};
-use igra_core::storage::Storage;
 use igra_core::storage::rocks::RocksStorage;
+use igra_core::storage::Storage;
 use igra_core::types::RequestId;
 use serde::Serialize;
 
@@ -66,9 +66,8 @@ pub fn dump_audit_trail(request_id: &str, storage: &RocksStorage) -> Result<(), 
 }
 
 fn build_audit_report(storage: &RocksStorage, request_id: &RequestId) -> Result<AuditReport, ThresholdError> {
-    let request = storage
-        .get_request(request_id)?
-        .ok_or_else(|| ThresholdError::KeyNotFound(format!("request not found: {}", request_id)))?;
+    let request =
+        storage.get_request(request_id)?.ok_or_else(|| ThresholdError::KeyNotFound(format!("request not found: {}", request_id)))?;
     let event = storage.get_event(&request.event_hash)?;
     let proposal = storage.get_proposal(request_id)?;
     let inputs = storage.list_request_inputs(request_id)?;

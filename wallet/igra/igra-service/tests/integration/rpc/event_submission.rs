@@ -87,9 +87,7 @@ async fn rpc_event_submission() {
     let bound_addr = listener.local_addr().expect("local addr");
 
     let server = tokio::spawn(async move {
-        axum::serve(listener, build_router(state))
-            .await
-            .expect("serve");
+        axum::serve(listener, build_router(state)).await.expect("serve");
     });
 
     let client = Client::new();

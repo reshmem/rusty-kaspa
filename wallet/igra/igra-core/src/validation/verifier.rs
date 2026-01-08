@@ -29,10 +29,7 @@ pub struct CompositeVerifier {
 
 impl CompositeVerifier {
     pub fn new(hyperlane_validators: Vec<PublicKey>, layerzero_validators: Vec<PublicKey>) -> Self {
-        Self {
-            hyperlane_validators,
-            layerzero_validators,
-        }
+        Self { hyperlane_validators, layerzero_validators }
     }
 }
 
@@ -41,39 +38,25 @@ impl MessageVerifier for CompositeVerifier {
         match event.event_source {
             crate::model::EventSource::Hyperlane { .. } => {
                 hyperlane::verify_event(event, &self.hyperlane_validators)?;
-                Ok(VerificationReport {
-                    source: ValidationSource::Hyperlane,
-                    validator_count: self.hyperlane_validators.len(),
-                })
+                Ok(VerificationReport { source: ValidationSource::Hyperlane, validator_count: self.hyperlane_validators.len() })
             }
             crate::model::EventSource::LayerZero { .. } => {
                 layerzero::verify_event(event, &self.layerzero_validators)?;
-                Ok(VerificationReport {
-                    source: ValidationSource::LayerZero,
-                    validator_count: self.layerzero_validators.len(),
-                })
+                Ok(VerificationReport { source: ValidationSource::LayerZero, validator_count: self.layerzero_validators.len() })
             }
-            _ => Ok(VerificationReport {
-                source: ValidationSource::None,
-                validator_count: 0,
-            }),
+            _ => Ok(VerificationReport { source: ValidationSource::None, validator_count: 0 }),
         }
     }
 
     fn report_for(&self, event: &SigningEvent) -> VerificationReport {
         match event.event_source {
-            crate::model::EventSource::Hyperlane { .. } => VerificationReport {
-                source: ValidationSource::Hyperlane,
-                validator_count: self.hyperlane_validators.len(),
-            },
-            crate::model::EventSource::LayerZero { .. } => VerificationReport {
-                source: ValidationSource::LayerZero,
-                validator_count: self.layerzero_validators.len(),
-            },
-            _ => VerificationReport {
-                source: ValidationSource::None,
-                validator_count: 0,
-            },
+            crate::model::EventSource::Hyperlane { .. } => {
+                VerificationReport { source: ValidationSource::Hyperlane, validator_count: self.hyperlane_validators.len() }
+            }
+            crate::model::EventSource::LayerZero { .. } => {
+                VerificationReport { source: ValidationSource::LayerZero, validator_count: self.layerzero_validators.len() }
+            }
+            _ => VerificationReport { source: ValidationSource::None, validator_count: 0 },
         }
     }
 }
@@ -88,16 +71,10 @@ impl Default for NoopVerifier {
 
 impl MessageVerifier for NoopVerifier {
     fn verify(&self, _event: &SigningEvent) -> Result<VerificationReport, ThresholdError> {
-        Ok(VerificationReport {
-            source: ValidationSource::None,
-            validator_count: 0,
-        })
+        Ok(VerificationReport { source: ValidationSource::None, validator_count: 0 })
     }
 
     fn report_for(&self, _event: &SigningEvent) -> VerificationReport {
-        VerificationReport {
-            source: ValidationSource::None,
-            validator_count: 0,
-        }
+        VerificationReport { source: ValidationSource::None, validator_count: 0 }
     }
 }

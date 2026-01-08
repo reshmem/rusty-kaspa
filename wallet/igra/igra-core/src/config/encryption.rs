@@ -10,10 +10,7 @@ use zeroize::Zeroize;
 pub fn load_wallet_secret() -> Result<Secret, ThresholdError> {
     let value = std::env::var(HD_WALLET_SECRET_ENV).unwrap_or_default();
     if value.trim().is_empty() {
-        return Err(ThresholdError::ConfigError(format!(
-            "{} is required to manage HD mnemonics",
-            HD_WALLET_SECRET_ENV
-        )));
+        return Err(ThresholdError::ConfigError(format!("{} is required to manage HD mnemonics", HD_WALLET_SECRET_ENV)));
     }
     Ok(Secret::from(value))
 }

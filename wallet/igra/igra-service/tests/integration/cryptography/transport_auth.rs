@@ -6,10 +6,7 @@ use igra_core::types::{PeerId, RequestId, SessionId};
 use std::collections::HashMap;
 
 fn payload_hash(payload: &TransportMessage) -> [u8; 32] {
-    let bytes = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(payload)
-        .expect("serialize payload");
+    let bytes = bincode::DefaultOptions::new().with_fixint_encoding().serialize(payload).expect("serialize payload");
     *blake3::hash(&bytes).as_bytes()
 }
 
@@ -21,10 +18,7 @@ fn test_transport_envelope_authentication() {
     keys.insert(PeerId::from("peer-1"), signer.verifying_key());
     let verifier = StaticEd25519Verifier::new(keys);
 
-    let payload = TransportMessage::FinalizeNotice(FinalizeNotice {
-        request_id: RequestId::from("req-1"),
-        final_tx_id: [9u8; 32],
-    });
+    let payload = TransportMessage::FinalizeNotice(FinalizeNotice { request_id: RequestId::from("req-1"), final_tx_id: [9u8; 32] });
     let hash = payload_hash(&payload);
     let signature = signer.sign(&hash);
 
@@ -42,10 +36,8 @@ fn test_transport_envelope_authentication() {
     assert!(verifier.verify(&envelope.sender_peer_id, &envelope.payload_hash, &envelope.signature));
 
     let mut tampered = envelope.clone();
-    tampered.payload = TransportMessage::FinalizeNotice(FinalizeNotice {
-        request_id: RequestId::from("req-tampered"),
-        final_tx_id: [8u8; 32],
-    });
+    tampered.payload =
+        TransportMessage::FinalizeNotice(FinalizeNotice { request_id: RequestId::from("req-tampered"), final_tx_id: [8u8; 32] });
     let tampered_hash = payload_hash(&tampered.payload);
     assert_ne!(tampered_hash, envelope.payload_hash);
     assert!(!verifier.verify(&tampered.sender_peer_id, &tampered_hash, &tampered.signature));

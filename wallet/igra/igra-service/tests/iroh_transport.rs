@@ -40,12 +40,10 @@ mod iroh_tests {
         discovery.add_endpoint_info(endpoint_b.addr());
         let gossip_a = iroh_gossip::net::Gossip::builder().spawn(endpoint_a.clone());
         let gossip_b = iroh_gossip::net::Gossip::builder().spawn(endpoint_b.clone());
-        let _router_a = iroh::protocol::Router::builder(endpoint_a.clone())
-            .accept(iroh_gossip::net::GOSSIP_ALPN, gossip_a.clone())
-            .spawn();
-        let _router_b = iroh::protocol::Router::builder(endpoint_b.clone())
-            .accept(iroh_gossip::net::GOSSIP_ALPN, gossip_b.clone())
-            .spawn();
+        let _router_a =
+            iroh::protocol::Router::builder(endpoint_a.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip_a.clone()).spawn();
+        let _router_b =
+            iroh::protocol::Router::builder(endpoint_b.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip_b.clone()).spawn();
         let _conn_a = match endpoint_a.connect(endpoint_b.addr(), iroh_gossip::net::GOSSIP_ALPN).await {
             Ok(conn) => conn,
             Err(err) => {
@@ -62,8 +60,7 @@ mod iroh_tests {
         };
         let group_id = [9u8; 32];
         let topic_id = TopicId::from(group_topic_id(&group_id, 0));
-        let _warm_a = match timeout(Duration::from_secs(5), gossip_a.subscribe_and_join(topic_id, vec![endpoint_b.id()])).await
-        {
+        let _warm_a = match timeout(Duration::from_secs(5), gossip_a.subscribe_and_join(topic_id, vec![endpoint_b.id()])).await {
             Ok(Ok(topic)) => topic,
             Ok(Err(err)) => {
                 eprintln!("skipping: join A failed: {err}");
@@ -74,8 +71,7 @@ mod iroh_tests {
                 return;
             }
         };
-        let _warm_b = match timeout(Duration::from_secs(5), gossip_b.subscribe_and_join(topic_id, vec![endpoint_a.id()])).await
-        {
+        let _warm_b = match timeout(Duration::from_secs(5), gossip_b.subscribe_and_join(topic_id, vec![endpoint_a.id()])).await {
             Ok(Ok(topic)) => topic,
             Ok(Err(err)) => {
                 eprintln!("skipping: join B failed: {err}");
@@ -94,16 +90,8 @@ mod iroh_tests {
         keys.insert(peer_id.clone(), signer_key);
         let verifier = Arc::new(StaticEd25519Verifier::new(keys));
 
-        let config_a = IrohConfig {
-            network_id: 0,
-            group_id,
-            bootstrap_nodes: vec![endpoint_b.id().to_string()],
-        };
-        let config_b = IrohConfig {
-            network_id: 0,
-            group_id,
-            bootstrap_nodes: vec![endpoint_a.id().to_string()],
-        };
+        let config_a = IrohConfig { network_id: 0, group_id, bootstrap_nodes: vec![endpoint_b.id().to_string()] };
+        let config_b = IrohConfig { network_id: 0, group_id, bootstrap_nodes: vec![endpoint_a.id().to_string()] };
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let storage_a = Arc::new(RocksStorage::open_in_dir(temp_dir.path().join("a")).expect("rocksdb open a"));

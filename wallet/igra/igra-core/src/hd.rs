@@ -22,15 +22,11 @@ pub struct SigningKeypair {
 
 impl SigningKeypair {
     pub fn from_keypair(keypair: &Keypair) -> Self {
-        Self {
-            public_key: keypair.public_key(),
-            secret_bytes: keypair.secret_bytes(),
-        }
+        Self { public_key: keypair.public_key(), secret_bytes: keypair.secret_bytes() }
     }
 
     pub fn to_secp256k1(&self) -> Result<Keypair, ThresholdError> {
-        let secret = SecretKey::from_slice(&self.secret_bytes)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let secret = SecretKey::from_slice(&self.secret_bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
         let secp = Secp256k1::new();
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
@@ -54,8 +50,7 @@ impl Zeroize for SigningKeypair {
 
 pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdError> {
     let mut pubkeys = Vec::new();
-    let path = DerivationPath::from_str(inputs.derivation_path)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let path = DerivationPath::from_str(inputs.derivation_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
 
     for key_data in inputs.key_data {
         let xprv = key_data
@@ -82,8 +77,7 @@ pub fn derive_keypair_from_key_data(
     derivation_path: &str,
     payment_secret: Option<&Secret>,
 ) -> Result<SigningKeypair, ThresholdError> {
-    let path = DerivationPath::from_str(derivation_path)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let path = DerivationPath::from_str(derivation_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let xprv = key_data
         .get_xprv(payment_secret)
         .map_err(|err| ThresholdError::Message(err.to_string()))?
@@ -93,10 +87,7 @@ pub fn derive_keypair_from_key_data(
     let secret_bytes = secret.secret_bytes();
     let secp = Secp256k1::new();
     let public_key = PublicKey::from_secret_key(&secp, &secret);
-    Ok(SigningKeypair {
-        public_key,
-        secret_bytes,
-    })
+    Ok(SigningKeypair { public_key, secret_bytes })
 }
 
 pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -> Result<Vec<u8>, ThresholdError> {
@@ -107,8 +98,7 @@ pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -
             xonly.serialize()
         })
         .collect();
-    multisig_redeem_script(xonly_keys.iter(), required_sigs)
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+    multisig_redeem_script(xonly_keys.iter(), required_sigs).map_err(|err| ThresholdError::Message(err.to_string()))
 }
 
 pub fn derivation_path_from_index(index: u32) -> String {

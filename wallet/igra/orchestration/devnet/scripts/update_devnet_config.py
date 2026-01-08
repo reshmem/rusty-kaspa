@@ -160,6 +160,7 @@ def rewrite_ini(
     if section == "pskt":
       if key == "source_addresses":
         out_lines.append(f"; {comments['pskt.source_addresses']}")
+        out_lines.append(f"multisig_address = {','.join(data['source_addresses'])}")
         out_lines.append(f"source_addresses = {','.join(data['source_addresses'])}")
         continue
       if key == "redeem_script_hex":

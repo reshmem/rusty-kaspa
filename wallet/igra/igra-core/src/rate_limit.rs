@@ -18,12 +18,7 @@ impl TokenBucket {
     /// * `capacity` - Maximum number of tokens (burst size)
     /// * `refill_rate` - Tokens added per second (sustained rate)
     pub fn new(capacity: f64, refill_rate: f64) -> Self {
-        Self {
-            capacity,
-            tokens: capacity,
-            refill_rate,
-            last_refill: Instant::now(),
-        }
+        Self { capacity, tokens: capacity, refill_rate, last_refill: Instant::now() }
     }
 
     /// Refill tokens based on elapsed time
@@ -83,20 +78,14 @@ impl RateLimiter {
     /// let limiter = RateLimiter::new(10.0, 1.0);
     /// ```
     pub fn new(capacity: f64, refill_rate: f64) -> Self {
-        Self {
-            limiters: Arc::new(Mutex::new(HashMap::new())),
-            capacity,
-            refill_rate,
-        }
+        Self { limiters: Arc::new(Mutex::new(HashMap::new())), capacity, refill_rate }
     }
 
     /// Check if a request from the given peer is allowed
     /// Returns true if allowed, false if rate limited
     pub fn check_rate_limit(&self, peer_id: &str) -> bool {
         let mut limiters = self.limiters.lock().unwrap_or_else(|err| err.into_inner());
-        let bucket = limiters
-            .entry(peer_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
+        let bucket = limiters.entry(peer_id.to_string()).or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
         bucket.try_consume()
     }
 
@@ -104,9 +93,7 @@ impl RateLimiter {
     /// Useful for size-based rate limiting (e.g., bytes / 1024 tokens)
     pub fn check_rate_limit_tokens(&self, peer_id: &str, tokens: f64) -> bool {
         let mut limiters = self.limiters.lock().unwrap_or_else(|err| err.into_inner());
-        let bucket = limiters
-            .entry(peer_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
+        let bucket = limiters.entry(peer_id.to_string()).or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
         bucket.try_consume_tokens(tokens)
     }
 

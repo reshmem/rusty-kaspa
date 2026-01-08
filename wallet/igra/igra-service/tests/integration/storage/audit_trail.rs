@@ -1,5 +1,7 @@
 use igra_core::coordination::hashes::event_hash;
-use igra_core::model::{EventSource, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal};
+use igra_core::model::{
+    EventSource, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal,
+};
 use igra_core::storage::rocks::RocksStorage;
 use igra_core::storage::Storage;
 use igra_core::types::{PeerId, RequestId, SessionId, TransactionId};
@@ -13,8 +15,7 @@ fn sample_event() -> SigningEvent {
         event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: 1_000_000,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,
@@ -79,12 +80,7 @@ async fn audit_trail_completeness() {
     storage
         .insert_signer_ack(
             &request_id,
-            SignerAckRecord {
-                signer_peer_id: PeerId::from("peer-2"),
-                accept: true,
-                reason: None,
-                timestamp_nanos: 10,
-            },
+            SignerAckRecord { signer_peer_id: PeerId::from("peer-2"), accept: true, reason: None, timestamp_nanos: 10 },
         )
         .expect("ack insert");
 
@@ -101,12 +97,8 @@ async fn audit_trail_completeness() {
         )
         .expect("partial insert");
 
-    storage
-        .update_request_final_tx(&request_id, TransactionId::from([8u8; 32]))
-        .expect("final tx update");
-    storage
-        .update_request_final_tx_score(&request_id, 42)
-        .expect("final score update");
+    storage.update_request_final_tx(&request_id, TransactionId::from([8u8; 32])).expect("final tx update");
+    storage.update_request_final_tx_score(&request_id, 42).expect("final score update");
 
     let stored_event = storage.get_event(&ev_hash).expect("event read").expect("event");
     assert_eq!(stored_event.event_id, "event-audit");

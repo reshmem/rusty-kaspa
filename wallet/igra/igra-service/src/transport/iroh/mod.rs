@@ -57,16 +57,7 @@ impl IrohTransport {
         // Create rate limiter: 100 messages burst, 10 messages/sec sustained per peer
         let rate_limiter = Arc::new(RateLimiter::new(100.0, 10.0));
 
-        Ok(Self {
-            gossip,
-            signer,
-            verifier,
-            storage,
-            rate_limiter,
-            config,
-            bootstrap,
-            seq: std::sync::atomic::AtomicU64::new(1),
-        })
+        Ok(Self { gossip, signer, verifier, storage, rate_limiter, config, bootstrap, seq: std::sync::atomic::AtomicU64::new(1) })
     }
 
     fn group_topic_id(group_id: &Hash32, network_id: u8) -> Hash32 {
@@ -85,10 +76,7 @@ impl IrohTransport {
     }
 
     fn now_nanos() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
 
     async fn publish_bytes(&self, topic: Hash32, bytes: Vec<u8>) -> Result<(), ThresholdError> {
@@ -125,9 +113,7 @@ impl IrohTransport {
             }
         }
         Err(ThresholdError::Message(
-            last_err
-                .map(|err| err.to_string())
-                .unwrap_or_else(|| "failed to publish gossip message".to_string()),
+            last_err.map(|err| err.to_string()).unwrap_or_else(|| "failed to publish gossip message".to_string()),
         ))
     }
 }
@@ -152,13 +138,7 @@ impl Transport for IrohTransport {
 
         let payload_hash = encoding::payload_hash(&payload)?;
         let timestamp_nanos = Self::now_nanos();
-        filtering::record_payload(
-            &self.storage,
-            self.signer.sender_peer_id(),
-            proposal.session_id,
-            timestamp_nanos,
-            &payload,
-        )?;
+        filtering::record_payload(&self.storage, self.signer.sender_peer_id(), proposal.session_id, timestamp_nanos, &payload)?;
         let envelope = crate::transport::MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
@@ -239,17 +219,20 @@ impl Transport for IrohTransport {
         self.publish_bytes(topic, bytes).await
     }
 
-    async fn publish_finalize(&self, session_id: SessionId, request_id: &RequestId, final_tx_id: Hash32) -> Result<(), ThresholdError> {
+    async fn publish_finalize(
+        &self,
+        session_id: SessionId,
+        request_id: &RequestId,
+        final_tx_id: Hash32,
+    ) -> Result<(), ThresholdError> {
         tracing::debug!(
             session_id = %hex::encode(session_id.as_hash()),
             request_id = %request_id,
             final_tx_id = %hex::encode(final_tx_id),
             "publishing finalize notice"
         );
-        let payload = TransportMessage::FinalizeNotice(crate::transport::FinalizeNotice {
-            request_id: request_id.clone(),
-            final_tx_id,
-        });
+        let payload =
+            TransportMessage::FinalizeNotice(crate::transport::FinalizeNotice { request_id: request_id.clone(), final_tx_id });
         let payload_hash = encoding::payload_hash(&payload)?;
         let timestamp_nanos = Self::now_nanos();
         filtering::record_payload(&self.storage, self.signer.sender_peer_id(), session_id, timestamp_nanos, &payload)?;
@@ -271,38 +254,20 @@ impl Transport for IrohTransport {
     async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
-        let topic = self
-            .gossip
-            .subscribe(topic_id, self.bootstrap.clone())
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let topic =
+            self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         let (sender, receiver) = topic.split();
         let keepalive: Box<dyn std::any::Any + Send> = Box::new(sender);
-        Ok(subscription::subscribe_stream(
-            self.verifier.clone(),
-            self.storage.clone(),
-            self.rate_limiter.clone(),
-            receiver,
-            keepalive,
-        ))
+        Ok(subscription::subscribe_stream(self.verifier.clone(), self.storage.clone(), self.rate_limiter.clone(), receiver, keepalive))
     }
 
     async fn subscribe_session(&self, session_id: SessionId) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::session_topic_id(&session_id);
         let topic_id = TopicId::from(topic);
-        let topic = self
-            .gossip
-            .subscribe(topic_id, self.bootstrap.clone())
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let topic =
+            self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         let (sender, receiver) = topic.split();
         let keepalive: Box<dyn std::any::Any + Send> = Box::new(sender);
-        Ok(subscription::subscribe_stream(
-            self.verifier.clone(),
-            self.storage.clone(),
-            self.rate_limiter.clone(),
-            receiver,
-            keepalive,
-        ))
+        Ok(subscription::subscribe_stream(self.verifier.clone(), self.storage.clone(), self.rate_limiter.clone(), receiver, keepalive))
     }
 }

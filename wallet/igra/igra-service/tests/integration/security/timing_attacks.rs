@@ -68,19 +68,7 @@ fn test_constant_time_hash_comparison() {
     let late_diff_pct = ((match_mean - late_mean).abs() / match_mean) * 100.0;
     let early_vs_late_pct = ((early_mean - late_mean).abs() / early_mean) * 100.0;
 
-    assert!(
-        early_diff_pct < 25.0,
-        "early byte timing difference: {:.2}%",
-        early_diff_pct
-    );
-    assert!(
-        late_diff_pct < 25.0,
-        "late byte timing difference: {:.2}%",
-        late_diff_pct
-    );
-    assert!(
-        early_vs_late_pct < 25.0,
-        "early vs late timing difference: {:.2}%",
-        early_vs_late_pct
-    );
+    assert!(early_diff_pct < 25.0, "early byte timing difference: {:.2}%", early_diff_pct);
+    assert!(late_diff_pct < 25.0, "late byte timing difference: {:.2}%", late_diff_pct);
+    assert!(early_vs_late_pct < 25.0, "early vs late timing difference: {:.2}%", early_vs_late_pct);
 }

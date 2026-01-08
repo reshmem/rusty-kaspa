@@ -9,8 +9,8 @@ use crate::storage::Storage;
 use crate::transport::{SignerAck, Transport};
 use crate::types::{PeerId, RequestId, SessionId};
 use crate::validation::MessageVerifier;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
 pub struct Signer {
@@ -21,23 +21,11 @@ pub struct Signer {
 
 impl Signer {
     pub fn new(transport: Arc<dyn Transport>, storage: Arc<dyn Storage>) -> Self {
-        Self {
-            transport,
-            storage,
-            lifecycle: Arc::new(NoopObserver),
-        }
+        Self { transport, storage, lifecycle: Arc::new(NoopObserver) }
     }
 
-    pub fn with_observer(
-        transport: Arc<dyn Transport>,
-        storage: Arc<dyn Storage>,
-        lifecycle: Arc<dyn LifecycleObserver>,
-    ) -> Self {
-        Self {
-            transport,
-            storage,
-            lifecycle,
-        }
+    pub fn with_observer(transport: Arc<dyn Transport>, storage: Arc<dyn Storage>, lifecycle: Arc<dyn LifecycleObserver>) -> Self {
+        Self { transport, storage, lifecycle }
     }
 
     pub fn set_lifecycle_observer(&mut self, observer: Arc<dyn LifecycleObserver>) {
@@ -130,13 +118,7 @@ impl Signer {
                     signer_peer_id: PeerId::from(""),
                 });
             }
-            crate::audit_policy_enforced!(
-                request_id,
-                expected_event_hash,
-                "group_policy",
-                PolicyDecision::Allowed,
-                "policy_ok"
-            );
+            crate::audit_policy_enforced!(request_id, expected_event_hash, "group_policy", PolicyDecision::Allowed, "policy_ok");
         }
 
         self.lifecycle.on_event_received(&signing_event, &expected_event_hash);
@@ -177,16 +159,8 @@ impl Signer {
         })
     }
 
-    pub async fn submit_ack(
-        &self,
-        session_id: SessionId,
-        mut ack: SignerAck,
-        signer_peer_id: PeerId,
-    ) -> Result<(), ThresholdError> {
-        let now_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+    pub async fn submit_ack(&self, session_id: SessionId, mut ack: SignerAck, signer_peer_id: PeerId) -> Result<(), ThresholdError> {
+        let now_nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
         self.storage.insert_signer_ack(
             &ack.request_id,
             SignerAckRecord {
@@ -217,9 +191,7 @@ impl Signer {
     ) -> Result<(), ThresholdError> {
         let signatures = backend.sign(kpsbt_blob)?;
         for sig in signatures {
-            self.transport
-                .publish_partial_sig(session_id, request_id, sig.input_index, sig.pubkey, sig.signature)
-                .await?;
+            self.transport.publish_partial_sig(session_id, request_id, sig.input_index, sig.pubkey, sig.signature).await?;
         }
         Ok(())
     }
@@ -235,29 +207,19 @@ impl Signer {
     }
 
     fn enforce_policy(&self, signing_event: &SigningEvent, policy: &GroupPolicy) -> Result<(), ThresholdError> {
-        if !policy.allowed_destinations.is_empty()
-            && !policy.allowed_destinations.contains(&signing_event.destination_address)
-        {
-            return Err(ThresholdError::DestinationNotAllowed(
-                signing_event.destination_address.clone(),
-            ));
+        if !policy.allowed_destinations.is_empty() && !policy.allowed_destinations.contains(&signing_event.destination_address) {
+            return Err(ThresholdError::DestinationNotAllowed(signing_event.destination_address.clone()));
         }
 
         if let Some(min_amount) = policy.min_amount_sompi {
             if signing_event.amount_sompi < min_amount {
-                return Err(ThresholdError::AmountTooLow {
-                    amount: signing_event.amount_sompi,
-                    min: min_amount,
-                });
+                return Err(ThresholdError::AmountTooLow { amount: signing_event.amount_sompi, min: min_amount });
             }
         }
 
         if let Some(max_amount) = policy.max_amount_sompi {
             if signing_event.amount_sompi > max_amount {
-                return Err(ThresholdError::AmountTooHigh {
-                    amount: signing_event.amount_sompi,
-                    max: max_amount,
-                });
+                return Err(ThresholdError::AmountTooHigh { amount: signing_event.amount_sompi, max: max_amount });
             }
         }
 
@@ -270,10 +232,7 @@ impl Signer {
             let day_start = day_start_nanos(now);
             let total = self.storage.get_volume_since(day_start)?;
             if total.saturating_add(signing_event.amount_sompi) > limit {
-                return Err(ThresholdError::VelocityLimitExceeded {
-                    current: total,
-                    limit,
-                });
+                return Err(ThresholdError::VelocityLimitExceeded { current: total, limit });
             }
         }
 
@@ -292,8 +251,5 @@ fn now_nanos() -> u64 {
             return parsed;
         }
     }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
 }

@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use igra_core::config::{PsktBuildConfig, PsktOutput};
 use igra_core::model::FeePaymentMode;
 use igra_core::pskt::builder::build_pskt_with_client;
-use igra_core::rpc::{UtxoWithOutpoint, UnimplementedRpc};
+use igra_core::rpc::{UnimplementedRpc, UtxoWithOutpoint};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::tx::{TransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::pay_to_address_script;
@@ -49,10 +49,7 @@ fn bench_pskt_build(c: &mut Criterion) {
             source_addresses: vec![address.to_string()],
             redeem_script_hex: redeem_script.clone(),
             sig_op_count: 2,
-            outputs: vec![PsktOutput {
-                address: address.to_string(),
-                amount_sompi: 1_000_000_000,
-            }],
+            outputs: vec![PsktOutput { address: address.to_string(), amount_sompi: 1_000_000_000 }],
             fee_payment_mode: FeePaymentMode::RecipientPays,
             fee_sompi: Some(0),
             change_address: Some(address.to_string()),

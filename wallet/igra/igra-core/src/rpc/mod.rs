@@ -27,19 +27,11 @@ pub struct UnimplementedRpc {
 
 impl UnimplementedRpc {
     pub fn new() -> Self {
-        Self {
-            utxos: Mutex::new(Vec::new()),
-            submitted: Mutex::new(Vec::new()),
-            blue_score: AtomicU64::new(0),
-        }
+        Self { utxos: Mutex::new(Vec::new()), submitted: Mutex::new(Vec::new()), blue_score: AtomicU64::new(0) }
     }
 
     pub fn with_utxos(utxos: Vec<UtxoWithOutpoint>) -> Self {
-        Self {
-            utxos: Mutex::new(utxos),
-            submitted: Mutex::new(Vec::new()),
-            blue_score: AtomicU64::new(0),
-        }
+        Self { utxos: Mutex::new(utxos), submitted: Mutex::new(Vec::new()), blue_score: AtomicU64::new(0) }
     }
 
     pub fn push_utxo(&self, utxo: UtxoWithOutpoint) {
@@ -73,12 +65,7 @@ impl NodeRpc for UnimplementedRpc {
         }
         let filtered = entries
             .iter()
-            .filter(|utxo| {
-                utxo.address
-                    .as_ref()
-                    .map(|addr| addresses.contains(addr))
-                    .unwrap_or(true)
-            })
+            .filter(|utxo| utxo.address.as_ref().map(|addr| addresses.contains(addr)).unwrap_or(true))
             .cloned()
             .collect::<Vec<_>>();
         Ok(filtered)

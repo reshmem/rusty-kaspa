@@ -8,8 +8,8 @@ use crate::storage::{BatchTransaction, Storage};
 use crate::types::{PeerId, RequestId, SessionId, TransactionId};
 use bincode::Options;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Direction, IteratorMode, MergeOperands,
-    Options as RocksOptions, DB, WriteBatch,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Direction, IteratorMode, MergeOperands, Options as RocksOptions,
+    WriteBatch, DB,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -17,11 +17,7 @@ use std::{env, fs};
 
 // Merge operator for atomic volume accumulation
 // Handles concurrent updates to volume counters without race conditions
-fn volume_merge_operator(
-    _key: &[u8],
-    existing_val: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
+fn volume_merge_operator(_key: &[u8], existing_val: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
     let mut total = match existing_val {
         Some(bytes) if bytes.len() == 8 => {
             let array: [u8; 8] = bytes.try_into().ok()?;
@@ -88,8 +84,7 @@ impl RocksStorage {
             ColumnFamilyDescriptor::new(CF_SEEN, RocksOptions::default()),
         ];
 
-        let db =
-            DB::open_cf_descriptors(&options, path, cfs).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let db = DB::open_cf_descriptors(&options, path, cfs).map_err(|err| ThresholdError::Message(err.to_string()))?;
         let storage = Self { db: Arc::new(db) };
         storage.maybe_run_migrations()?;
         Ok(storage)
@@ -124,21 +119,16 @@ impl RocksStorage {
 
     pub fn create_checkpoint(&self, path: impl AsRef<Path>) -> Result<(), ThresholdError> {
         let checkpoint = Checkpoint::new(&self.db).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        checkpoint
-            .create_checkpoint(path)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        checkpoint.create_checkpoint(path).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn cf_handle(&self, name: &str) -> Result<&ColumnFamily, ThresholdError> {
-        self.db
-            .cf_handle(name)
-            .ok_or_else(|| ThresholdError::Message(format!("missing column family: {}", name)))
+        self.db.cf_handle(name).ok_or_else(|| ThresholdError::Message(format!("missing column family: {}", name)))
     }
 
     fn maybe_run_migrations(&self) -> Result<(), ThresholdError> {
-        let enabled = env::var("KASPA_IGRA_ENABLE_MIGRATIONS")
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let enabled =
+            env::var("KASPA_IGRA_ENABLE_MIGRATIONS").map(|value| value == "1" || value.eq_ignore_ascii_case("true")).unwrap_or(false);
         if !enabled {
             return Ok(());
         }
@@ -185,18 +175,13 @@ impl RocksStorage {
         }
 
         if moved > 0 {
-            self.db
-                .write(batch)
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
         }
         Ok(())
     }
 
     fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ThresholdError> {
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .serialize(value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        bincode::DefaultOptions::new().with_fixint_encoding().serialize(value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ThresholdError> {
@@ -309,9 +294,7 @@ impl RocksStorage {
         // The merge operator handles concurrent updates safely without locks
         let value = amount_sompi.to_be_bytes();
         let cf = self.cf_handle(CF_VOLUME)?;
-        self.db
-            .merge_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.merge_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn volume_from_index(&self, since_day_start: u64) -> Result<Option<u64>, ThresholdError> {
@@ -329,8 +312,8 @@ impl RocksStorage {
             if key.len() != prefix.len() + 8 {
                 continue;
             }
-            let day_start_bytes: [u8; 8] = key[prefix.len()..].try_into()
-                .map_err(|_| ThresholdError::Message("invalid volume key format".to_string()))?;
+            let day_start_bytes: [u8; 8] =
+                key[prefix.len()..].try_into().map_err(|_| ThresholdError::Message("invalid volume key format".to_string()))?;
             let day_start = u64::from_be_bytes(day_start_bytes);
             if day_start < since_day_start {
                 continue;
@@ -338,8 +321,8 @@ impl RocksStorage {
             if value.len() != 8 {
                 return Err(ThresholdError::Message("invalid volume index entry".to_string()));
             }
-            let amount_bytes: [u8; 8] = value.as_ref().try_into()
-                .map_err(|_| ThresholdError::Message("invalid volume value format".to_string()))?;
+            let amount_bytes: [u8; 8] =
+                value.as_ref().try_into().map_err(|_| ThresholdError::Message("invalid volume value format".to_string()))?;
             let amount = u64::from_be_bytes(amount_bytes);
             total = total.saturating_add(amount);
         }
@@ -405,9 +388,7 @@ impl RocksStorage {
             archived += 1;
         }
         if archived > 0 {
-            self.db
-                .write(batch)
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
         }
         Ok(archived)
     }
@@ -435,9 +416,7 @@ impl RocksStorage {
             deleted += 1;
         }
         if deleted > 0 {
-            self.db
-                .write(batch)
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
         }
         Ok(deleted)
     }
@@ -453,9 +432,7 @@ impl Storage for RocksStorage {
         let key = Self::key_group(&group_id);
         let value = Self::encode(&config)?;
         let cf = self.cf_handle(CF_GROUP)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn get_group_config(&self, group_id: &Hash32) -> Result<Option<GroupConfig>, ThresholdError> {
@@ -473,18 +450,12 @@ impl Storage for RocksStorage {
         let cf = self.cf_handle(CF_EVENT)?;
 
         // Check for duplicate before inserting to prevent replay attacks
-        if let Some(_) = self
-            .db
-            .get_cf(cf, &key)
-            .map_err(|e| ThresholdError::StorageError(e.to_string()))?
-        {
+        if let Some(_) = self.db.get_cf(cf, &key).map_err(|e| ThresholdError::StorageError(e.to_string()))? {
             return Err(ThresholdError::EventReplayed(hex::encode(event_hash)));
         }
 
         let value = Self::encode(&event)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn get_event(&self, event_hash: &Hash32) -> Result<Option<SigningEvent>, ThresholdError> {
@@ -501,9 +472,7 @@ impl Storage for RocksStorage {
         let key = Self::key_request(&request.request_id);
         let value = Self::encode(&request)?;
         let cf = self.cf_handle(CF_REQUEST)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn update_request_decision(&self, request_id: &RequestId, decision: RequestDecision) -> Result<(), ThresholdError> {
@@ -517,9 +486,7 @@ impl Storage for RocksStorage {
         validate_transition(&request.decision, &decision)?;
         request.decision = decision;
         let updated = Self::encode(&request)?;
-        self.db
-            .put_cf(cf, key, updated)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn get_request(&self, request_id: &RequestId) -> Result<Option<SigningRequest>, ThresholdError> {
@@ -536,9 +503,7 @@ impl Storage for RocksStorage {
         let key = Self::key_proposal(request_id);
         let value = Self::encode(&proposal)?;
         let cf = self.cf_handle(CF_PROPOSAL)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn get_proposal(&self, request_id: &RequestId) -> Result<Option<StoredProposal>, ThresholdError> {
@@ -555,9 +520,7 @@ impl Storage for RocksStorage {
         let key = Self::key_request_input(request_id, input.input_index);
         let value = Self::encode(&input)?;
         let cf = self.cf_handle(CF_REQUEST_INPUT)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn list_request_inputs(&self, request_id: &RequestId) -> Result<Vec<RequestInput>, ThresholdError> {
@@ -579,9 +542,7 @@ impl Storage for RocksStorage {
         let key = Self::key_signer_ack(request_id, &ack.signer_peer_id);
         let value = Self::encode(&ack)?;
         let cf = self.cf_handle(CF_SIGNER_ACK)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn list_signer_acks(&self, request_id: &RequestId) -> Result<Vec<SignerAckRecord>, ThresholdError> {
@@ -603,9 +564,7 @@ impl Storage for RocksStorage {
         let key = Self::key_partial_sig(request_id, &sig.signer_peer_id, sig.input_index);
         let value = Self::encode(&sig)?;
         let cf = self.cf_handle(CF_PARTIAL_SIG)?;
-        self.db
-            .put_cf(cf, key, value)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn list_partial_sigs(&self, request_id: &RequestId) -> Result<Vec<PartialSigRecord>, ThresholdError> {
@@ -638,9 +597,7 @@ impl Storage for RocksStorage {
         request.final_tx_id = Some(final_tx_id);
         request.decision = RequestDecision::Finalized;
         let updated = Self::encode(&request)?;
-        self.db
-            .put_cf(cf, key, updated)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))?;
         tracing::info!(
             request_id = %request_id,
             final_tx_id = %hex::encode(final_tx_id.as_hash()),
@@ -662,9 +619,7 @@ impl Storage for RocksStorage {
         };
         request.final_tx_accepted_blue_score = Some(accepted_blue_score);
         let updated = Self::encode(&request)?;
-        self.db
-            .put_cf(cf, key, updated)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     fn get_volume_since(&self, timestamp_nanos: u64) -> Result<u64, ThresholdError> {
@@ -676,9 +631,7 @@ impl Storage for RocksStorage {
     }
 
     fn health_check(&self) -> Result<(), ThresholdError> {
-        self.db
-            .property_value("rocksdb.stats")
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        self.db.property_value("rocksdb.stats").map_err(|err| ThresholdError::Message(err.to_string()))?;
         Ok(())
     }
 
@@ -695,9 +648,7 @@ impl Storage for RocksStorage {
         if existing.is_some() {
             return Ok(false);
         }
-        self.db
-            .put_cf(cf, key, timestamp_nanos.to_be_bytes())
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        self.db.put_cf(cf, key, timestamp_nanos.to_be_bytes()).map_err(|err| ThresholdError::Message(err.to_string()))?;
         Ok(true)
     }
 
@@ -729,10 +680,7 @@ impl Storage for RocksStorage {
     }
 
     fn begin_batch(&self) -> Result<Box<dyn BatchTransaction + '_>, ThresholdError> {
-        Ok(Box::new(RocksBatch {
-            db: &self.db,
-            batch: WriteBatch::default(),
-        }))
+        Ok(Box::new(RocksBatch { db: &self.db, batch: WriteBatch::default() }))
     }
 }
 

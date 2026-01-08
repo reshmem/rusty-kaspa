@@ -1,18 +1,18 @@
+use crate::service::metrics::Metrics;
+use crate::transport::iroh::{IrohConfig, IrohTransport};
+use async_trait::async_trait;
 use igra_core::config::{derive_redeem_script_hex, PsktBuildConfig, PsktOutput, ServiceConfig};
 use igra_core::coordination::coordinator::Coordinator;
 use igra_core::error::ThresholdError;
 use igra_core::event::EventProcessor;
 use igra_core::lifecycle::{LifecycleObserver, NoopObserver};
 use igra_core::model::{Hash32, SigningEvent};
-use igra_core::types::{PeerId, RequestId, SessionId};
 use igra_core::rpc::grpc::GrpcNodeRpc;
 use igra_core::rpc::NodeRpc;
 use igra_core::storage::Storage;
 use igra_core::transport::Transport;
-use crate::service::metrics::Metrics;
-use crate::transport::iroh::{IrohConfig, IrohTransport};
 use igra_core::transport::{SignatureSigner, SignatureVerifier};
-use async_trait::async_trait;
+use igra_core::types::{PeerId, RequestId, SessionId};
 use std::sync::Arc;
 
 pub struct ServiceFlow {
@@ -25,7 +25,11 @@ pub struct ServiceFlow {
 }
 
 impl ServiceFlow {
-    pub async fn new(config: &ServiceConfig, storage: Arc<dyn Storage>, transport: Arc<dyn Transport>) -> Result<Self, ThresholdError> {
+    pub async fn new(
+        config: &ServiceConfig,
+        storage: Arc<dyn Storage>,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self, ThresholdError> {
         let rpc = Arc::new(GrpcNodeRpc::connect(config.node_rpc_url.clone()).await?);
         let metrics = Arc::new(Metrics::new()?);
         let lifecycle = Arc::new(NoopObserver);
@@ -141,15 +145,7 @@ impl EventProcessor for ServiceFlow {
         expires_at_nanos: u64,
         coordinator_peer_id: PeerId,
     ) -> Result<Hash32, ThresholdError> {
-        self.propose_from_rpc(
-            config,
-            session_id,
-            request_id,
-            signing_event,
-            expires_at_nanos,
-            coordinator_peer_id,
-        )
-        .await
+        self.propose_from_rpc(config, session_id, request_id, signing_event, expires_at_nanos, coordinator_peer_id).await
     }
 }
 
@@ -159,22 +155,14 @@ fn resolve_pskt_config(config: &ServiceConfig, signing_event: &SigningEvent) -> 
     }
     if !config.pskt.redeem_script_hex.trim().is_empty() {
         let mut pskt = config.pskt.clone();
-        pskt.outputs = vec![PsktOutput {
-            address: signing_event.destination_address.clone(),
-            amount_sompi: signing_event.amount_sompi,
-        }];
+        pskt.outputs =
+            vec![PsktOutput { address: signing_event.destination_address.clone(), amount_sompi: signing_event.amount_sompi }];
         return Ok(pskt);
     }
-    let hd = config
-        .hd
-        .as_ref()
-        .ok_or_else(|| ThresholdError::Message("missing redeem script or HD config".to_string()))?;
+    let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::Message("missing redeem script or HD config".to_string()))?;
     let redeem_script_hex = derive_redeem_script_hex(hd, &signing_event.derivation_path)?;
     let mut pskt = config.pskt.clone();
-    pskt.outputs = vec![PsktOutput {
-        address: signing_event.destination_address.clone(),
-        amount_sompi: signing_event.amount_sompi,
-    }];
+    pskt.outputs = vec![PsktOutput { address: signing_event.destination_address.clone(), amount_sompi: signing_event.amount_sompi }];
     pskt.redeem_script_hex = redeem_script_hex;
     Ok(pskt)
 }

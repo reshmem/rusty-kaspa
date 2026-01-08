@@ -1,13 +1,13 @@
-mod env;
 mod encryption;
+mod env;
 mod loader;
 mod persistence;
 mod types;
 mod validation;
 
 pub use env::{
-    get_audit_request_id, get_finalize_pskt_json_path, resolve_config_path, resolve_data_dir, AUDIT_REQUEST_ID_ENV,
-    CONFIG_PATH_ENV, DATA_DIR_ENV, FINALIZE_PSKT_JSON_ENV, HD_WALLET_SECRET_ENV, NODE_URL_ENV, TEST_NOW_NANOS_ENV,
+    get_audit_request_id, get_finalize_pskt_json_path, resolve_config_path, resolve_data_dir, AUDIT_REQUEST_ID_ENV, CONFIG_PATH_ENV,
+    DATA_DIR_ENV, FINALIZE_PSKT_JSON_ENV, HD_WALLET_SECRET_ENV, NODE_URL_ENV, TEST_NOW_NANOS_ENV,
 };
 pub use types::*;
 
@@ -34,12 +34,7 @@ pub fn load_app_config() -> Result<AppConfig, ThresholdError> {
 pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: &str) -> Result<String, ThresholdError> {
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(Secret::from);
-    let inputs = HdInputs {
-        key_data: &key_data,
-        xpubs: &hd.xpubs,
-        derivation_path,
-        payment_secret: payment_secret.as_ref(),
-    };
+    let inputs = HdInputs { key_data: &key_data, xpubs: &hd.xpubs, derivation_path, payment_secret: payment_secret.as_ref() };
     let pubkeys = derive_pubkeys(inputs)?;
     if pubkeys.is_empty() {
         return Err(ThresholdError::Message("no HD pubkeys configured".to_string()));
@@ -58,9 +53,7 @@ pub fn load_app_config_from_path(path: &Path) -> Result<AppConfig, ThresholdErro
 pub fn load_app_config_from_profile_path(path: &Path, profile: &str) -> Result<AppConfig, ThresholdError> {
     let data_dir = env::resolve_data_dir()?;
     if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-        return Err(ThresholdError::Message(
-            "profiled config loading is only supported for INI files".to_string(),
-        ));
+        return Err(ThresholdError::Message("profiled config loading is only supported for INI files".to_string()));
     }
     let mut config = loader::load_from_ini_profile(path, &data_dir, profile)?;
     env::apply_env_overrides(&mut config)?;

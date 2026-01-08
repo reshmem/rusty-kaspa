@@ -1,32 +1,32 @@
-use igra_core::error::ThresholdError;
 use crate::service::metrics::Metrics;
-use hyperlane_core::accumulator::{merkle::Proof as HyperlaneProof, TREE_DEPTH};
-use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signature, H256, U256};
-use igra_core::event::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
-use igra_core::hyperlane::ism::{ConfiguredIsm, IsmMode, ProofMetadata, ValidatorSet, IsmVerifier};
-use igra_core::model::EventSource;
-use igra_core::audit;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderValue};
 use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
-use serde::{Deserialize, Serialize};
+use blake3::Hasher;
+use hyperlane_core::accumulator::{merkle::Proof as HyperlaneProof, TREE_DEPTH};
+use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signature, H256, U256};
+use igra_core::audit;
+use igra_core::error::ThresholdError;
+use igra_core::event::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::hyperlane::ism::{ConfiguredIsm, IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
+use igra_core::model::EventSource;
+use kaspa_addresses::{Address, Prefix, Version};
+use secp256k1::PublicKey;
 use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::fmt;
-use blake3::Hasher;
-use kaspa_addresses::{Address, Prefix, Version};
+use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio::net::TcpListener;
-use subtle::ConstantTimeEq;
-use secp256k1::PublicKey;
 
 #[derive(Clone)]
 pub struct RpcState {
@@ -176,11 +176,7 @@ impl RpcCheckpointWithMessageId {
 impl RpcMerkleProof {
     fn into_core(self, message_id: H256) -> Result<HyperlaneProof, String> {
         if self.path.len() != TREE_DEPTH {
-            return Err(format!(
-                "merkle proof path must have length {} (got {})",
-                TREE_DEPTH,
-                self.path.len()
-            ));
+            return Err(format!("merkle proof path must have length {} (got {})", TREE_DEPTH, self.path.len()));
         }
         let leaf = self.leaf.unwrap_or(message_id);
         if leaf != message_id {
@@ -190,11 +186,7 @@ impl RpcMerkleProof {
         for (idx, item) in self.path.iter().enumerate() {
             path[idx] = *item;
         }
-        Ok(HyperlaneProof {
-            leaf,
-            index: self.index,
-            path,
-        })
+        Ok(HyperlaneProof { leaf, index: self.index, path })
     }
 }
 
@@ -202,21 +194,11 @@ impl MailboxMetadataParams {
     fn into_core(self, message_id: H256, mode: IsmMode) -> Result<ProofMetadata, String> {
         let checkpoint = self.checkpoint.into_core();
         let merkle_proof = match (mode, self.merkle_proof) {
-            (IsmMode::MerkleRootMultisig, None) => {
-                return Err("merkle_proof required for merkle_root_multisig".to_string())
-            }
+            (IsmMode::MerkleRootMultisig, None) => return Err("merkle_proof required for merkle_root_multisig".to_string()),
             (_, proof) => proof.map(|p| p.into_core(message_id)).transpose()?,
         };
-        let signatures = self
-            .signatures
-            .iter()
-            .map(|sig| parse_signature_hex(sig))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ProofMetadata {
-            checkpoint,
-            merkle_proof,
-            signatures,
-        })
+        let signatures = self.signatures.iter().map(|sig| parse_signature_hex(sig)).collect::<Result<Vec<_>, _>>()?;
+        Ok(ProofMetadata { checkpoint, merkle_proof, signatures })
     }
 }
 
@@ -274,11 +256,7 @@ fn parse_signature_hex(value: &str) -> Result<Signature, String> {
     let mut s = [0u8; 32];
     r.copy_from_slice(&bytes[0..32]);
     s.copy_from_slice(&bytes[32..64]);
-    Ok(Signature {
-        r: U256::from_big_endian(&r),
-        s: U256::from_big_endian(&s),
-        v: bytes[64] as u64,
-    })
+    Ok(Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: bytes[64] as u64 })
 }
 
 fn format_pubkey(pk: &PublicKey) -> String {
@@ -323,19 +301,10 @@ fn format_signature_hex(sig: &Signature) -> String {
 fn metadata_to_map(metadata: &ProofMetadata, mode: &IsmMode) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert("hyperlane.mode".to_string(), format!("{:?}", mode).to_lowercase());
-    map.insert(
-        "hyperlane.merkle_root".to_string(),
-        format_h256(metadata.checkpoint.root),
-    );
-    map.insert(
-        "hyperlane.mailbox_domain".to_string(),
-        metadata.checkpoint.mailbox_domain.to_string(),
-    );
+    map.insert("hyperlane.merkle_root".to_string(), format_h256(metadata.checkpoint.root));
+    map.insert("hyperlane.mailbox_domain".to_string(), metadata.checkpoint.mailbox_domain.to_string());
     map.insert("hyperlane.index".to_string(), metadata.checkpoint.index.to_string());
-    map.insert(
-        "hyperlane.message_id".to_string(),
-        format_h256(metadata.checkpoint.message_id),
-    );
+    map.insert("hyperlane.message_id".to_string(), format_h256(metadata.checkpoint.message_id));
     if let Some(proof) = metadata.merkle_proof.as_ref() {
         map.insert("hyperlane.proof.index".to_string(), proof.index.to_string());
     }
@@ -379,12 +348,7 @@ fn extract_signing_payload(message: &HyperlaneMessage, expected_prefix: Prefix) 
     let amount_sompi = u64::from_be_bytes(amount_bytes);
     let derivation_index = Some(0);
     let derivation_path = String::new();
-    Ok(SigningPayload {
-        destination_address,
-        amount_sompi,
-        derivation_path,
-        derivation_index,
-    })
+    Ok(SigningPayload { destination_address, amount_sompi, derivation_path, derivation_index })
 }
 
 async fn submit_signing_from_hyperlane(
@@ -405,10 +369,7 @@ async fn submit_signing_from_hyperlane(
     meta.insert("hyperlane.quorum".to_string(), set.threshold.to_string());
     let signing_event = SigningEventWire {
         event_id: event_id.clone(),
-        event_source: EventSource::Hyperlane {
-            domain: message.destination.to_string(),
-            sender: format_h256(message.sender),
-        },
+        event_source: EventSource::Hyperlane { domain: message.destination.to_string(), sender: format_h256(message.sender) },
         derivation_path: payload.derivation_path,
         derivation_index: payload.derivation_index,
         destination_address: payload.destination_address,
@@ -425,19 +386,13 @@ async fn submit_signing_from_hyperlane(
         expires_at_nanos: audit::now_nanos().saturating_add(10 * 60 * 1_000_000_000),
         signing_event,
     };
-    submit_signing_event(ctx, params)
-        .await
-        .map_err(|e| e.to_string())?;
+    submit_signing_event(ctx, params).await.map_err(|e| e.to_string())?;
     Ok(true)
 }
 pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Result<(), ThresholdError> {
     let app = build_router(state);
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
-    axum::serve(listener, app)
-        .await
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+    let listener = TcpListener::bind(addr).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+    axum::serve(listener, app).await.map_err(|err| ThresholdError::Message(err.to_string()))
 }
 
 pub fn build_router(state: Arc<RpcState>) -> Router {
@@ -456,21 +411,13 @@ pub async fn run_hyperlane_watcher(
     poll_interval: Duration,
 ) -> Result<(), ThresholdError> {
     loop {
-        let mut entries = fs::read_dir(&dir)
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))?
-        {
+        let mut entries = fs::read_dir(&dir).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+        while let Some(entry) = entries.next_entry().await.map_err(|err| ThresholdError::Message(err.to_string()))? {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let bytes = fs::read(&path)
-                .await
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let bytes = fs::read(&path).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
             let params: SigningEventParams = match serde_json::from_slice(&bytes) {
                 Ok(params) => params,
                 Err(err) => {
@@ -496,12 +443,7 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
     let id = req.id.clone();
     if let Err(err) = authorize_rpc(&headers, state.rpc_token.as_deref()) {
         state.metrics.inc_rpc_request(req.method.as_str(), "unauthorized");
-        return Json(JsonRpcError {
-            jsonrpc: "2.0",
-            id,
-            error: JsonRpcErrorBody { code: -32001, message: err },
-        })
-        .into_response();
+        return Json(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: -32001, message: err } }).into_response();
     }
     match req.method.as_str() {
         "signing_event.submit" => {
@@ -536,12 +478,8 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
                 }
                 Err(err) => {
                     state.metrics.inc_rpc_request(req.method.as_str(), "error");
-                    Json(JsonRpcError {
-                        jsonrpc: "2.0",
-                        id,
-                        error: JsonRpcErrorBody { code: -32000, message: err.to_string() },
-                    })
-                    .into_response()
+                    Json(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: -32000, message: err.to_string() } })
+                        .into_response()
                 }
             }
         }
@@ -659,12 +597,8 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
                 Ok(meta) => meta,
                 Err(err) => {
                     state.metrics.inc_rpc_request(req.method.as_str(), "error");
-                    return Json(JsonRpcError {
-                        jsonrpc: "2.0",
-                        id,
-                        error: JsonRpcErrorBody { code: -32602, message: err },
-                    })
-                    .into_response();
+                    return Json(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: -32602, message: err } })
+                        .into_response();
                 }
             };
             match ism.verify_proof(&message, &metadata, mode.clone()) {
@@ -695,12 +629,8 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
                         Ok(flag) => flag,
                         Err(err) => {
                             state.metrics.inc_rpc_request(req.method.as_str(), "error");
-                            return Json(JsonRpcError {
-                                jsonrpc: "2.0",
-                                id,
-                                error: JsonRpcErrorBody { code: -32005, message: err },
-                            })
-                            .into_response();
+                            return Json(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: -32005, message: err } })
+                                .into_response();
                         }
                     };
 
@@ -721,12 +651,7 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
                 }
                 Err(err) => {
                     state.metrics.inc_rpc_request(req.method.as_str(), "error");
-                    Json(JsonRpcError {
-                        jsonrpc: "2.0",
-                        id,
-                        error: JsonRpcErrorBody { code: -32000, message: err },
-                    })
-                    .into_response()
+                    Json(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: -32000, message: err } }).into_response()
                 }
             }
         }
@@ -791,10 +716,7 @@ async fn handle_metrics(State(state): State<Arc<RpcState>>) -> impl IntoResponse
     match state.metrics.encode() {
         Ok(body) => {
             let mut response = body.into_response();
-            response.headers_mut().insert(
-                axum::http::header::CONTENT_TYPE,
-                HeaderValue::from_static("text/plain; version=0.0.4"),
-            );
+            response.headers_mut().insert(axum::http::header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4"));
             response
         }
         Err(err) => {

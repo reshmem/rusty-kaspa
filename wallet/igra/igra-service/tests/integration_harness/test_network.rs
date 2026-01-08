@@ -36,9 +36,8 @@ impl TestIrohNetwork {
                 .await
                 .map_err(|err| ThresholdError::Message(err.to_string()))?;
             let gossip = Gossip::builder().spawn(endpoint.clone());
-            let router = iroh::protocol::Router::builder(endpoint.clone())
-                .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-                .spawn();
+            let router =
+                iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
             discovery.add_endpoint_info(endpoint.addr());
             endpoints.push(endpoint);
             gossips.push(gossip);
@@ -111,33 +110,13 @@ impl TestNetwork {
                 RocksStorage::open_in_dir(temp_dir.path().join(peer_id.as_str()))
                     .map_err(|err| ThresholdError::Message(err.to_string()))?,
             );
-            let transport = Arc::new(MockTransport::new(
-                hub.clone(),
-                peer_id.clone(),
-                group_id,
-                0,
-            ));
+            let transport = Arc::new(MockTransport::new(hub.clone(), peer_id.clone(), group_id, 0));
             let flow = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage.clone(), transport.clone())?);
             let config = Arc::new(TestDataFactory::create_config_m_of_n(temp_dir.path(), threshold_m, threshold_n));
-            nodes.push(TestNode {
-                peer_id,
-                storage,
-                transport,
-                flow,
-                config,
-                is_connected: true,
-            });
+            nodes.push(TestNode { peer_id, storage, transport, flow, config, is_connected: true });
         }
 
-        Ok(Self {
-            nodes,
-            rpc,
-            hub,
-            threshold_m,
-            threshold_n,
-            group_id,
-            _temp_dir: temp_dir,
-        })
+        Ok(Self { nodes, rpc, hub, threshold_m, threshold_n, group_id, _temp_dir: temp_dir })
     }
 
     pub async fn wait_for_proposal(&self, request_id: &str, timeout: Duration) -> Result<(), ThresholdError> {
@@ -206,20 +185,13 @@ impl TestNetwork {
 
     pub async fn assert_signatures_collected(&self, request_id: &str, expected: usize) {
         let request_id = RequestId::from(request_id);
-        let sigs = self.nodes[0]
-            .storage
-            .list_partial_sigs(&request_id)
-            .expect("partial sigs");
+        let sigs = self.nodes[0].storage.list_partial_sigs(&request_id).expect("partial sigs");
         assert_eq!(sigs.len(), expected, "expected {} signatures, got {}", expected, sigs.len());
     }
 
     pub async fn assert_transaction_finalized(&self, request_id: &str) {
         let request_id = RequestId::from(request_id);
-        let req = self.nodes[0]
-            .storage
-            .get_request(&request_id)
-            .expect("request read")
-            .expect("request missing");
+        let req = self.nodes[0].storage.get_request(&request_id).expect("request read").expect("request missing");
         assert!(req.final_tx_id.is_some(), "transaction not finalized");
     }
 

@@ -1,8 +1,8 @@
 use crate::error::ThresholdError;
 use crate::model::Hash32;
 use crate::transport::{
-    FinalizeNotice, MessageEnvelope, PartialSigSubmit, ProposedSigningSession, SignerAck, SigningEventPropose,
-    Transport, TransportMessage, TransportSubscription,
+    FinalizeNotice, MessageEnvelope, PartialSigSubmit, ProposedSigningSession, SignerAck, SigningEventPropose, Transport,
+    TransportMessage, TransportSubscription,
 };
 use crate::types::{PeerId, RequestId, SessionId};
 use async_trait::async_trait;
@@ -23,10 +23,7 @@ impl MockHub {
 
     async fn topic(&self, topic: Hash32) -> broadcast::Sender<MessageEnvelope> {
         let mut guard = self.topics.lock().await;
-        guard
-            .entry(topic)
-            .or_insert_with(|| broadcast::channel(256).0)
-            .clone()
+        guard.entry(topic).or_insert_with(|| broadcast::channel(256).0).clone()
     }
 }
 
@@ -40,13 +37,7 @@ pub struct MockTransport {
 
 impl MockTransport {
     pub fn new(hub: Arc<MockHub>, sender_peer_id: PeerId, group_id: Hash32, network_id: u8) -> Self {
-        Self {
-            hub,
-            sender_peer_id,
-            group_id,
-            network_id,
-            seq: AtomicU64::new(1),
-        }
+        Self { hub, sender_peer_id, group_id, network_id, seq: AtomicU64::new(1) }
     }
 
     fn group_topic_id(&self) -> Hash32 {
@@ -73,10 +64,7 @@ impl MockTransport {
     }
 
     fn now_nanos() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
 
     async fn publish(&self, topic: Hash32, session_id: SessionId, payload: TransportMessage) -> Result<(), ThresholdError> {
@@ -92,9 +80,7 @@ impl MockTransport {
             signature: Vec::new(),
         };
         let sender = self.hub.topic(topic).await;
-        sender
-            .send(envelope)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        sender.send(envelope).map_err(|err| ThresholdError::Message(err.to_string()))?;
         Ok(())
     }
 
@@ -146,17 +132,18 @@ impl Transport for MockTransport {
         pubkey: Vec<u8>,
         signature: Vec<u8>,
     ) -> Result<(), ThresholdError> {
-        let payload = TransportMessage::PartialSigSubmit(PartialSigSubmit {
-            request_id: request_id.clone(),
-            input_index,
-            pubkey,
-            signature,
-        });
+        let payload =
+            TransportMessage::PartialSigSubmit(PartialSigSubmit { request_id: request_id.clone(), input_index, pubkey, signature });
         let topic = Self::session_topic_id(&session_id);
         self.publish(topic, session_id, payload).await
     }
 
-    async fn publish_finalize(&self, session_id: SessionId, request_id: &RequestId, final_tx_id: Hash32) -> Result<(), ThresholdError> {
+    async fn publish_finalize(
+        &self,
+        session_id: SessionId,
+        request_id: &RequestId,
+        final_tx_id: Hash32,
+    ) -> Result<(), ThresholdError> {
         let payload = TransportMessage::FinalizeNotice(FinalizeNotice { request_id: request_id.clone(), final_tx_id });
         let topic = Self::session_topic_id(&session_id);
         self.publish(topic, session_id, payload).await

@@ -12,8 +12,7 @@ fn sample_event() -> SigningEvent {
         event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: 2_000_000,
         metadata: BTreeMap::new(),
         timestamp_nanos: 2,
@@ -44,19 +43,14 @@ async fn persistence_across_restarts() {
                 final_tx_accepted_blue_score: None,
             })
             .expect("request insert");
-        storage
-            .update_request_final_tx(&RequestId::from("req-persist"), TransactionId::from([5u8; 32]))
-            .expect("final tx update");
+        storage.update_request_final_tx(&RequestId::from("req-persist"), TransactionId::from([5u8; 32])).expect("final tx update");
     }
 
     let storage = RocksStorage::open_in_dir(temp_dir.path()).expect("storage reopen");
     let stored_event = storage.get_event(&ev_hash).expect("event read").expect("event");
     assert_eq!(stored_event.event_id, "event-persist");
 
-    let request = storage
-        .get_request(&RequestId::from("req-persist"))
-        .expect("request read")
-        .expect("request");
+    let request = storage.get_request(&RequestId::from("req-persist")).expect("request read").expect("request");
     assert!(matches!(request.decision, RequestDecision::Finalized));
     assert_eq!(request.final_tx_id, Some(TransactionId::from([5u8; 32])));
 }

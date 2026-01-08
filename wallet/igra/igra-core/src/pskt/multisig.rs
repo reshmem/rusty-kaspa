@@ -1,16 +1,18 @@
 use crate::error::ThresholdError;
-use crate::model::PartialSigRecord;
 use crate::model::Hash32;
+use crate::model::PartialSigRecord;
 use borsh::to_vec as borsh_to_vec;
 use kaspa_consensus_core::hashing::sighash::{calc_schnorr_signature_hash, SigHashReusedValuesUnsync};
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
-use kaspa_consensus_core::tx::{ScriptPublicKey, SignableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry};
+use kaspa_consensus_core::tx::{
+    ScriptPublicKey, SignableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry,
+};
 use kaspa_txscript::{opcodes::codes::OpData65, script_builder::ScriptBuilder};
-use kaspa_wallet_pskt::pskt::{Inner, Input, Output, Version};
 use kaspa_wallet_pskt::prelude::{
     Combiner, Creator, Finalizer, InputBuilder, OutputBuilder, SignInputOk, Signature, Signer, Updater, PSKT,
 };
-use secp256k1::{Message, PublicKey, Secp256k1, Keypair};
+use kaspa_wallet_pskt::pskt::{Inner, Input, Output, Version};
+use secp256k1::{Keypair, Message, PublicKey, Secp256k1};
 use std::iter;
 
 #[derive(Clone, Debug)]
@@ -56,9 +58,7 @@ pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Resul
 pub fn set_sequence_all(pskt: PSKT<Updater>, sequence: u64) -> Result<PSKT<Updater>, ThresholdError> {
     let mut updated = pskt;
     for index in 0..updated.inputs.len() {
-        updated = updated
-            .set_sequence(sequence, index)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        updated = updated.set_sequence(sequence, index).map_err(|err| ThresholdError::Message(err.to_string()))?;
     }
     Ok(updated)
 }
@@ -90,8 +90,8 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
             .get_mut(sig.input_index as usize)
             .ok_or_else(|| ThresholdError::Message("partial sig input index out of bounds".to_string()))?;
         let pubkey = PublicKey::from_slice(&sig.pubkey).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let signature = secp256k1::schnorr::Signature::from_slice(&sig.signature)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let signature =
+            secp256k1::schnorr::Signature::from_slice(&sig.signature).map_err(|err| ThresholdError::Message(err.to_string()))?;
         input.partial_sigs.insert(pubkey, Signature::Schnorr(signature));
     }
     Ok(PSKT::from(inner))
@@ -147,13 +147,7 @@ fn signable_tx_from_inner(inner: &Inner) -> SignableTransaction {
                 script_public_key: script_public_key.clone(),
             })
             .collect(),
-        inner
-            .inputs
-            .iter()
-            .map(|input: &Input| input.min_time)
-            .max()
-            .unwrap_or(inner.global.fallback_lock_time)
-            .unwrap_or(0),
+        inner.inputs.iter().map(|input: &Input| input.min_time).max().unwrap_or(inner.global.fallback_lock_time).unwrap_or(0),
         SUBNETWORK_ID_NATIVE,
         0,
         if inner.global.version >= Version::One { inner.global.payload.clone().unwrap_or_default() } else { vec![] },

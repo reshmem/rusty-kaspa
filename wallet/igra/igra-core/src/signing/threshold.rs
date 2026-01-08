@@ -1,9 +1,9 @@
 use crate::error::ThresholdError;
+use crate::hd::SigningKeypair;
 use crate::pskt::multisig as pskt_multisig;
 use crate::signing::{SignerBackend, SigningBackendKind};
 use crate::transport::PartialSigSubmit;
 use crate::types::RequestId;
-use crate::hd::SigningKeypair;
 
 pub struct ThresholdSigner {
     keypair: SigningKeypair,

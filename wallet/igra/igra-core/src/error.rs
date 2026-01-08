@@ -155,9 +155,6 @@ impl ThresholdError {
     }
 
     pub fn context(&self) -> ErrorContext {
-        ErrorContext {
-            code: self.code(),
-            message: self.to_string(),
-        }
+        ErrorContext { code: self.code(), message: self.to_string() }
     }
 }

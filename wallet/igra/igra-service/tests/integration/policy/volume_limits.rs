@@ -23,10 +23,7 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
         redeem_script: redeem_script.to_vec(),
         sig_op_count: 2,
     };
-    let output = MultisigOutput {
-        amount,
-        script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-    };
+    let output = MultisigOutput { amount, script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
     let pskt_blob = serialize_pskt(&pskt).expect("serialize pskt");
     let signer_pskt = pskt.signer();
@@ -38,13 +35,10 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
 fn build_event(amount: u64, timestamp_nanos: u64) -> SigningEvent {
     SigningEvent {
         event_id: format!("volume-{}", timestamp_nanos),
-        event_source: EventSource::Api {
-            issuer: "integration-tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "integration-tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: amount,
         metadata: BTreeMap::new(),
         timestamp_nanos,
@@ -72,10 +66,7 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
     let (x2, _) = kp2.public_key().x_only_public_key();
     let redeem_script = multisig_redeem_script([x1.serialize(), x2.serialize()].iter(), 2).expect("redeem");
 
-    let policy = GroupPolicy {
-        max_daily_volume_sompi: Some(100_000_000_000),
-        ..Default::default()
-    };
+    let policy = GroupPolicy { max_daily_volume_sompi: Some(100_000_000_000), ..Default::default() };
 
     for idx in 0..5u64 {
         let event = build_event(20_000_000_000, day1 + idx);
@@ -115,10 +106,7 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
         )
         .expect("ack");
     assert!(!ack.accept, "expected rejection due to daily volume limit");
-    assert!(
-        ack.reason.unwrap_or_default().contains("daily volume exceeded"),
-        "expected daily volume limit error"
-    );
+    assert!(ack.reason.unwrap_or_default().contains("daily volume exceeded"), "expected daily volume limit error");
 
     let day2 = day1 + nanos_per_day + 1;
     std::env::set_var("KASPA_IGRA_TEST_NOW_NANOS", day2.to_string());

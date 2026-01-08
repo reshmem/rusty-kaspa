@@ -42,8 +42,7 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
             let json_value: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
             let legacy_mnemonics = extract_legacy_mnemonics(&json_value);
-            let mut config: AppConfig =
-                serde_json::from_value(json_value).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let mut config: AppConfig = serde_json::from_value(json_value).map_err(|err| ThresholdError::Message(err.to_string()))?;
 
             if let Some(mnemonics) = legacy_mnemonics {
                 if !mnemonics.is_empty() {
@@ -74,8 +73,7 @@ pub fn store_config_in_db(data_dir: &Path, config: &AppConfig) -> Result<(), Thr
     }
     let db = open_config_db(&db_path, true)?;
     let bytes = serde_json::to_vec_pretty(config).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    db.put(CONFIG_KEY, bytes)
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+    db.put(CONFIG_KEY, bytes).map_err(|err| ThresholdError::Message(err.to_string()))
 }
 
 fn rocksdb_path(data_dir: &Path) -> PathBuf {
@@ -107,10 +105,5 @@ fn open_config_db(path: &Path, create_if_missing: bool) -> Result<DB, ThresholdE
 fn extract_legacy_mnemonics(value: &serde_json::Value) -> Option<Vec<String>> {
     let mnemonics = value.pointer("/service/hd/mnemonics")?;
     let array = mnemonics.as_array()?;
-    Some(
-        array
-            .iter()
-            .filter_map(|entry| entry.as_str().map(|value| value.trim().to_string()))
-            .collect(),
-    )
+    Some(array.iter().filter_map(|entry| entry.as_str().map(|value| value.trim().to_string())).collect())
 }
