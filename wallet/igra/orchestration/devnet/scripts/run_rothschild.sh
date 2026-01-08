@@ -30,6 +30,7 @@ TPS=1
 RPCSERVER="127.0.0.1:16110"
 THREADS=2
 PRIVATE_KEY=""
+NETWORK_ARG=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,7 +83,15 @@ PY
   ) || exit 1
 fi
 
-CMD=("${ROTHSCHILD_BIN}" --rpcserver "${RPCSERVER}" --tps "${TPS}" --threads "${THREADS}" --private-key "${PRIVATE_KEY}" --to-addr "${TO_ADDR}")
+prefix_part="${TO_ADDR%%:*}"
+case "${prefix_part}" in
+  kaspa) NETWORK_ARG=(--network mainnet) ;;
+  kaspatest) NETWORK_ARG=(--network testnet) ;;
+  kaspadev) NETWORK_ARG=(--network devnet) ;;
+  *) NETWORK_ARG=() ;; # unknown prefix, leave default
+esac
+
+CMD=("${ROTHSCHILD_BIN}" --rpcserver "${RPCSERVER}" --tps "${TPS}" --threads "${THREADS}" --private-key "${PRIVATE_KEY}" --to-addr "${TO_ADDR}" "${NETWORK_ARG[@]}")
 if [[ -n "${AMOUNT}" ]]; then
   CMD+=(--amount "${AMOUNT}")
 fi
