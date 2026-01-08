@@ -8,10 +8,13 @@ use igra_core::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
 use igra_core::types::PeerId;
 use rand::RngCore;
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::str::FromStr;
 use tracing::{info, warn};
+
+use iroh_base::{EndpointAddr, EndpointId, TransportAddr};
 
 pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
@@ -121,8 +124,16 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
 
 pub async fn init_iroh_gossip(
     bind_port: Option<u16>,
+    static_addrs: Vec<EndpointAddr>,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
     let mut builder = iroh::Endpoint::builder();
+    let static_provider = iroh::discovery::static_provider::StaticProvider::new();
+    if !static_addrs.is_empty() {
+        for addr in &static_addrs {
+            static_provider.add_endpoint_info(addr.clone());
+        }
+        builder = builder.discovery(static_provider);
+    }
     if let Some(port) = bind_port {
         builder = builder.bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
     }
@@ -135,6 +146,27 @@ pub async fn init_iroh_gossip(
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .spawn();
     Ok((gossip, router))
+}
+
+pub fn parse_bootstrap_addrs(addrs: &[String]) -> Result<Vec<EndpointAddr>, ThresholdError> {
+    let mut out = Vec::new();
+    for entry in addrs.iter().filter(|s| !s.trim().is_empty()) {
+        let mut parts = entry.splitn(2, '@');
+        let id_str = parts.next().unwrap_or_default().trim();
+        let addr_str = parts.next().unwrap_or_default().trim();
+        if id_str.is_empty() || addr_str.is_empty() {
+            return Err(ThresholdError::ConfigError(
+                "iroh.bootstrap_addrs entries must be EndpointId@host:port".to_string(),
+            ));
+        }
+        let id = EndpointId::from_str(id_str)
+            .map_err(|err| ThresholdError::Message(format!("invalid EndpointId {id_str}: {err}")))?;
+        let sock: SocketAddr = addr_str
+            .parse()
+            .map_err(|err| ThresholdError::Message(format!("invalid socket address {addr_str}: {err}")))?;
+        out.push(EndpointAddr::from_parts(id, [TransportAddr::Ip(sock)]));
+    }
+    Ok(out)
 }
 
 fn parse_seed_hex(value: &str) -> Result<[u8; 32], ThresholdError> {

@@ -136,6 +136,7 @@ fn default_app_config(data_dir: &Path) -> AppConfig {
             group_id: None,
             network_id: 0,
             bootstrap: Vec::new(),
+            bootstrap_addrs: Vec::new(),
             bind_port: None,
         },
     }
@@ -464,6 +465,9 @@ fn apply_iroh_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), T
     }
     if let Some(value) = ini_value(ini, "iroh", "bootstrap") {
         config.iroh.bootstrap = split_csv(&value);
+    }
+    if let Some(value) = ini_value(ini, "iroh", "bootstrap_addrs") {
+        config.iroh.bootstrap_addrs = split_csv(&value);
     }
     if let Some(value) = ini_value(ini, "iroh", "bind_port") {
         config.iroh.bind_port = value.trim().parse::<u16>().ok();

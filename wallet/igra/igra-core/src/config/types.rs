@@ -172,6 +172,8 @@ pub struct IrohRuntimeConfig {
     #[serde(default)]
     pub bootstrap: Vec<String>,
     #[serde(default)]
+    pub bootstrap_addrs: Vec<String>,
+    #[serde(default)]
     pub bind_port: Option<u16>,
 }
 

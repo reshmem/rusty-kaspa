@@ -65,15 +65,26 @@ def rewrite_ini(
   section: Optional[str] = None
   seen_global_bootstrap = False
   seen_profile_bootstrap: dict[str, bool] = {}
+  seen_global_bootstrap_addrs = False
+  seen_profile_bootstrap_addrs: dict[str, bool] = {}
+  seen_profile_bind_port: dict[str, bool] = {}
   signer_map = {s["profile"]: s for s in data["signers"]}
 
   group_id = data.get("group_id", "")
   group_preimage_str = "|".join(sorted(data["member_pubkeys"]))
   verifier_keys = [f"{s['profile']}:{s['iroh_pubkey_hex']}" for s in data["signers"]]
   peer_map = {s["profile"]: s["iroh_peer_id"] for s in data["signers"]}
-  peer_ids = list(peer_map.values())
+  # iroh EndpointId == ed25519 public key (accepts hex). Use pubkey hex for bootstrap.
+  endpoint_map = {s["profile"]: s["iroh_pubkey_hex"] for s in data["signers"]}
+  peer_ids = list(endpoint_map.values())
   profile_bootstrap = {
-      profile: [peer_map[p] for p in peer_map if p != profile] for profile in peer_map
+      profile: [endpoint_map[p] for p in endpoint_map if p != profile] for profile in endpoint_map
+  }
+  port_map = {"signer-1": 9101, "signer-2": 9102, "signer-3": 9103}
+  bootstrap_addrs = [f"{endpoint_map[p]}@127.0.0.1:{port_map[p]}" for p in endpoint_map]
+  profile_bootstrap_addrs = {
+      profile: [f"{endpoint_map[p]}@127.0.0.1:{port_map[p]}" for p in endpoint_map if p != profile]
+      for profile in endpoint_map
   }
 
   comments = {
@@ -90,7 +101,8 @@ def rewrite_ini(
           f"member_pubkeys(sorted)={group_preimage_str})"
       ),
       "iroh.verifier_keys": f"generated {generated_ts}: signer verifier keys = ed25519 pubkeys derived from signer iroh seeds (profile:ed25519_pubkey)",
-      "iroh.bootstrap": f"generated {generated_ts}: bootstrap peers derived from signer iroh seeds",
+      "iroh.bootstrap": f"generated {generated_ts}: bootstrap EndpointIds (ed25519 pubkey hex) derived from signer iroh seeds",
+      "iroh.bootstrap_addrs": f"generated {generated_ts}: static EndpointId@127.0.0.1:bind_port entries for local devnet",
   }
 
   def flush_bootstrap(current_section: Optional[str]):
@@ -106,11 +118,35 @@ def rewrite_ini(
         out_lines.append(f"bootstrap = {','.join(profile_bootstrap[profile])}")
         seen_profile_bootstrap[profile] = True
 
+  def flush_bootstrap_addrs(current_section: Optional[str]):
+    nonlocal seen_global_bootstrap_addrs, seen_profile_bootstrap_addrs
+    if current_section == "iroh" and not seen_global_bootstrap_addrs and bootstrap_addrs:
+      out_lines.append(f"; {comments['iroh.bootstrap_addrs']}")
+      out_lines.append(f"bootstrap_addrs = {','.join(bootstrap_addrs)}")
+      seen_global_bootstrap_addrs = True
+    if current_section and current_section.startswith("signer-") and current_section.endswith(".iroh"):
+      profile = current_section.split(".")[0]
+      if not seen_profile_bootstrap_addrs.get(profile) and profile in profile_bootstrap_addrs:
+        out_lines.append(f"; {comments['iroh.bootstrap_addrs']}")
+        out_lines.append(f"bootstrap_addrs = {','.join(profile_bootstrap_addrs[profile])}")
+        seen_profile_bootstrap_addrs[profile] = True
+
+  def flush_bind_port(current_section: Optional[str]):
+    nonlocal seen_profile_bind_port
+    if current_section and current_section.startswith("signer-") and current_section.endswith(".iroh"):
+      profile = current_section.split(".")[0]
+      if not seen_profile_bind_port.get(profile) and profile in port_map:
+        out_lines.append(f"; generated {generated_ts}: fixed bind port for {profile}")
+        out_lines.append(f"bind_port = {port_map[profile]}")
+        seen_profile_bind_port[profile] = True
+
   for line in lines:
     if line.strip().startswith("; generated "):
       continue
     if line.strip().startswith("[") and line.strip().endswith("]"):
       flush_bootstrap(section)
+      flush_bootstrap_addrs(section)
+      flush_bind_port(section)
       section = line.strip()[1:-1]
     key = line.split("=", 1)[0].strip() if "=" in line else ""
     if key == "bootstrap":
@@ -150,6 +186,10 @@ def rewrite_ini(
       out_lines.append(f"; {comments['iroh.verifier_keys']}")
       out_lines.append(f"verifier_keys = {','.join(verifier_keys)}")
       continue
+    if section == "iroh" and key == "bootstrap_addrs":
+      out_lines.append(f"; {comments['iroh.bootstrap_addrs']}")
+      out_lines.append(f"bootstrap_addrs = {','.join(bootstrap_addrs)}")
+      continue
     if section and section.startswith("signer-") and ".hd" in section and key == "mnemonics":
       profile = section.split(".")[0]
       out_lines.append(f"; generated {generated_ts}: mnemonic for {profile} (comma-delimited)")
@@ -173,6 +213,17 @@ def rewrite_ini(
       out_lines.append(f"; {comments['iroh.group_id']}")
       out_lines.append(f"group_id = {group_id}")
       continue
+    if section and section.startswith("signer-") and ".iroh" in section and key == "bind_port":
+      profile = section.split(".")[0]
+      out_lines.append(f"; generated {generated_ts}: fixed bind port for {profile}")
+      out_lines.append(f"bind_port = {port_map.get(profile, '')}")
+      seen_profile_bind_port[profile] = True
+      continue
+    if section and section.startswith("signer-") and ".iroh" in section and key == "bootstrap_addrs":
+      profile = section.split(".")[0]
+      out_lines.append(f"; {comments['iroh.bootstrap_addrs']}")
+      out_lines.append(f"bootstrap_addrs = {','.join(profile_bootstrap_addrs.get(profile, []))}")
+      continue
     if section == "runtime" and key == "test_mode":
       out_lines.append(f"; generated {generated_ts}: test mode off for devnet realism")
       out_lines.append("test_mode = false")
@@ -190,6 +241,8 @@ def rewrite_ini(
     out_lines.append(line)
 
   flush_bootstrap(section)
+  flush_bootstrap_addrs(section)
+  flush_bind_port(section)
 
   new_text = "\n".join(out_lines) + "\n"
   ini_out.write_text(new_text)
