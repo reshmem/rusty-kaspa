@@ -1,7 +1,7 @@
 use crate::config::encryption::{encrypt_mnemonics, load_wallet_secret};
 use crate::config::types::{
-    default_ism_mode, AppConfig, HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode, IrohRuntimeConfig,
-    LayerZeroConfig, PsktBuildConfig, PsktHdConfig, PsktOutput, RpcConfig, RuntimeConfig, ServiceConfig, SigningConfig,
+    default_ism_mode, AppConfig, HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode, IrohRuntimeConfig, LayerZeroConfig,
+    PsktBuildConfig, PsktHdConfig, PsktOutput, RpcConfig, RuntimeConfig, ServiceConfig, SigningConfig,
 };
 use crate::error::ThresholdError;
 use crate::model::{GroupConfig, GroupMetadata, GroupPolicy};
@@ -18,13 +18,8 @@ const DEFAULT_SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub fn load_from_ini(path: &Path, data_dir: &Path) -> Result<AppConfig, ThresholdError> {
     let mut ini = Ini::new();
-    ini.load(path.to_string_lossy().as_ref()).map_err(|err| {
-        ThresholdError::Message(format!(
-            "failed to load config from {}: {}",
-            path.display(),
-            err
-        ))
-    })?;
+    ini.load(path.to_string_lossy().as_ref())
+        .map_err(|err| ThresholdError::Message(format!("failed to load config from {}: {}", path.display(), err)))?;
 
     let mut config = default_app_config(data_dir);
     let view = IniView::new(&ini, None);
@@ -36,13 +31,8 @@ pub fn load_from_ini(path: &Path, data_dir: &Path) -> Result<AppConfig, Threshol
 
 pub fn load_from_ini_profile(path: &Path, data_dir: &Path, profile: &str) -> Result<AppConfig, ThresholdError> {
     let mut ini = Ini::new();
-    ini.load(path.to_string_lossy().as_ref()).map_err(|err| {
-        ThresholdError::Message(format!(
-            "failed to load config from {}: {}",
-            path.display(),
-            err
-        ))
-    })?;
+    ini.load(path.to_string_lossy().as_ref())
+        .map_err(|err| ThresholdError::Message(format!("failed to load config from {}: {}", path.display(), err)))?;
 
     let mut config = default_app_config(data_dir);
     let view = IniView::new(&ini, Some(profile));
@@ -109,16 +99,10 @@ fn default_app_config(data_dir: &Path) -> AppConfig {
             hd_test_derivation_path: None,
             session_timeout_seconds: DEFAULT_SESSION_TIMEOUT_SECS,
         },
-        rpc: RpcConfig {
-            addr: DEFAULT_RPC_ADDR.to_string(),
-            token: None,
-            enabled: true,
-        },
+        rpc: RpcConfig { addr: DEFAULT_RPC_ADDR.to_string(), token: None, enabled: true },
         policy: GroupPolicy::default(),
         group: None,
-        signing: SigningConfig {
-            backend: "threshold".to_string(),
-        },
+        signing: SigningConfig { backend: "threshold".to_string() },
         hyperlane: HyperlaneConfig {
             validators: Vec::new(),
             threshold: None,
@@ -126,9 +110,7 @@ fn default_app_config(data_dir: &Path) -> AppConfig {
             poll_secs: DEFAULT_POLL_SECS,
             domains: Vec::new(),
         },
-        layerzero: LayerZeroConfig {
-            endpoint_pubkeys: Vec::new(),
-        },
+        layerzero: LayerZeroConfig { endpoint_pubkeys: Vec::new() },
         iroh: IrohRuntimeConfig {
             peer_id: None,
             signer_seed_hex: None,
@@ -136,6 +118,7 @@ fn default_app_config(data_dir: &Path) -> AppConfig {
             group_id: None,
             network_id: 0,
             bootstrap: Vec::new(),
+            bootstrap_addrs: Vec::new(),
             bind_port: None,
         },
     }
@@ -169,6 +152,9 @@ fn apply_pskt_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), T
     if let Some(value) = ini_value(ini, "pskt", "node_rpc_url") {
         config.service.pskt.node_rpc_url = value;
     }
+    if let Some(value) = ini_value(ini, "pskt", "multisig_address") {
+        config.service.pskt.source_addresses = vec![value];
+    }
     if let Some(value) = ini_value(ini, "pskt", "source_addresses") {
         config.service.pskt.source_addresses = split_csv(&value);
     }
@@ -176,10 +162,8 @@ fn apply_pskt_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), T
         config.service.pskt.redeem_script_hex = value;
     }
     if let Some(value) = ini_value(ini, "pskt", "sig_op_count") {
-        config.service.pskt.sig_op_count = value
-            .trim()
-            .parse::<u8>()
-            .map_err(|_| ThresholdError::Message("invalid pskt.sig_op_count".to_string()))?;
+        config.service.pskt.sig_op_count =
+            value.trim().parse::<u8>().map_err(|_| ThresholdError::Message("invalid pskt.sig_op_count".to_string()))?;
     }
     if let Some(value) = ini_value(ini, "pskt", "outputs") {
         config.service.pskt.outputs = parse_outputs(&value)?;
@@ -199,9 +183,7 @@ fn apply_pskt_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), T
 fn apply_hd_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), ThresholdError> {
     let mnemonics = ini_value(ini, "hd", "mnemonics").map(|value| split_csv(&value)).unwrap_or_default();
     let xpubs = ini_value(ini, "hd", "xpubs").map(|value| split_csv(&value)).unwrap_or_default();
-    let required_sigs = ini_value(ini, "hd", "required_sigs")
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
+    let required_sigs = ini_value(ini, "hd", "required_sigs").and_then(|value| value.trim().parse::<usize>().ok()).unwrap_or(0);
     let passphrase = ini_value(ini, "hd", "passphrase").and_then(|value| non_empty(&value));
 
     if mnemonics.is_empty() && xpubs.is_empty() {
@@ -217,12 +199,7 @@ fn apply_hd_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), Thr
         let payment_secret = passphrase.as_deref().map(Secret::from);
         Some(encrypt_mnemonics(mnemonics, payment_secret.as_ref(), &wallet_secret)?)
     };
-    config.service.hd = Some(PsktHdConfig {
-        encrypted_mnemonics,
-        xpubs,
-        required_sigs,
-        passphrase,
-    });
+    config.service.hd = Some(PsktHdConfig { encrypted_mnemonics, xpubs, required_sigs, passphrase });
     Ok(())
 }
 
@@ -284,9 +261,7 @@ fn apply_policy_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(),
 fn apply_group_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), ThresholdError> {
     let threshold_m = ini_value(ini, "group", "threshold_m").and_then(|v| v.parse::<u16>().ok());
     let threshold_n = ini_value(ini, "group", "threshold_n").and_then(|v| v.parse::<u16>().ok());
-    let member_pubkeys = ini_value(ini, "group", "member_pubkeys")
-        .map(|value| split_csv(&value))
-        .unwrap_or_default();
+    let member_pubkeys = ini_value(ini, "group", "member_pubkeys").map(|value| split_csv(&value)).unwrap_or_default();
 
     if threshold_m.is_none() && threshold_n.is_none() && member_pubkeys.is_empty() {
         return Ok(());
@@ -304,34 +279,22 @@ fn apply_group_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), 
         pubkeys.push(bytes);
     }
 
-    let network_id = ini_value(ini, "group", "network_id")
-        .and_then(|v| v.parse::<u8>().ok())
-        .unwrap_or(config.iroh.network_id);
+    let network_id = ini_value(ini, "group", "network_id").and_then(|v| v.parse::<u8>().ok()).unwrap_or(config.iroh.network_id);
 
-    let fee_rate_sompi_per_gram = ini_value(ini, "group", "fee_rate_sompi_per_gram")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let finality_blue_score_threshold = ini_value(ini, "group", "finality_blue_score_threshold")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let dust_threshold_sompi = ini_value(ini, "group", "dust_threshold_sompi")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let min_recipient_amount_sompi = ini_value(ini, "group", "min_recipient_amount_sompi")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
+    let fee_rate_sompi_per_gram = ini_value(ini, "group", "fee_rate_sompi_per_gram").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let finality_blue_score_threshold =
+        ini_value(ini, "group", "finality_blue_score_threshold").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let dust_threshold_sompi = ini_value(ini, "group", "dust_threshold_sompi").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let min_recipient_amount_sompi =
+        ini_value(ini, "group", "min_recipient_amount_sompi").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     let session_timeout_seconds = ini_value(ini, "group", "session_timeout_seconds")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(config.runtime.session_timeout_seconds);
 
     let group_metadata = GroupMetadata {
-        creation_timestamp_nanos: ini_value(ini, "group", "creation_timestamp_nanos")
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0),
+        creation_timestamp_nanos: ini_value(ini, "group", "creation_timestamp_nanos").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
         group_name: ini_value(ini, "group", "group_name").and_then(|v| non_empty(&v)),
-        policy_version: ini_value(ini, "group", "policy_version")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(1),
+        policy_version: ini_value(ini, "group", "policy_version").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1),
         extra: Default::default(),
     };
 
@@ -359,32 +322,19 @@ fn apply_hyperlane_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<
         config.hyperlane.events_dir = non_empty(&value);
     }
     if let Some(value) = ini_value(ini, "hyperlane", "threshold") {
-        config.hyperlane.threshold = Some(
-            value
-                .trim()
-                .parse::<u8>()
-                .map_err(|_| ThresholdError::Message("invalid hyperlane.threshold".to_string()))?,
-        );
+        config.hyperlane.threshold =
+            Some(value.trim().parse::<u8>().map_err(|_| ThresholdError::Message("invalid hyperlane.threshold".to_string()))?);
     }
     if let Some(value) = ini_value(ini, "hyperlane", "poll_secs") {
-        config.hyperlane.poll_secs = value
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| ThresholdError::Message("invalid hyperlane.poll_secs".to_string()))?;
+        config.hyperlane.poll_secs =
+            value.trim().parse::<u64>().map_err(|_| ThresholdError::Message("invalid hyperlane.poll_secs".to_string()))?;
     }
     // Per-domain ISM config: sections like [hyperlane.domain.<u32>]
     for (section_name, values) in ini.ini.get_map_ref() {
         if let Some(domain_str) = section_name.strip_prefix("hyperlane.domain.") {
-            let domain: u32 = domain_str
-                .trim()
-                .parse()
-                .map_err(|_| ThresholdError::Message(format!("invalid hyperlane domain {domain_str}")))?;
-            let mut domain_cfg = HyperlaneDomainConfig {
-                domain,
-                validators: Vec::new(),
-                threshold: 0,
-                mode: default_ism_mode(),
-            };
+            let domain: u32 =
+                domain_str.trim().parse().map_err(|_| ThresholdError::Message(format!("invalid hyperlane domain {domain_str}")))?;
+            let mut domain_cfg = HyperlaneDomainConfig { domain, validators: Vec::new(), threshold: 0, mode: default_ism_mode() };
             if let Some(vals) = values.get("validators").and_then(|v| v.as_ref()) {
                 domain_cfg.validators = split_csv(vals);
             }
@@ -398,11 +348,7 @@ fn apply_hyperlane_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<
                 domain_cfg.mode = match mode.trim().to_lowercase().as_str() {
                     "message_id_multisig" | "message-id-multisig" => HyperlaneIsmMode::MessageIdMultisig,
                     "merkle_root_multisig" | "merkle-root-multisig" => HyperlaneIsmMode::MerkleRootMultisig,
-                    other => {
-                        return Err(ThresholdError::Message(format!(
-                            "invalid hyperlane mode '{other}' for domain {domain}"
-                        )))
-                    }
+                    other => return Err(ThresholdError::Message(format!("invalid hyperlane mode '{other}' for domain {domain}"))),
                 };
             }
             config.hyperlane.domains.push(domain_cfg);
@@ -412,14 +358,10 @@ fn apply_hyperlane_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<
     // Backward compatibility: if domains not provided but flat validators exist, create a default domain 0 entry using the legacy threshold.
     if config.hyperlane.domains.is_empty() && !config.hyperlane.validators.is_empty() {
         let legacy_threshold = config.hyperlane.threshold.ok_or_else(|| {
-            ThresholdError::ConfigError(
-                "hyperlane.threshold is required when using legacy flat validators".to_string(),
-            )
+            ThresholdError::ConfigError("hyperlane.threshold is required when using legacy flat validators".to_string())
         })?;
         if legacy_threshold == 0 {
-            return Err(ThresholdError::ConfigError(
-                "hyperlane.threshold must be > 0".to_string(),
-            ));
+            return Err(ThresholdError::ConfigError("hyperlane.threshold must be > 0".to_string()));
         }
         if legacy_threshold as usize > config.hyperlane.validators.len() {
             return Err(ThresholdError::ConfigError(format!(
@@ -457,13 +399,14 @@ fn apply_iroh_section(config: &mut AppConfig, ini: &IniView<'_>) -> Result<(), T
         config.iroh.group_id = non_empty(&value);
     }
     if let Some(value) = ini_value(ini, "iroh", "network_id") {
-        config.iroh.network_id = value
-            .trim()
-            .parse::<u8>()
-            .map_err(|_| ThresholdError::Message("invalid iroh.network_id".to_string()))?;
+        config.iroh.network_id =
+            value.trim().parse::<u8>().map_err(|_| ThresholdError::Message("invalid iroh.network_id".to_string()))?;
     }
     if let Some(value) = ini_value(ini, "iroh", "bootstrap") {
         config.iroh.bootstrap = split_csv(&value);
+    }
+    if let Some(value) = ini_value(ini, "iroh", "bootstrap_addrs") {
+        config.iroh.bootstrap_addrs = split_csv(&value);
     }
     if let Some(value) = ini_value(ini, "iroh", "bind_port") {
         config.iroh.bind_port = value.trim().parse::<u16>().ok();
@@ -492,18 +435,11 @@ fn ini_value(ini: &IniView<'_>, section: &str, key: &str) -> Option<String> {
             }
         }
     }
-    ini.ini
-        .get(section, key)
-        .map(|value| value.trim().to_string())
-        .filter(|v| !v.is_empty())
+    ini.ini.get(section, key).map(|value| value.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 fn split_csv(value: &str) -> Vec<String> {
-    value
-        .split(|c| c == ',' || c == '|')
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .collect()
+    value.split(|c| c == ',' || c == '|').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()).collect()
 }
 
 fn parse_outputs(value: &str) -> Result<Vec<PsktOutput>, ThresholdError> {
@@ -519,9 +455,8 @@ fn parse_outputs(value: &str) -> Result<Vec<PsktOutput>, ThresholdError> {
         if address.is_empty() || amount.is_empty() {
             return Err(ThresholdError::Message("pskt.outputs must be address:amount pairs".to_string()));
         }
-        let amount_sompi = amount
-            .parse::<u64>()
-            .map_err(|_| ThresholdError::Message("pskt.outputs amount must be u64".to_string()))?;
+        let amount_sompi =
+            amount.parse::<u64>().map_err(|_| ThresholdError::Message("pskt.outputs amount must be u64".to_string()))?;
         outputs.push(PsktOutput { address: address.to_string(), amount_sompi });
     }
     Ok(outputs)

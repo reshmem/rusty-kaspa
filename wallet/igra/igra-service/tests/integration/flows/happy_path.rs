@@ -6,12 +6,12 @@ use crate::integration_harness::test_keys::{TestKeyGenerator, IROH_PEERS, IROH_S
 use crate::integration_harness::test_network::TestIrohNetwork;
 use igra_core::coordination::coordinator::Coordinator;
 use igra_core::event::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::hd::SigningKeypair;
 use igra_core::model::{EventSource, RequestDecision, SigningEvent};
 use igra_core::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::rpc::{NodeRpc, UtxoWithOutpoint};
 use igra_core::signing::threshold::ThresholdSigner;
 use igra_core::signing::SignerBackend;
-use igra_core::hd::SigningKeypair;
 use igra_core::storage::rocks::RocksStorage;
 use igra_core::storage::Storage;
 use igra_core::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
@@ -58,9 +58,7 @@ fn parse_group_id(hex_value: &str) -> [u8; 32] {
 fn build_event(event_id: &str, amount_sompi: u64, destination: &str) -> SigningEvent {
     SigningEvent {
         event_id: event_id.to_string(),
-        event_source: EventSource::Api {
-            issuer: "integration-tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "integration-tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
         destination_address: destination.to_string(),
@@ -98,10 +96,7 @@ fn build_pskt_bundle(
         sig_op_count: m as u8,
     };
     let destination = Address::constructor("kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
-    let output = MultisigOutput {
-        amount: amount_sompi,
-        script_public_key: pay_to_address_script(&destination),
-    };
+    let output = MultisigOutput { amount: amount_sompi, script_public_key: pay_to_address_script(&destination) };
 
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
     let pskt_blob = serialize_pskt(&pskt).expect("serialize");
@@ -119,10 +114,7 @@ async fn happy_path_hyperlane_2_of_3() {
     let signer_config = root.join("artifacts/igra-config.ini");
     let signer_profiles = ["signer-1", "signer-2", "signer-3"];
 
-    let mut configs = signer_profiles
-        .iter()
-        .map(|profile| load_app_config_from_profile(&signer_config, profile))
-        .collect::<Vec<_>>();
+    let mut configs = signer_profiles.iter().map(|profile| load_app_config_from_profile(&signer_config, profile)).collect::<Vec<_>>();
 
     let group_id_hex = configs[0].iroh.group_id.clone().expect("group_id");
     let group_id = parse_group_id(&group_id_hex);
@@ -178,30 +170,36 @@ async fn happy_path_hyperlane_2_of_3() {
     let bootstrap_b = vec![network.endpoints[0].id().to_string(), network.endpoints[2].id().to_string()];
     let bootstrap_c = vec![network.endpoints[0].id().to_string(), network.endpoints[1].id().to_string()];
 
-    let transport_a = Arc::new(IrohTransport::new(
-        network.gossips[0].clone(),
-        signers[0].clone(),
-        verifier.clone(),
-        storage_a.clone(),
-        IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_a },
-    )
-    .expect("transport a"));
-    let transport_b = Arc::new(IrohTransport::new(
-        network.gossips[1].clone(),
-        signers[1].clone(),
-        verifier.clone(),
-        storage_b.clone(),
-        IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_b },
-    )
-    .expect("transport b"));
-    let transport_c = Arc::new(IrohTransport::new(
-        network.gossips[2].clone(),
-        signers[2].clone(),
-        verifier.clone(),
-        storage_c.clone(),
-        IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_c },
-    )
-    .expect("transport c"));
+    let transport_a = Arc::new(
+        IrohTransport::new(
+            network.gossips[0].clone(),
+            signers[0].clone(),
+            verifier.clone(),
+            storage_a.clone(),
+            IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_a },
+        )
+        .expect("transport a"),
+    );
+    let transport_b = Arc::new(
+        IrohTransport::new(
+            network.gossips[1].clone(),
+            signers[1].clone(),
+            verifier.clone(),
+            storage_b.clone(),
+            IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_b },
+        )
+        .expect("transport b"),
+    );
+    let transport_c = Arc::new(
+        IrohTransport::new(
+            network.gossips[2].clone(),
+            signers[2].clone(),
+            verifier.clone(),
+            storage_c.clone(),
+            IrohConfig { network_id: 0, group_id, bootstrap_nodes: bootstrap_c },
+        )
+        .expect("transport c"),
+    );
 
     let rpc = Arc::new(MockKaspaNode::new());
     let rpc_dyn: Arc<dyn NodeRpc> = rpc.clone();
@@ -239,13 +237,7 @@ async fn happy_path_hyperlane_2_of_3() {
         group_id,
     ));
 
-    let source_address = app_a
-        .service
-        .pskt
-        .source_addresses
-        .first()
-        .expect("source address")
-        .clone();
+    let source_address = app_a.service.pskt.source_addresses.first().expect("source address").clone();
     let source_address = Address::constructor(&source_address);
     let utxo_amount = 100 * SOMPI_PER_KAS;
     let utxo = UtxoWithOutpoint {
@@ -255,20 +247,12 @@ async fn happy_path_hyperlane_2_of_3() {
     };
     rpc.add_utxo(utxo);
 
-    let destination = app_a
-        .policy
-        .allowed_destinations
-        .first()
-        .cloned()
-        .expect("destination");
+    let destination = app_a.policy.allowed_destinations.first().cloned().expect("destination");
 
     let signing_event = signing_event_for(
         destination.clone(),
         50 * SOMPI_PER_KAS,
-        EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
     );
 
     let hyperlane = MockHyperlaneValidator::new(2, 2);
@@ -323,7 +307,6 @@ async fn happy_path_hyperlane_2_of_3() {
     loop_a.abort();
     loop_b.abort();
     loop_c.abort();
-
 }
 
 #[tokio::test]
@@ -335,14 +318,12 @@ async fn happy_path_threshold_3_of_5_all_signers() {
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("coordinator"), [5u8; 32], 0));
-    let _subscription = transport
-        .subscribe_group([5u8; 32])
-        .await
-        .expect("proposal subscription");
+    let _subscription = transport.subscribe_group([5u8; 32]).await.expect("proposal subscription");
     let coordinator = Coordinator::new(transport, storage.clone());
     let rpc = Arc::new(igra_core::rpc::UnimplementedRpc::new());
 
-    let event = build_event("event-3of5-all", 50 * SOMPI_PER_KAS, "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
+    let event =
+        build_event("event-3of5-all", 50 * SOMPI_PER_KAS, "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
     let request_id = RequestId::from("req-3of5-all");
     coordinator
         .propose_session(
@@ -377,8 +358,9 @@ async fn happy_path_threshold_3_of_5_all_signers() {
         }
     }
 
-    let combined = igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
-        .expect("apply partials");
+    let combined =
+        igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
+            .expect("apply partials");
     let tx_id = coordinator
         .finalize_and_submit_multisig(&*rpc, &request_id, combined, 3, &pubkeys, &kaspa_consensus_core::config::params::DEVNET_PARAMS)
         .await
@@ -398,14 +380,12 @@ async fn happy_path_threshold_3_of_5_exactly_three_signers() {
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("coordinator"), [6u8; 32], 0));
-    let _subscription = transport
-        .subscribe_group([6u8; 32])
-        .await
-        .expect("proposal subscription");
+    let _subscription = transport.subscribe_group([6u8; 32]).await.expect("proposal subscription");
     let coordinator = Coordinator::new(transport, storage.clone());
     let rpc = Arc::new(igra_core::rpc::UnimplementedRpc::new());
 
-    let event = build_event("event-3of5-exact", 25 * SOMPI_PER_KAS, "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
+    let event =
+        build_event("event-3of5-exact", 25 * SOMPI_PER_KAS, "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
     let request_id = RequestId::from("req-3of5-exact");
     coordinator
         .propose_session(
@@ -440,8 +420,9 @@ async fn happy_path_threshold_3_of_5_exactly_three_signers() {
         }
     }
 
-    let combined = igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
-        .expect("apply partials");
+    let combined =
+        igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
+            .expect("apply partials");
     let tx_id = coordinator
         .finalize_and_submit_multisig(&*rpc, &request_id, combined, 3, &pubkeys, &kaspa_consensus_core::config::params::DEVNET_PARAMS)
         .await
@@ -461,14 +442,15 @@ async fn happy_path_threshold_3_of_5_insufficient_signers() {
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("coordinator"), [7u8; 32], 0));
-    let _subscription = transport
-        .subscribe_group([7u8; 32])
-        .await
-        .expect("proposal subscription");
+    let _subscription = transport.subscribe_group([7u8; 32]).await.expect("proposal subscription");
     let coordinator = Coordinator::new(transport, storage.clone());
     let rpc = Arc::new(igra_core::rpc::UnimplementedRpc::new());
 
-    let event = build_event("event-3of5-insufficient", 10 * SOMPI_PER_KAS, "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3");
+    let event = build_event(
+        "event-3of5-insufficient",
+        10 * SOMPI_PER_KAS,
+        "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3",
+    );
     let request_id = RequestId::from("req-3of5-insufficient");
     coordinator
         .propose_session(
@@ -503,8 +485,9 @@ async fn happy_path_threshold_3_of_5_insufficient_signers() {
         }
     }
 
-    let combined = igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
-        .expect("apply partials");
+    let combined =
+        igra_core::pskt::multisig::apply_partial_sigs(&pskt_blob, &storage.list_partial_sigs(&request_id).expect("partials"))
+            .expect("apply partials");
     let err = coordinator
         .finalize_and_submit_multisig(&*rpc, &request_id, combined, 3, &pubkeys, &kaspa_consensus_core::config::params::DEVNET_PARAMS)
         .await

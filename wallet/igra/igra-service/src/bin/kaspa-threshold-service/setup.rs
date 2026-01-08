@@ -8,20 +8,19 @@ use igra_core::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
 use igra_core::types::PeerId;
 use rand::RngCore;
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+use iroh_base::{EndpointAddr, EndpointId, SecretKey as IrohSecretKey, TransportAddr};
 
 pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(true)
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(true).with_thread_ids(true).try_init();
     igra_core::audit::init_audit_logger(Box::new(igra_core::audit::StructuredAuditLogger));
     Ok(())
 }
@@ -66,9 +65,7 @@ pub fn warn_test_mode(app_config: &AppConfig) {
 }
 
 pub fn init_storage(data_dir: &str) -> Result<Arc<RocksStorage>, ThresholdError> {
-    RocksStorage::open_in_dir(data_dir)
-        .map(Arc::new)
-        .map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
+    RocksStorage::open_in_dir(data_dir).map(Arc::new).map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
 }
 
 pub struct SignerIdentity {
@@ -93,11 +90,7 @@ pub fn init_signer_identity(app_config: &AppConfig) -> Result<SignerIdentity, Th
     keys.entry(peer_id.clone()).or_insert_with(|| signer.verifying_key());
     let verifier = Arc::new(StaticEd25519Verifier::new(keys));
 
-    Ok(SignerIdentity {
-        peer_id,
-        signer,
-        verifier,
-    })
+    Ok(SignerIdentity { peer_id, signer, verifier })
 }
 
 pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError> {
@@ -121,37 +114,58 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
 
 pub async fn init_iroh_gossip(
     bind_port: Option<u16>,
+    static_addrs: Vec<EndpointAddr>,
+    secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    let mut builder = iroh::Endpoint::builder();
+    let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
+    let static_provider = iroh::discovery::static_provider::StaticProvider::new();
+    if !static_addrs.is_empty() {
+        for addr in &static_addrs {
+            static_provider.add_endpoint_info(addr.clone());
+        }
+        builder = builder.discovery(static_provider);
+    }
     if let Some(port) = bind_port {
         builder = builder.bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
     }
-    let endpoint = builder
-        .bind()
-        .await
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let endpoint = builder.bind().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-    let router = iroh::protocol::Router::builder(endpoint)
-        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-        .spawn();
+    let router = iroh::protocol::Router::builder(endpoint).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
     Ok((gossip, router))
+}
+
+pub fn parse_bootstrap_addrs(addrs: &[String]) -> Result<Vec<EndpointAddr>, ThresholdError> {
+    let mut out = Vec::new();
+    for entry in addrs.iter().filter(|s| !s.trim().is_empty()) {
+        let mut parts = entry.splitn(2, '@');
+        let id_str = parts.next().unwrap_or_default().trim();
+        let addr_str = parts.next().unwrap_or_default().trim();
+        if id_str.is_empty() || addr_str.is_empty() {
+            return Err(ThresholdError::ConfigError("iroh.bootstrap_addrs entries must be EndpointId@host:port".to_string()));
+        }
+        let id = EndpointId::from_str(id_str).map_err(|err| ThresholdError::Message(format!("invalid EndpointId {id_str}: {err}")))?;
+        let sock: SocketAddr =
+            addr_str.parse().map_err(|err| ThresholdError::Message(format!("invalid socket address {addr_str}: {err}")))?;
+        out.push(EndpointAddr::from_parts(id, [TransportAddr::Ip(sock)]));
+    }
+    Ok(out)
 }
 
 fn parse_seed_hex(value: &str) -> Result<[u8; 32], ThresholdError> {
     let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let array: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ThresholdError::Message("expected 32-byte hex seed".to_string()))?;
+    let array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex seed".to_string()))?;
     Ok(array)
+}
+
+pub fn derive_iroh_secret(seed_hex: &str) -> Result<IrohSecretKey, ThresholdError> {
+    let seed = parse_seed_hex(seed_hex)?;
+    Ok(IrohSecretKey::from(seed))
 }
 
 fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
     let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let array: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
+    let array: [u8; 32] =
+        bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
     Ok(array)
 }
 
@@ -162,15 +176,11 @@ fn parse_verifier_keys(values: &[String]) -> Result<HashMap<PeerId, VerifyingKey
         let peer_id = parts.next().unwrap_or_default().trim();
         let key_hex = parts.next().unwrap_or_default().trim();
         if peer_id.is_empty() || key_hex.is_empty() {
-            return Err(ThresholdError::Message(
-                "expected verifier entry as peer_id:hex_pubkey".to_string(),
-            ));
+            return Err(ThresholdError::Message("expected verifier entry as peer_id:hex_pubkey".to_string()));
         }
         let bytes = hex::decode(key_hex).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let array: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| ThresholdError::Message("expected 32-byte ed25519 public key".to_string()))?;
+        let array: [u8; 32] =
+            bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte ed25519 public key".to_string()))?;
         let key = VerifyingKey::from_bytes(&array).map_err(|err| ThresholdError::Message(err.to_string()))?;
         keys.insert(PeerId::from(peer_id), key);
     }
@@ -194,8 +204,7 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     let identity_path = identity_dir.join("identity.json");
     if identity_path.exists() {
         let bytes = std::fs::read(&identity_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let record: IdentityRecord =
-            serde_json::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let record: IdentityRecord = serde_json::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
         if record.peer_id.trim().is_empty() || record.seed_hex.trim().is_empty() {
             return Err(ThresholdError::Message("identity.json is missing peer_id or seed_hex".to_string()));
         }
@@ -207,10 +216,7 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     rand::rngs::OsRng.fill_bytes(&mut seed);
     let mut peer_id_bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut peer_id_bytes);
-    let record = IdentityRecord {
-        peer_id: format!("peer-{}", hex::encode(peer_id_bytes)),
-        seed_hex: hex::encode(seed),
-    };
+    let record = IdentityRecord { peer_id: format!("peer-{}", hex::encode(peer_id_bytes)), seed_hex: hex::encode(seed) };
     let json = serde_json::to_vec_pretty(&record).map_err(|err| ThresholdError::Message(err.to_string()))?;
     std::fs::write(&identity_path, json).map_err(|err| ThresholdError::Message(err.to_string()))?;
     info!("created iroh identity at {}", identity_path.display());

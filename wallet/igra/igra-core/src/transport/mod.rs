@@ -1,11 +1,11 @@
-use async_trait::async_trait;
 use crate::error::ThresholdError;
 use crate::model::{Hash32, SigningEvent};
-use crate::types::{PeerId, RequestId, SessionId};
+pub use crate::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
 pub use crate::transport::messages::{
     FinalizeAck, FinalizeNotice, MessageEnvelope, PartialSigSubmit, SignerAck, SigningEventPropose, TransportMessage,
 };
-pub use crate::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
+use crate::types::{PeerId, RequestId, SessionId};
+use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 
@@ -33,10 +33,7 @@ impl TransportSubscription {
         Self { inner, _keepalive: None }
     }
 
-    pub fn new_with_keepalive(
-        inner: BoxStream<'static, Result<MessageEnvelope>>,
-        keepalive: Box<dyn std::any::Any + Send>,
-    ) -> Self {
+    pub fn new_with_keepalive(inner: BoxStream<'static, Result<MessageEnvelope>>, keepalive: Box<dyn std::any::Any + Send>) -> Self {
         Self { inner, _keepalive: Some(keepalive) }
     }
 
@@ -80,6 +77,6 @@ pub trait Transport: Send + Sync {
     async fn subscribe_session(&self, session_id: SessionId) -> Result<TransportSubscription>;
 }
 
-pub mod messages;
 pub mod identity;
+pub mod messages;
 pub mod mock;

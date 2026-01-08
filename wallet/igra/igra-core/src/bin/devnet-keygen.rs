@@ -1,13 +1,14 @@
 use ed25519_dalek::SigningKey;
+use igra_core::group_id::compute_group_id;
+use igra_core::model::{GroupConfig, GroupMetadata, GroupPolicy};
 use kaspa_addresses::Prefix;
-use kaspa_bip32::{Language, Mnemonic, WordCount};
+use kaspa_bip32::{AddressType, ChildNumber, ExtendedPrivateKey, Language, Mnemonic, WordCount};
+use kaspa_wallet_core::derivation::create_multisig_address;
 use kaspa_wallet_core::encryption::EncryptionKind;
 use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use kaspa_wallet_keys::derivation::gen1::{PubkeyDerivationManager, WalletDerivationManager};
 use kaspa_wallet_keys::derivation::traits::WalletDerivationManagerTrait;
-use igra_core::group_id::compute_group_id;
-use igra_core::model::{GroupConfig, GroupMetadata, GroupPolicy};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -19,6 +20,7 @@ struct WalletOut {
     password: String,
     name: String,
     mining_address: String,
+    private_key_hex: String,
 }
 
 #[derive(Serialize)]
@@ -44,12 +46,14 @@ struct HyperlaneKeyOut {
 struct Output {
     wallet: WalletOut,
     signers: Vec<SignerOut>,
+    signer_addresses: Vec<String>,
     member_pubkeys: Vec<String>,
     redeem_script_hex: String,
     source_addresses: Vec<String>,
     change_address: String,
     hyperlane_keys: Vec<HyperlaneKeyOut>,
     group_id: String,
+    multisig_address: String,
 }
 
 fn mnemonic_phrase() -> Mnemonic {
@@ -73,15 +77,26 @@ fn peer_id_from_seed(seed_hex: &str) -> String {
     format!("peer-{}", hex::encode(prefix))
 }
 
-fn derive_pubkey_and_address(mnemonic: &Mnemonic, is_multisig: bool, account_index: u64, cosigner_index: Option<u32>) -> (PublicKey, String) {
+fn derive_pubkey_and_address(
+    mnemonic: &Mnemonic,
+    is_multisig: bool,
+    account_index: u64,
+    cosigner_index: Option<u32>,
+) -> (PublicKey, String) {
     let xprv = kaspa_bip32::ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed("")).expect("xprv");
     let xprv_str = xprv.to_string(kaspa_bip32::Prefix::KPRV).to_string();
     let wallet = WalletDerivationManager::from_master_xprv(&xprv_str, is_multisig, account_index, cosigner_index).expect("wallet");
     let pk = wallet.derive_receive_pubkey(0).expect("pubkey");
-    let address = PubkeyDerivationManager::create_address(&pk, Prefix::Devnet, false)
-        .expect("address")
-        .to_string();
+    let address = PubkeyDerivationManager::create_address(&pk, Prefix::Devnet, false).expect("address").to_string();
     (pk, address)
+}
+
+fn derive_wallet_private_key_hex(mnemonic: &Mnemonic) -> String {
+    let xprv = ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed("")).expect("xprv");
+    let path = WalletDerivationManager::build_derivate_path(false, 0, None, Some(AddressType::Receive)).expect("path");
+    let receive_root = xprv.derive_path(&path).expect("receive root");
+    let leaf = receive_root.derive_child(ChildNumber::new(0, false).expect("child")).expect("receive index 0");
+    hex::encode(leaf.private_key().secret_bytes())
 }
 
 fn main() {
@@ -91,11 +106,13 @@ fn main() {
     // Wallet (funding/mining)
     let wallet_mnemonic = mnemonic_phrase();
     let (_, mining_address) = derive_pubkey_and_address(&wallet_mnemonic, false, 0, None);
+    let wallet_private_key_hex = derive_wallet_private_key_hex(&wallet_mnemonic);
     let wallet = WalletOut {
         mnemonic: wallet_mnemonic.phrase().to_string(),
         password: password.clone(),
         name: name.clone(),
         mining_address,
+        private_key_hex: wallet_private_key_hex,
     };
 
     // Signers
@@ -115,11 +132,7 @@ fn main() {
 
         // Iroh seed
         let iroh_seed_hex = random_seed_hex();
-        let iroh_seed_bytes: [u8; 32] = hex::decode(&iroh_seed_hex)
-            .expect("seed hex")
-            .as_slice()
-            .try_into()
-            .expect("32-byte seed");
+        let iroh_seed_bytes: [u8; 32] = hex::decode(&iroh_seed_hex).expect("seed hex").as_slice().try_into().expect("32-byte seed");
         let iroh_signing = SigningKey::from_bytes(&iroh_seed_bytes);
         let iroh_pubkey_hex = hex::encode(iroh_signing.verifying_key().to_bytes());
         let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex);
@@ -142,8 +155,7 @@ fn main() {
         .iter()
         .map(|s| {
             let mn = Mnemonic::new(s.mnemonic.as_str(), Language::English).expect("mn");
-            PrvKeyData::try_from_mnemonic(mn, payment_secret.as_ref(), EncryptionKind::XChaCha20Poly1305, None)
-                .expect("prv")
+            PrvKeyData::try_from_mnemonic(mn, payment_secret.as_ref(), EncryptionKind::XChaCha20Poly1305, None).expect("prv")
         })
         .collect();
     let pubkeys = igra_core::hd::derive_pubkeys(igra_core::hd::HdInputs {
@@ -156,7 +168,17 @@ fn main() {
     let redeem_script = igra_core::hd::redeem_script_from_pubkeys(&pubkeys, 2).expect("redeem");
     let redeem_script_hex = hex::encode(redeem_script);
 
-    let change_address = source_addresses.get(0).cloned().unwrap_or_default();
+    let multisig_address = {
+        let keys: Vec<PublicKey> = member_pubkeys
+            .iter()
+            .map(|hex_pk| {
+                let bytes = hex::decode(hex_pk).expect("pubkey hex decode");
+                PublicKey::from_slice(&bytes).expect("pubkey parse")
+            })
+            .collect();
+        create_multisig_address(2, keys, Prefix::Devnet, true).expect("multisig address").to_string()
+    };
+    let change_address = multisig_address.clone();
 
     // Hyperlane validators (2)
     let secp = Secp256k1::new();
@@ -179,26 +201,20 @@ fn main() {
         max_daily_volume_sompi: Some(500_000_000_000),
         require_reason: false,
     };
-    let group_metadata = GroupMetadata {
-        creation_timestamp_nanos: 0,
-        group_name: None,
-        policy_version: 1,
-        extra: Default::default(),
-    };
+    let group_metadata = GroupMetadata { creation_timestamp_nanos: 0, group_name: None, policy_version: 1, extra: Default::default() };
 
     let output = Output {
         wallet,
         signers,
+        signer_addresses: source_addresses.clone(),
         member_pubkeys: member_pubkeys.clone(),
         redeem_script_hex,
-        source_addresses,
+        source_addresses: vec![multisig_address.clone()],
         change_address,
         hyperlane_keys,
         group_id: {
-            let member_pubkeys_bytes: Vec<Vec<u8>> = member_pubkeys
-                .iter()
-                .map(|hex_pk| hex::decode(hex_pk).expect("pubkey hex decode"))
-                .collect();
+            let member_pubkeys_bytes: Vec<Vec<u8>> =
+                member_pubkeys.iter().map(|hex_pk| hex::decode(hex_pk).expect("pubkey hex decode")).collect();
             let group_cfg = GroupConfig {
                 network_id: 0,
                 threshold_m: 2,
@@ -214,6 +230,7 @@ fn main() {
             };
             hex::encode(compute_group_id(&group_cfg).expect("group id"))
         },
+        multisig_address,
     };
 
     let json = serde_json::to_string_pretty(&output).expect("json");

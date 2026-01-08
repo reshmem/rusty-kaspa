@@ -1,11 +1,11 @@
 use crate::integration_harness::test_keys::TestKeyGenerator;
+use igra_core::coordination::coordinator::Coordinator;
+use igra_core::hd::SigningKeypair;
 use igra_core::model::{EventSource, RequestDecision, SigningEvent};
 use igra_core::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
-use igra_core::coordination::coordinator::Coordinator;
 use igra_core::rpc::UnimplementedRpc;
 use igra_core::signing::threshold::ThresholdSigner;
 use igra_core::signing::SignerBackend;
-use igra_core::hd::SigningKeypair;
 use igra_core::storage::rocks::RocksStorage;
 use igra_core::storage::Storage;
 use igra_core::transport::mock::{MockHub, MockTransport};
@@ -25,10 +25,7 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
         redeem_script: redeem_script.to_vec(),
         sig_op_count: 2,
     };
-    let output = MultisigOutput {
-        amount,
-        script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-    };
+    let output = MultisigOutput { amount, script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
     let pskt_blob = serialize_pskt(&pskt).expect("serialize pskt");
     let signer_pskt = pskt.signer();
@@ -40,13 +37,10 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
 fn build_event(event_id: &str, amount: u64) -> SigningEvent {
     SigningEvent {
         event_id: event_id.to_string(),
-        event_source: EventSource::Api {
-            issuer: "integration-tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "integration-tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: amount,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,
@@ -60,10 +54,7 @@ async fn test_interleaved_session_processing() {
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("coordinator"), [7u8; 32], 0));
-    let _subscription = transport
-        .subscribe_group([7u8; 32])
-        .await
-        .expect("proposal subscription");
+    let _subscription = transport.subscribe_group([7u8; 32]).await.expect("proposal subscription");
     let coordinator = Coordinator::new(transport, storage.clone());
     let rpc = Arc::new(UnimplementedRpc::new());
 
@@ -148,17 +139,33 @@ async fn test_interleaved_session_processing() {
     }
 
     let public_keys = vec![kp1.public_key(), kp2.public_key()];
-    let combined_a = igra_core::pskt::multisig::apply_partial_sigs(&pskt_a, &storage.list_partial_sigs(&request_a).expect("partials a"))
-        .expect("apply a");
-    let combined_b = igra_core::pskt::multisig::apply_partial_sigs(&pskt_b, &storage.list_partial_sigs(&request_b).expect("partials b"))
-        .expect("apply b");
+    let combined_a =
+        igra_core::pskt::multisig::apply_partial_sigs(&pskt_a, &storage.list_partial_sigs(&request_a).expect("partials a"))
+            .expect("apply a");
+    let combined_b =
+        igra_core::pskt::multisig::apply_partial_sigs(&pskt_b, &storage.list_partial_sigs(&request_b).expect("partials b"))
+            .expect("apply b");
 
     coordinator
-        .finalize_and_submit_multisig(&*rpc, &request_a, combined_a, 2, &public_keys, &kaspa_consensus_core::config::params::DEVNET_PARAMS)
+        .finalize_and_submit_multisig(
+            &*rpc,
+            &request_a,
+            combined_a,
+            2,
+            &public_keys,
+            &kaspa_consensus_core::config::params::DEVNET_PARAMS,
+        )
         .await
         .expect("finalize a");
     coordinator
-        .finalize_and_submit_multisig(&*rpc, &request_b, combined_b, 2, &public_keys, &kaspa_consensus_core::config::params::DEVNET_PARAMS)
+        .finalize_and_submit_multisig(
+            &*rpc,
+            &request_b,
+            combined_b,
+            2,
+            &public_keys,
+            &kaspa_consensus_core::config::params::DEVNET_PARAMS,
+        )
         .await
         .expect("finalize b");
 

@@ -63,37 +63,23 @@ async fn rpc_health_ready_metrics() {
     let bound_addr = listener.local_addr().expect("local addr");
 
     let server = tokio::spawn(async move {
-        axum::serve(listener, build_router(state))
-            .await
-            .expect("serve");
+        axum::serve(listener, build_router(state)).await.expect("serve");
     });
 
     let client = Client::new();
 
-    let health = client
-        .get(format!("http://{}/health", bound_addr))
-        .send()
-        .await
-        .expect("health call");
+    let health = client.get(format!("http://{}/health", bound_addr)).send().await.expect("health call");
     assert!(health.status().is_success());
     let health_body: Value = health.json().await.expect("health json");
     assert_eq!(health_body["status"], "healthy");
 
-    let ready = client
-        .get(format!("http://{}/ready", bound_addr))
-        .send()
-        .await
-        .expect("ready call");
+    let ready = client.get(format!("http://{}/ready", bound_addr)).send().await.expect("ready call");
     assert!(ready.status().is_success());
     let ready_body: Value = ready.json().await.expect("ready json");
     assert_eq!(ready_body["status"], "degraded");
     assert_eq!(ready_body["node_connected"], false);
 
-    let metrics_resp = client
-        .get(format!("http://{}/metrics", bound_addr))
-        .send()
-        .await
-        .expect("metrics call");
+    let metrics_resp = client.get(format!("http://{}/metrics", bound_addr)).send().await.expect("metrics call");
     assert!(metrics_resp.status().is_success());
     let metrics_body = metrics_resp.text().await.expect("metrics text");
     assert!(metrics_body.contains("rpc_requests_total"));

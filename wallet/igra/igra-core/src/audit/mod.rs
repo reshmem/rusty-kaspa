@@ -108,13 +108,8 @@ pub struct FileAuditLogger {
 
 impl FileAuditLogger {
     pub fn new(path: &std::path::Path) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        Ok(Self {
-            file: Arc::new(Mutex::new(file)),
-        })
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self { file: Arc::new(Mutex::new(file)) })
     }
 }
 
@@ -165,10 +160,7 @@ pub fn audit(event: AuditEvent) {
 }
 
 pub fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
 }
 
 #[macro_export]

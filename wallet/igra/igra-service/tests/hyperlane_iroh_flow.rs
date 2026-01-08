@@ -27,10 +27,7 @@ use std::time::Duration;
 const KASPA_SOMPI_PER_KAS: u64 = 100_000_000;
 
 fn config_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("igra repo root")
-        .to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("igra repo root").to_path_buf()
 }
 
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -44,8 +41,7 @@ fn load_from_ini_profile(config_path: &Path, profile: &str) -> igra_core::config
 
     env::set_var("KASPA_DATA_DIR", data_dir.path());
 
-    let config = igra_core::config::load_app_config_from_profile_path(config_path, profile)
-        .expect("load app config");
+    let config = igra_core::config::load_app_config_from_profile_path(config_path, profile).expect("load app config");
 
     env::remove_var("KASPA_DATA_DIR");
 
@@ -87,9 +83,7 @@ async fn build_iroh_stack(
         .await
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-    let router = iroh::protocol::Router::builder(endpoint.clone())
-        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-        .spawn();
+    let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
     Ok((endpoint, gossip, router))
 }
 
@@ -97,12 +91,7 @@ async fn connect_endpoint(from: &iroh::Endpoint, to: &iroh::Endpoint, timeout: D
     let _ = tokio::time::timeout(timeout, from.connect(to.addr(), iroh_gossip::net::GOSSIP_ALPN)).await;
 }
 
-async fn join_topic(
-    gossip: &iroh_gossip::net::Gossip,
-    topic_id: TopicId,
-    peers: Vec<iroh::EndpointId>,
-    timeout: Duration,
-) -> bool {
+async fn join_topic(gossip: &iroh_gossip::net::Gossip, topic_id: TopicId, peers: Vec<iroh::EndpointId>, timeout: Duration) -> bool {
     tokio::time::timeout(timeout, gossip.subscribe_and_join(topic_id, peers)).await.is_ok()
 }
 
@@ -113,10 +102,7 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
     let root = config_root();
     let signer_config = root.join("artifacts/igra-config.ini");
     let signer_profiles = ["signer-1", "signer-2", "signer-3"];
-    let configs = signer_profiles
-        .iter()
-        .map(|profile| load_from_ini_profile(&signer_config, profile))
-        .collect::<Vec<_>>();
+    let configs = signer_profiles.iter().map(|profile| load_from_ini_profile(&signer_config, profile)).collect::<Vec<_>>();
 
     let group_id_hex = configs[0].iroh.group_id.clone().expect("group_id");
     let group_id = parse_group_id(&group_id_hex);
@@ -210,12 +196,15 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
         return;
     }
 
-    let transport_a = Arc::new(IrohTransport::new(gossip_a, signers[0].clone(), verifier.clone(), storage_a.clone(), iroh_config_a)
-        .expect("transport a"));
-    let transport_b = Arc::new(IrohTransport::new(gossip_b, signers[1].clone(), verifier.clone(), storage_b.clone(), iroh_config_b)
-        .expect("transport b"));
-    let transport_c = Arc::new(IrohTransport::new(gossip_c, signers[2].clone(), verifier.clone(), storage_c.clone(), iroh_config_c)
-        .expect("transport c"));
+    let transport_a = Arc::new(
+        IrohTransport::new(gossip_a, signers[0].clone(), verifier.clone(), storage_a.clone(), iroh_config_a).expect("transport a"),
+    );
+    let transport_b = Arc::new(
+        IrohTransport::new(gossip_b, signers[1].clone(), verifier.clone(), storage_b.clone(), iroh_config_b).expect("transport b"),
+    );
+    let transport_c = Arc::new(
+        IrohTransport::new(gossip_c, signers[2].clone(), verifier.clone(), storage_c.clone(), iroh_config_c).expect("transport c"),
+    );
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let flow_a = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage_a.clone(), transport_a.clone()).expect("flow a"));
@@ -247,13 +236,7 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
         group_id,
     ));
 
-    let source_address = app_a
-        .service
-        .pskt
-        .source_addresses
-        .first()
-        .expect("source address")
-        .clone();
+    let source_address = app_a.service.pskt.source_addresses.first().expect("source address").clone();
     let source_address = Address::constructor(&source_address);
     let utxo_amount = 100 * KASPA_SOMPI_PER_KAS;
     let utxo = UtxoWithOutpoint {
@@ -263,19 +246,11 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
     };
     rpc.push_utxo(utxo);
 
-    let destination = app_a
-        .policy
-        .allowed_destinations
-        .first()
-        .cloned()
-        .expect("destination");
+    let destination = app_a.policy.allowed_destinations.first().cloned().expect("destination");
 
     let signing_event = SigningEvent {
         event_id: "hyperlane-req-1".to_string(),
-        event_source: EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        event_source: EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
         destination_address: destination.clone(),
@@ -285,14 +260,9 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
         signature: None,
     };
 
-    let validator_keys = [
-        SecretKey::from_slice(&[11u8; 32]).expect("validator1"),
-        SecretKey::from_slice(&[12u8; 32]).expect("validator2"),
-    ];
-    let validator_pubkeys = validator_keys
-        .iter()
-        .map(|key| PublicKey::from_secret_key(&Secp256k1::new(), key))
-        .collect::<Vec<_>>();
+    let validator_keys =
+        [SecretKey::from_slice(&[11u8; 32]).expect("validator1"), SecretKey::from_slice(&[12u8; 32]).expect("validator2")];
+    let validator_pubkeys = validator_keys.iter().map(|key| PublicKey::from_secret_key(&Secp256k1::new(), key)).collect::<Vec<_>>();
 
     let signature = build_hyperlane_signature(&signing_event, &validator_keys);
 

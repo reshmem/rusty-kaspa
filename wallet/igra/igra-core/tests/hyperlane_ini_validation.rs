@@ -35,8 +35,7 @@ fn base_wire_event(event_source: EventSource) -> SigningEventWire {
         event_source,
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspatest:qz0000000000000000000000000000000000000000000000000000000000p5x4p"
-            .to_string(),
+        destination_address: "kaspatest:qz0000000000000000000000000000000000000000000000000000000000p5x4p".to_string(),
         amount_sompi: 123,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,
@@ -60,11 +59,8 @@ async fn hyperlane_signature_verifies_from_ini_validators() {
     fs::write(&ini_path, ini_contents).expect("write ini");
 
     let app_config = load_app_config_from_path(&ini_path).expect("config");
-    let validators = igra_core::validation::parse_validator_pubkeys(
-        "hyperlane.validators",
-        &app_config.hyperlane.validators,
-    )
-    .expect("validators");
+    let validators =
+        igra_core::validation::parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators).expect("validators");
 
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let ctx = EventContext {
@@ -74,17 +70,13 @@ async fn hyperlane_signature_verifies_from_ini_validators() {
         storage,
     };
 
-    let event_source = EventSource::Hyperlane {
-        domain: "devnet".to_string(),
-        sender: "hyperlane-bridge".to_string(),
-    };
+    let event_source = EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() };
     let mut signing_event = SigningEvent {
         event_id: "event-ini-1".to_string(),
         event_source: event_source.clone(),
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspatest:qz0000000000000000000000000000000000000000000000000000000000p5x4p"
-            .to_string(),
+        destination_address: "kaspatest:qz0000000000000000000000000000000000000000000000000000000000p5x4p".to_string(),
         amount_sompi: 123,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,

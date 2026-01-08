@@ -1,5 +1,7 @@
-use crate::transport::{FinalizeNotice, MessageEnvelope, PartialSigSubmit, SigningEventPropose, TransportMessage, TransportSubscription};
 use crate::transport::SignatureVerifier;
+use crate::transport::{
+    FinalizeNotice, MessageEnvelope, PartialSigSubmit, SigningEventPropose, TransportMessage, TransportSubscription,
+};
 use igra_core::audit::{audit, AuditEvent};
 use igra_core::error::ThresholdError;
 use igra_core::rate_limit::RateLimiter;
@@ -141,12 +143,7 @@ pub fn record_payload(
                 },
             )?;
         }
-        TransportMessage::PartialSigSubmit(PartialSigSubmit {
-            request_id,
-            input_index,
-            pubkey,
-            signature,
-        }) => {
+        TransportMessage::PartialSigSubmit(PartialSigSubmit { request_id, input_index, pubkey, signature }) => {
             storage.insert_partial_sig(
                 request_id,
                 igra_core::model::PartialSigRecord {

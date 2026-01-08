@@ -22,10 +22,7 @@ pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn config_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("igra repo root")
-        .to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("igra repo root").to_path_buf()
 }
 
 pub fn load_app_config_from_path(path: &Path) -> igra_core::config::AppConfig {
@@ -78,10 +75,7 @@ impl TestDataFactory {
         metadata.insert("nonce".to_string(), nonce.to_string());
         SigningEvent {
             event_id: format!("hyperlane-{nonce}"),
-            event_source: EventSource::Hyperlane {
-                domain: "devnet".to_string(),
-                sender: "hyperlane-bridge".to_string(),
-            },
+            event_source: EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
             derivation_path: "m/45'/111111'/0'/0/0".to_string(),
             derivation_index: Some(0),
             destination_address: recipient,
@@ -111,12 +105,8 @@ impl TestDataFactory {
 
     pub fn create_config_m_of_n(data_dir: &Path, threshold_m: usize, threshold_n: usize) -> AppConfig {
         let keygen = TestKeyGenerator::new("test-config");
-        let source_address = keygen
-            .generate_kaspa_address(0, Prefix::Devnet)
-            .to_string();
-        let change_address = keygen
-            .generate_kaspa_address(1, Prefix::Devnet)
-            .to_string();
+        let source_address = keygen.generate_kaspa_address(0, Prefix::Devnet).to_string();
+        let change_address = keygen.generate_kaspa_address(1, Prefix::Devnet).to_string();
         let redeem_script = keygen.generate_redeem_script(threshold_m, threshold_n);
 
         let pskt = PsktBuildConfig {
@@ -131,16 +121,9 @@ impl TestDataFactory {
         };
 
         AppConfig {
-            service: ServiceConfig {
-                node_rpc_url: String::new(),
-                data_dir: data_dir.to_string_lossy().to_string(),
-                pskt,
-                hd: None,
-            },
+            service: ServiceConfig { node_rpc_url: String::new(), data_dir: data_dir.to_string_lossy().to_string(), pskt, hd: None },
             runtime: igra_core::config::RuntimeConfig::default(),
-            signing: igra_core::config::SigningConfig {
-                backend: "threshold".to_string(),
-            },
+            signing: igra_core::config::SigningConfig { backend: "threshold".to_string() },
             rpc: igra_core::config::RpcConfig::default(),
             policy: GroupPolicy::default(),
             group: None,

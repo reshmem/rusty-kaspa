@@ -1,14 +1,14 @@
 use blake3::Hash;
-use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneProof;
+use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
 use reqwest::Client;
+use secp256k1::ecdsa::RecoverableSignature;
+use secp256k1::{Secp256k1, SecretKey};
 use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
-use secp256k1::{Secp256k1, SecretKey};
-use secp256k1::ecdsa::RecoverableSignature;
 
 #[derive(Deserialize)]
 struct HyperlaneKeysFile {
@@ -28,10 +28,7 @@ const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000
 
 #[allow(dead_code)]
 fn now_nanos() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_nanos() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_else(|_| Duration::from_secs(0)).as_nanos() as u64
 }
 
 #[allow(dead_code)]
@@ -40,10 +37,7 @@ fn hash_to_hex(hash: Hash) -> String {
 }
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
+    env::var(name).ok().and_then(|value| value.trim().parse::<u64>().ok()).unwrap_or(default)
 }
 
 fn parse_h256(hex_str: &str) -> Result<H256, String> {
@@ -81,16 +75,19 @@ fn signing_hash(checkpoint: &CheckpointWithMessageId) -> H256 {
     checkpoint.signing_hash()
 }
 
-fn make_signatures(checkpoint: &CheckpointWithMessageId, validators: &[HyperlaneValidator], threshold: usize) -> Result<Vec<String>, String> {
+fn make_signatures(
+    checkpoint: &CheckpointWithMessageId,
+    validators: &[HyperlaneValidator],
+    threshold: usize,
+) -> Result<Vec<String>, String> {
     let secp = Secp256k1::new();
-    let msg = secp256k1::Message::from_digest_slice(signing_hash(checkpoint).as_ref())
-        .map_err(|e| format!("signing hash: {e}"))?;
+    let msg = secp256k1::Message::from_digest_slice(signing_hash(checkpoint).as_ref()).map_err(|e| format!("signing hash: {e}"))?;
     let mut sigs = Vec::new();
     for validator in validators.iter().take(threshold) {
         let key_bytes = hex::decode(validator.private_key_hex.trim())
             .map_err(|err| format!("invalid private key hex for {}: {}", validator.name, err))?;
-        let secret = SecretKey::from_slice(&key_bytes)
-            .map_err(|err| format!("invalid private key for {}: {}", validator.name, err))?;
+        let secret =
+            SecretKey::from_slice(&key_bytes).map_err(|err| format!("invalid private key for {}: {}", validator.name, err))?;
         let rec: RecoverableSignature = secp.sign_ecdsa_recoverable(&msg, &secret);
         let (rec_id, bytes) = rec.serialize_compact();
         let mut out = [0u8; 65];
@@ -145,12 +142,7 @@ async fn submit_mailbox_process(
         }
     });
 
-    let response = client
-        .post(rpc_url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
+    let response = client.post(rpc_url).json(&payload).send().await.map_err(|err| err.to_string())?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -168,22 +160,16 @@ async fn main() -> Result<(), String> {
     let interval_secs = parse_env_u64("HYPERLANE_INTERVAL_SECS", 10);
     let start_epoch_secs = parse_env_u64("HYPERLANE_START_EPOCH_SECS", 0);
     let amount_sompi = parse_env_u64("HYPERLANE_AMOUNT_SOMPI", 10_000_000); // 0.1 KAS
-    let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD")
-        .unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
+    let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD").unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
     let recipient_bytes: [u8; 32] = hex::decode(recipient_payload.trim_start_matches("0x"))
         .map_err(|e| format!("invalid recipient payload: {e}"))?
         .as_slice()
         .try_into()
         .map_err(|_| "recipient payload must be 32 bytes")?;
     let domain = env::var("HYPERLANE_DOMAIN").unwrap_or_else(|_| DEFAULT_ORIGIN_DOMAIN.to_string()); // origin domain
-    let destination_domain = env::var("HYPERLANE_DESTINATION_DOMAIN")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_DESTINATION_DOMAIN);
-    let sender = env::var("HYPERLANE_SENDER")
-        .ok()
-        .and_then(|v| parse_h256(&v).ok())
-        .unwrap_or(H256::zero());
+    let destination_domain =
+        env::var("HYPERLANE_DESTINATION_DOMAIN").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(DEFAULT_DESTINATION_DOMAIN);
+    let sender = env::var("HYPERLANE_SENDER").ok().and_then(|v| parse_h256(&v).ok()).unwrap_or(H256::zero());
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;
@@ -200,14 +186,15 @@ async fn main() -> Result<(), String> {
     );
     if keys.validators.is_empty() {
         eprintln!("[fake-hyperlane] WARNING: no validators loaded from {}", keys_path);
+    } else {
+        for (idx, v) in keys.validators.iter().enumerate() {
+            eprintln!("[fake-hyperlane] validator#{} name={} pubkey={}", idx + 1, v.name, v.public_key_hex);
+        }
     }
 
     let client = Client::new();
     loop {
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0))
-            .as_secs();
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_else(|_| Duration::from_secs(0)).as_secs();
         let slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
         let nonce = slot as u32;
         let version = 3u8;
@@ -222,15 +209,7 @@ async fn main() -> Result<(), String> {
             amount_sompi,
             keys.validators.len()
         );
-        let msg = build_hyperlane_message(
-            version,
-            nonce,
-            origin,
-            sender,
-            destination,
-            recipient_bytes,
-            amount_sompi,
-        );
+        let msg = build_hyperlane_message(version, nonce, origin, sender, destination, recipient_bytes, amount_sompi);
         let checkpoint = CheckpointWithMessageId {
             checkpoint: Checkpoint {
                 merkle_tree_hook_address: H256::zero(),
@@ -242,8 +221,22 @@ async fn main() -> Result<(), String> {
         };
         let signatures = make_signatures(&checkpoint, &keys.validators, 2)?;
 
+        let mode = "message_id_multisig";
+        eprintln!(
+            "[fake-hyperlane] submit nonce={} mode={} amt={} sender={} dest={} sigs={}/{}",
+            nonce,
+            mode,
+            amount_sompi,
+            hex::encode(sender),
+            destination,
+            signatures.len(),
+            2
+        );
+
         if let Err(err) = submit_mailbox_process(&client, &rpc_url, &msg, &checkpoint, None, &signatures).await {
-            eprintln!("fake-hyperlane-ism submit failed: {err}");
+            eprintln!("[fake-hyperlane] submit failed rpc={} nonce={} mode={} err={}", rpc_url, nonce, mode, err);
+        } else {
+            eprintln!("[fake-hyperlane] submit ok rpc={} nonce={} mode={}", rpc_url, nonce, mode);
         }
 
         sleep(Duration::from_secs(interval_secs)).await;

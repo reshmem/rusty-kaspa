@@ -3150,6 +3150,7 @@ dependencies = [
  "hyperlane-core",
  "igra-core",
  "iroh",
+ "iroh-base",
  "iroh-gossip",
  "kaspa-addresses",
  "kaspa-bip32",

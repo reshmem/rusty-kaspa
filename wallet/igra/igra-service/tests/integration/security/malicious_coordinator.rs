@@ -24,9 +24,7 @@ fn test_keypair(seed: u8) -> Keypair {
 fn test_event(destination_address: String, amount_sompi: u64) -> SigningEvent {
     SigningEvent {
         event_id: "event-1".to_string(),
-        event_source: EventSource::Api {
-            issuer: "tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
         destination_address,
@@ -56,10 +54,7 @@ fn build_inputs() -> MultisigInput {
 fn output_to_address(address: &str, amount: u64) -> MultisigOutput {
     let address = Address::constructor(address);
     let script_public_key = pay_to_address_script(&address);
-    MultisigOutput {
-        amount,
-        script_public_key,
-    }
+    MultisigOutput { amount, script_public_key }
 }
 
 #[tokio::test]

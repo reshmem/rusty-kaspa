@@ -13,11 +13,7 @@ pub struct MockKaspaNode {
 #[allow(dead_code)]
 impl MockKaspaNode {
     pub fn new() -> Self {
-        Self {
-            utxos: Mutex::new(Vec::new()),
-            submitted: Mutex::new(Vec::new()),
-            blue_score: AtomicU64::new(0),
-        }
+        Self { utxos: Mutex::new(Vec::new()), submitted: Mutex::new(Vec::new()), blue_score: AtomicU64::new(0) }
     }
 
     pub fn add_utxo(&self, utxo: UtxoWithOutpoint) {
@@ -53,21 +49,13 @@ impl NodeRpc for MockKaspaNode {
         &self,
         addresses: &[kaspa_wallet_core::prelude::Address],
     ) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
-        let entries = self
-            .utxos
-            .lock()
-            .map_err(|_| ThresholdError::Message("utxo store lock poisoned".to_string()))?;
+        let entries = self.utxos.lock().map_err(|_| ThresholdError::Message("utxo store lock poisoned".to_string()))?;
         if addresses.is_empty() {
             return Ok(entries.clone());
         }
         let filtered = entries
             .iter()
-            .filter(|utxo| {
-                utxo.address
-                    .as_ref()
-                    .map(|addr| addresses.contains(addr))
-                    .unwrap_or(true)
-            })
+            .filter(|utxo| utxo.address.as_ref().map(|addr| addresses.contains(addr)).unwrap_or(true))
             .cloned()
             .collect::<Vec<_>>();
         Ok(filtered)

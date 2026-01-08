@@ -289,7 +289,8 @@ clone_repo() {
   fi
 
   if [[ -d "${dest}/.git" ]]; then
-    log_info "Using existing clone at ${dest}"
+    log_info "Using existing clone at ${dest}; pulling latest ${ref}"
+    (cd "${dest}" && git fetch --all --prune && git checkout "${ref}" && git pull --ff-only origin "${ref}") || log_warn "git pull failed in ${dest}; continuing with existing checkout"
     return
   fi
   mkdir -p "$(dirname "${dest}")"
@@ -634,6 +635,7 @@ start_kaspad() {
     "${KASPAD_BIN}" \
     --devnet \
     --utxoindex \
+    --enable-unsynced-mining \
     --appdir="${KASPAD_APPDIR}" \
     --rpclisten=127.0.0.1:16110 \
     --listen=0.0.0.0:16111
@@ -669,7 +671,8 @@ start_igra() {
       "${IGRA_BIN}" \
       --config "${IGRA_CONFIG}" \
       --data-dir "${profile_data_dir}" \
-      --node-url "grpc://127.0.0.1:16110"
+      --node-url "grpc://127.0.0.1:16110" \
+      --log-level debug
 }
 
 start_fake_hyperlane() {

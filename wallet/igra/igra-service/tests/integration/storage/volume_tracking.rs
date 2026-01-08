@@ -12,8 +12,7 @@ fn make_event(id: &str, amount: u64, timestamp_nanos: u64) -> SigningEvent {
         event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: amount,
         metadata: BTreeMap::new(),
         timestamp_nanos,
@@ -83,18 +82,12 @@ async fn volume_tracking_sums_finalized_requests() {
         })
         .expect("request c insert");
 
-    storage
-        .update_request_final_tx(&RequestId::from("req-vol-a"), TransactionId::from([9u8; 32]))
-        .expect("finalize a");
-    storage
-        .update_request_final_tx(&RequestId::from("req-vol-c"), TransactionId::from([8u8; 32]))
-        .expect("finalize c");
+    storage.update_request_final_tx(&RequestId::from("req-vol-a"), TransactionId::from([9u8; 32])).expect("finalize a");
+    storage.update_request_final_tx(&RequestId::from("req-vol-c"), TransactionId::from([8u8; 32])).expect("finalize c");
 
     let volume_all = storage.get_volume_since(base_ts).expect("volume since base");
     assert_eq!(volume_all, 40);
 
-    let volume_late = storage
-        .get_volume_since(base_ts + nanos_per_day + 1)
-        .expect("volume since late");
+    let volume_late = storage.get_volume_since(base_ts + nanos_per_day + 1).expect("volume since late");
     assert_eq!(volume_late, 30);
 }

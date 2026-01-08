@@ -37,10 +37,7 @@ fn build_test_pskt() -> (Vec<u8>, Vec<[u8; 32]>) {
         redeem_script: redeem.clone(),
         sig_op_count: 2,
     };
-    let output = MultisigOutput {
-        amount: 9_000,
-        script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-    };
+    let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
     let pskt_blob = serialize_pskt(&pskt).expect("serialize");
     let signer = pskt.signer();
@@ -134,9 +131,7 @@ async fn concurrent_sessions_timeout_independently() {
         test_event("event-2"),
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(2), futures_util::future::join(t1, t2))
-        .await
-        .expect("timeout");
+    let _ = tokio::time::timeout(Duration::from_secs(2), futures_util::future::join(t1, t2)).await.expect("timeout");
 
     let r1 = storage.get_request(&RequestId::from("req-1")).expect("request1");
     let r2 = storage.get_request(&RequestId::from("req-2")).expect("request2");

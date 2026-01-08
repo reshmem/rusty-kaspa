@@ -1,7 +1,7 @@
 use crate::model::Hash32;
-use crate::types::PeerId;
 use crate::transport::{SignatureSigner, SignatureVerifier};
-use ed25519_dalek::{Signature, SigningKey, VerifyingKey, Signer};
+use crate::types::PeerId;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -12,10 +12,7 @@ pub struct Ed25519Signer {
 
 impl Ed25519Signer {
     pub fn from_seed(peer_id: PeerId, seed: [u8; 32]) -> Self {
-        Self {
-            peer_id,
-            key: SigningKey::from_bytes(&seed),
-        }
+        Self { peer_id, key: SigningKey::from_bytes(&seed) }
     }
 
     pub fn sign_payload(&self, payload_hash: &Hash32) -> Vec<u8> {

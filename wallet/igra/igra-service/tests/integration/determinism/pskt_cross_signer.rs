@@ -12,9 +12,7 @@ use std::collections::BTreeMap;
 fn build_event(recipient: &str, amount_sompi: u64) -> SigningEvent {
     SigningEvent {
         event_id: "event-determinism".to_string(),
-        event_source: EventSource::Api {
-            issuer: "integration-tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "integration-tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
         destination_address: recipient.to_string(),
@@ -39,10 +37,7 @@ fn build_config(
         source_addresses: vec![source_address.to_string()],
         redeem_script_hex: redeem_script_hex.to_string(),
         sig_op_count: 2,
-        outputs: vec![PsktOutput {
-            address: output_address.to_string(),
-            amount_sompi,
-        }],
+        outputs: vec![PsktOutput { address: output_address.to_string(), amount_sompi }],
         fee_payment_mode,
         fee_sompi: Some(fee_sompi),
         change_address: Some(change_address.to_string()),
@@ -79,11 +74,7 @@ async fn test_pskt_determinism_across_signers() {
     let event = build_event(&recipient_address.to_string(), 10_000_000_000);
     let ev_hash = event_hash(&event).expect("event hash");
 
-    let fee_modes = [
-        FeePaymentMode::RecipientPays,
-        FeePaymentMode::SignersPay,
-        FeePaymentMode::Split { recipient_portion: 0.5 },
-    ];
+    let fee_modes = [FeePaymentMode::RecipientPays, FeePaymentMode::SignersPay, FeePaymentMode::Split { recipient_portion: 0.5 }];
 
     for mode in fee_modes {
         let config = build_config(
@@ -109,11 +100,7 @@ async fn test_pskt_determinism_across_signers() {
     }
 }
 
-async fn build_pskt_state(
-    rpc: &MockKaspaNode,
-    config: &PsktBuildConfig,
-    event_hash: &[u8; 32],
-) -> (Vec<u8>, [u8; 32], [u8; 32]) {
+async fn build_pskt_state(rpc: &MockKaspaNode, config: &PsktBuildConfig, event_hash: &[u8; 32]) -> (Vec<u8>, [u8; 32], [u8; 32]) {
     let pskt = build_pskt_with_client(rpc, config).await.expect("pskt build");
     let pskt_blob = serialize_pskt(&pskt).expect("serialize pskt");
     let signer_pskt = to_signer(pskt);

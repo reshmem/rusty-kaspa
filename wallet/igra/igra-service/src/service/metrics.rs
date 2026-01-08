@@ -12,16 +12,12 @@ pub struct Metrics {
 impl Metrics {
     pub fn new() -> Result<Self, ThresholdError> {
         let registry = Registry::new();
-        let signing_sessions_total = IntCounterVec::new(
-            prometheus::Opts::new("signing_sessions_total", "Signing sessions by stage"),
-            &["stage"],
-        )
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let signer_acks_total = IntCounterVec::new(
-            prometheus::Opts::new("signer_acks_total", "Signer acknowledgments"),
-            &["accepted"],
-        )
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let signing_sessions_total =
+            IntCounterVec::new(prometheus::Opts::new("signing_sessions_total", "Signing sessions by stage"), &["stage"])
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let signer_acks_total =
+            IntCounterVec::new(prometheus::Opts::new("signer_acks_total", "Signer acknowledgments"), &["accepted"])
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
         let partial_sigs_total = IntCounter::new("partial_sigs_total", "Partial signatures received")
             .map_err(|err| ThresholdError::Message(err.to_string()))?;
         let rpc_requests_total = IntCounterVec::new(
@@ -30,26 +26,12 @@ impl Metrics {
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
-        registry
-            .register(Box::new(signing_sessions_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(signer_acks_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(partial_sigs_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(rpc_requests_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(signer_acks_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
 
-        Ok(Self {
-            registry,
-            signing_sessions_total,
-            signer_acks_total,
-            partial_sigs_total,
-            rpc_requests_total,
-        })
+        Ok(Self { registry, signing_sessions_total, signer_acks_total, partial_sigs_total, rpc_requests_total })
     }
 
     pub fn inc_session_stage(&self, stage: &str) {
@@ -72,9 +54,7 @@ impl Metrics {
     pub fn encode(&self) -> Result<String, ThresholdError> {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        TextEncoder::new()
-            .encode(&metric_families, &mut buffer)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        TextEncoder::new().encode(&metric_families, &mut buffer).map_err(|err| ThresholdError::Message(err.to_string()))?;
         let output = String::from_utf8(buffer).map_err(|err| ThresholdError::Message(err.to_string()))?;
         Ok(output)
     }

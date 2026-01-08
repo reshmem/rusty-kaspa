@@ -1,8 +1,8 @@
 pub mod audit;
 pub mod config;
 pub mod coordination;
-pub mod event;
 pub mod error;
+pub mod event;
 pub mod group_id;
 pub mod hd;
 pub mod hyperlane;

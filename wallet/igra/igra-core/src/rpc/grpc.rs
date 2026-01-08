@@ -14,18 +14,10 @@ pub struct GrpcNodeRpc {
 
 impl GrpcNodeRpc {
     pub async fn connect(url: String) -> Result<Self, ThresholdError> {
-        let client = GrpcClient::connect_with_args(
-            NotificationMode::Direct,
-            url,
-            None,
-            false,
-            None,
-            false,
-            Some(500_000),
-            Default::default(),
-        )
-        .await
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let client =
+            GrpcClient::connect_with_args(NotificationMode::Direct, url, None, false, None, false, Some(500_000), Default::default())
+                .await
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
         Ok(Self { client })
     }
 
@@ -49,11 +41,8 @@ impl GrpcNodeRpc {
 #[async_trait]
 impl NodeRpc for GrpcNodeRpc {
     async fn get_utxos_by_addresses(&self, addresses: &[Address]) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
-        let entries = self
-            .client
-            .get_utxos_by_addresses(addresses.to_vec())
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let entries =
+            self.client.get_utxos_by_addresses(addresses.to_vec()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
 
         Ok(entries
             .into_iter()
@@ -67,16 +56,10 @@ impl NodeRpc for GrpcNodeRpc {
 
     async fn submit_transaction(&self, tx: Transaction) -> Result<TransactionId, ThresholdError> {
         let rpc_tx = Self::to_rpc_transaction(tx);
-        self.client
-            .submit_transaction(rpc_tx, false)
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.client.submit_transaction(rpc_tx, false).await.map_err(|err| ThresholdError::Message(err.to_string()))
     }
 
     async fn get_virtual_selected_parent_blue_score(&self) -> Result<u64, ThresholdError> {
-        self.client
-            .get_sink_blue_score()
-            .await
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+        self.client.get_sink_blue_score().await.map_err(|err| ThresholdError::Message(err.to_string()))
     }
 }

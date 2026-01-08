@@ -54,13 +54,10 @@ async fn replay_attack_is_rejected() {
 
     let event = SigningEvent {
         event_id: "event-replay".to_string(),
-        event_source: EventSource::Api {
-            issuer: "tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: 50_000_000,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,

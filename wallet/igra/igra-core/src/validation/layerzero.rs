@@ -15,14 +15,9 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<()
         "verifying layerzero signature"
     );
     if validators.is_empty() {
-        return Err(ThresholdError::ConfigError(
-            "no layerzero endpoint pubkeys configured".to_string(),
-        ));
+        return Err(ThresholdError::ConfigError("no layerzero endpoint pubkeys configured".to_string()));
     }
-    let signature = event
-        .signature
-        .as_ref()
-        .ok_or(ThresholdError::EventSignatureInvalid)?;
+    let signature = event.signature.as_ref().ok_or(ThresholdError::EventSignatureInvalid)?;
     let hash = event_hash_without_signature(event)?;
     let message = Message::from_digest_slice(&hash).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let sig = match signature.len() {

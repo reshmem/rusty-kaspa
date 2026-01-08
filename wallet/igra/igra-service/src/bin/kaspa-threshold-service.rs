@@ -11,8 +11,8 @@ use igra_core::error::ThresholdError;
 use igra_core::event::EventContext;
 use igra_core::hyperlane::ism::ConfiguredIsm;
 use igra_core::validation::{parse_validator_pubkeys, CompositeVerifier};
-use igra_service::service::coordination::run_coordination_loop;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
+use igra_service::service::coordination::run_coordination_loop;
 use igra_service::service::flow::ServiceFlow;
 use igra_service::transport::iroh::IrohConfig;
 use std::net::SocketAddr;
@@ -41,19 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = setup::init_storage(&app_config.service.data_dir)?;
 
-    let audit_id = args
-        .audit
-        .clone()
-        .or_else(igra_core::config::get_audit_request_id);
+    let audit_id = args.audit.clone().or_else(igra_core::config::get_audit_request_id);
     if let Some(request_id) = audit_id {
         modes::audit::dump_audit_trail(&request_id, &storage)?;
         return Ok(());
     }
 
-    let finalize_path = args
-        .finalize
-        .clone()
-        .or_else(igra_core::config::get_finalize_pskt_json_path);
+    let finalize_path = args.finalize.clone().or_else(igra_core::config::get_finalize_pskt_json_path);
     if let Some(path) = finalize_path {
         modes::finalize::finalize_from_json(&path, &storage, &app_config).await?;
         return Ok(());
@@ -61,23 +55,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let identity = setup::init_signer_identity(&app_config)?;
     let group_id = setup::resolve_group_id(&app_config)?;
+    let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
+    let iroh_secret = setup::derive_iroh_secret(&app_config.iroh.signer_seed_hex.clone().unwrap_or_else(|| "".to_string()))?;
 
-    let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port).await?;
+    let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
 
-    let iroh_config = IrohConfig {
-        network_id: app_config.iroh.network_id,
-        group_id,
-        bootstrap_nodes: app_config.iroh.bootstrap.clone(),
-    };
-    let flow = ServiceFlow::new_with_iroh(
-        &app_config.service,
-        storage.clone(),
-            gossip,
-            identity.signer,
-            identity.verifier,
-            iroh_config,
-        )
-    .await?;
+    let iroh_config =
+        IrohConfig { network_id: app_config.iroh.network_id, group_id, bootstrap_nodes: app_config.iroh.bootstrap.clone() };
+    let flow =
+        ServiceFlow::new_with_iroh(&app_config.service, storage.clone(), gossip, identity.signer, identity.verifier, iroh_config)
+            .await?;
     let flow = Arc::new(flow);
     let transport = flow.transport();
     let peer_id = identity.peer_id;
@@ -90,43 +77,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_for_loop = storage.clone();
     let group_id_for_loop = group_id;
     tokio::spawn(async move {
-        if let Err(err) = run_coordination_loop(
-            app_config_for_loop,
-            flow_for_loop,
-            transport_for_loop,
-            storage_for_loop,
-            peer_id,
-            group_id_for_loop,
-        )
-        .await
+        if let Err(err) =
+            run_coordination_loop(app_config_for_loop, flow_for_loop, transport_for_loop, storage_for_loop, peer_id, group_id_for_loop)
+                .await
         {
             warn!("coordination loop error: {}", err);
         }
     });
 
     if app_config.rpc.enabled {
-        let rpc_addr: SocketAddr = app_config
-            .rpc
-            .addr
-            .parse()
-            .map_err(|err| format!("invalid KASPA_IGRA_RPC_ADDR: {}", err))?;
-        let hyperlane_ism = if app_config.hyperlane.domains.is_empty() {
-            None
-        } else {
-            Some(ConfiguredIsm::from_config(&app_config.hyperlane)?)
-        };
-        let hyperlane_validators =
-            parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
-        let layerzero_validators =
-            parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
+        let rpc_addr: SocketAddr = app_config.rpc.addr.parse().map_err(|err| format!("invalid KASPA_IGRA_RPC_ADDR: {}", err))?;
+        let hyperlane_ism =
+            if app_config.hyperlane.domains.is_empty() { None } else { Some(ConfiguredIsm::from_config(&app_config.hyperlane)?) };
+        let hyperlane_validators = parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
+        let layerzero_validators = parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
         let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, layerzero_validators));
         let metrics = flow.metrics();
-        let event_ctx = EventContext {
-            processor: flow.clone(),
-            config: app_config.service.clone(),
-            message_verifier,
-            storage: storage.clone(),
-        };
+        let event_ctx =
+            EventContext { processor: flow.clone(), config: app_config.service.clone(), message_verifier, storage: storage.clone() };
         let rpc_state = Arc::new(RpcState {
             event_ctx,
             rpc_token: app_config.rpc.token.clone(),
@@ -167,10 +135,7 @@ async fn run_test_pskt_mode(app_config: &igra_core::config::AppConfig, _flow: &S
     let is_test_mode = runtime.test_mode;
 
     let test_outputs = if is_test_mode && !recipient.is_empty() && amount_sompi > 0 {
-        vec![PsktOutput {
-            address: recipient.clone(),
-            amount_sompi,
-        }]
+        vec![PsktOutput { address: recipient.clone(), amount_sompi }]
     } else {
         Vec::new()
     };

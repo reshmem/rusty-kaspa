@@ -5,7 +5,6 @@ use axum::{
     http::{Request, StatusCode},
 };
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
-use kaspa_addresses::Address;
 use igra_core::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode, ServiceConfig};
 use igra_core::error::ThresholdError;
 use igra_core::event::{EventContext, EventProcessor};
@@ -16,9 +15,8 @@ use igra_core::types::{PeerId, RequestId, SessionId};
 use igra_core::validation::NoopVerifier;
 use igra_service::api::json_rpc::{build_router, RpcState};
 use igra_service::service::metrics::Metrics;
-use secp256k1::{
-    ecdsa::RecoverableSignature, Message as SecpMessage, PublicKey, Secp256k1, SecretKey,
-};
+use kaspa_addresses::Address;
+use secp256k1::{ecdsa::RecoverableSignature, Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -54,22 +52,14 @@ fn make_state(keys: &[SecretKey], temp_dir: &TempDir) -> Arc<RpcState> {
         threshold: 2,
         mode: HyperlaneIsmMode::MessageIdMultisig,
     };
-    let hyperlane_config = HyperlaneConfig {
-        domains: vec![domain_cfg],
-        ..Default::default()
-    };
+    let hyperlane_config = HyperlaneConfig { domains: vec![domain_cfg], ..Default::default() };
     let ism = ConfiguredIsm::from_config(&hyperlane_config).expect("ism");
 
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let mut service_cfg = ServiceConfig::default();
-    service_cfg.pskt.source_addresses =
-        vec!["kaspadev:qzjwhmuwx4fmmxleyykgcekr2m2tamseskqvl859mss2jvz7tk46j2qyvpukx".to_string()];
-    let event_ctx = EventContext {
-        processor: Arc::new(DummyProcessor),
-        config: service_cfg,
-        message_verifier: Arc::new(NoopVerifier),
-        storage,
-    };
+    service_cfg.pskt.source_addresses = vec!["kaspadev:qzjwhmuwx4fmmxleyykgcekr2m2tamseskqvl859mss2jvz7tk46j2qyvpukx".to_string()];
+    let event_ctx =
+        EventContext { processor: Arc::new(DummyProcessor), config: service_cfg, message_verifier: Arc::new(NoopVerifier), storage };
     let metrics = Arc::new(Metrics::new().expect("metrics"));
 
     Arc::new(RpcState {
@@ -109,10 +99,7 @@ fn derive_session_id(group_hex: &str, message_id: H256) -> String {
 
 #[tokio::test]
 async fn hyperlane_validators_and_threshold_rpc() {
-    let keys = vec![
-        SecretKey::from_slice(&[1u8; 32]).expect("sk1"),
-        SecretKey::from_slice(&[2u8; 32]).expect("sk2"),
-    ];
+    let keys = vec![SecretKey::from_slice(&[1u8; 32]).expect("sk1"), SecretKey::from_slice(&[2u8; 32]).expect("sk2")];
     let temp_dir = TempDir::new().expect("tempdir");
     let state = make_state(&keys, &temp_dir);
     let app = build_router(state);
@@ -146,10 +133,7 @@ async fn hyperlane_validators_and_threshold_rpc() {
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["result"]["threshold"], 2);
     assert_eq!(value["result"]["domain"], 7);
-    assert_eq!(
-        value["result"]["validators"].as_array().unwrap().len(),
-        2
-    );
+    assert_eq!(value["result"]["validators"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -186,10 +170,7 @@ async fn hyperlane_mailbox_process_proves_message() {
     };
     let signing_hash = checkpoint.signing_hash();
 
-    let signatures = vec![
-        make_sig_hex(signing_hash, &keys[0]),
-        make_sig_hex(signing_hash, &keys[1]),
-    ];
+    let signatures = vec![make_sig_hex(signing_hash, &keys[0]), make_sig_hex(signing_hash, &keys[1])];
 
     let payload = json!({
         "jsonrpc": "2.0",

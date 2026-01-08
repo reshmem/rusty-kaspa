@@ -1,8 +1,8 @@
-use hyperlane_core::accumulator::merkle::Proof as HyperlaneMerkleProof;
-use hyperlane_core::{CheckpointWithMessageId, HyperlaneMessage, Signature, H256};
 use blake3::Hasher;
-use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1};
+use hyperlane_core::accumulator::merkle::Proof as HyperlaneMerkleProof;
 use hyperlane_core::Signable;
+use hyperlane_core::{CheckpointWithMessageId, HyperlaneMessage, Signature, H256};
+use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,12 +68,7 @@ pub struct ProofReport {
 /// Trait for an ISM-like verifier implementation.
 pub trait IsmVerifier {
     fn validators_and_threshold(&self, domain: u32, message_id: H256) -> Option<ValidatorSet>;
-    fn verify_proof(
-        &self,
-        message: &HyperlaneMessage,
-        metadata: &ProofMetadata,
-        mode: IsmMode,
-    ) -> Result<ProofReport, String>;
+    fn verify_proof(&self, message: &HyperlaneMessage, metadata: &ProofMetadata, mode: IsmMode) -> Result<ProofReport, String>;
 }
 
 /// Static, config-backed ISM verifier.
@@ -85,9 +80,7 @@ pub struct ConfiguredIsm {
 impl ConfiguredIsm {
     pub fn from_config(config: &HyperlaneConfig) -> Result<Self, ThresholdError> {
         if config.domains.is_empty() {
-            return Err(ThresholdError::ConfigError(
-                "hyperlane.domains is required for ISM verification".to_string(),
-            ));
+            return Err(ThresholdError::ConfigError("hyperlane.domains is required for ISM verification".to_string()));
         }
         let mut domains = HashMap::new();
         for domain_cfg in &config.domains {
@@ -103,16 +96,9 @@ impl ConfiguredIsm {
             validators.push(parse_pubkey(val)?);
         }
         if validators.is_empty() {
-            return Err(ThresholdError::ConfigError(format!(
-                "hyperlane domain {} has no validators",
-                cfg.domain
-            )));
+            return Err(ThresholdError::ConfigError(format!("hyperlane domain {} has no validators", cfg.domain)));
         }
-        let threshold = if cfg.threshold == 0 {
-            validators.len() as u8
-        } else {
-            cfg.threshold
-        };
+        let threshold = if cfg.threshold == 0 { validators.len() as u8 } else { cfg.threshold };
         if threshold as usize > validators.len() {
             return Err(ThresholdError::ConfigError(format!(
                 "hyperlane domain {} threshold {} exceeds validator count {}",
@@ -125,12 +111,7 @@ impl ConfiguredIsm {
             HyperlaneIsmMode::MessageIdMultisig => IsmMode::MessageIdMultisig,
             HyperlaneIsmMode::MerkleRootMultisig => IsmMode::MerkleRootMultisig,
         };
-        Ok(ValidatorSet {
-            domain: cfg.domain,
-            validators,
-            threshold,
-            mode,
-        })
+        Ok(ValidatorSet { domain: cfg.domain, validators, threshold, mode })
     }
 }
 
@@ -139,16 +120,8 @@ impl IsmVerifier for ConfiguredIsm {
         self.domains.get(&domain).cloned()
     }
 
-    fn verify_proof(
-        &self,
-        message: &HyperlaneMessage,
-        metadata: &ProofMetadata,
-        mode: IsmMode,
-    ) -> Result<ProofReport, String> {
-        let set = self
-            .domains
-            .get(&message.destination)
-            .ok_or_else(|| "unknown destination domain".to_string())?;
+    fn verify_proof(&self, message: &HyperlaneMessage, metadata: &ProofMetadata, mode: IsmMode) -> Result<ProofReport, String> {
+        let set = self.domains.get(&message.destination).ok_or_else(|| "unknown destination domain".to_string())?;
 
         if set.mode != mode {
             return Err("mode mismatch with configured ISM".to_string());
@@ -166,10 +139,7 @@ impl IsmVerifier for ConfiguredIsm {
 
         // Merkle proof (if required)
         if matches!(mode, IsmMode::MerkleRootMultisig) {
-            let proof = metadata
-                .merkle_proof
-                .as_ref()
-                .ok_or_else(|| "merkle_proof required for merkle_root_multisig".to_string())?;
+            let proof = metadata.merkle_proof.as_ref().ok_or_else(|| "merkle_proof required for merkle_root_multisig".to_string())?;
             if proof.leaf != message_id {
                 return Err("merkle proof leaf != message_id".to_string());
             }
@@ -191,8 +161,7 @@ impl IsmVerifier for ConfiguredIsm {
         // Signature verification over checkpoint signing_hash
         let signing_hash = metadata.checkpoint.signing_hash();
         let secp = Secp256k1::verification_only();
-        let msg = Message::from_digest_slice(signing_hash.as_ref())
-            .map_err(|e| format!("invalid signing hash: {e}"))?;
+        let msg = Message::from_digest_slice(signing_hash.as_ref()).map_err(|e| format!("invalid signing hash: {e}"))?;
 
         let configured: Vec<PublicKey> = set.validators.clone();
         let mut matched = Vec::new();
@@ -212,28 +181,17 @@ impl IsmVerifier for ConfiguredIsm {
             return Err("insufficient quorum".to_string());
         }
 
-        Ok(ProofReport {
-            message_id,
-            root: metadata.checkpoint.root,
-            quorum: matched.len(),
-            validators_used: matched,
-        })
+        Ok(ProofReport { message_id, root: metadata.checkpoint.root, quorum: matched.len(), validators_used: matched })
     }
 }
 
 fn parse_pubkey(hex_str: &str) -> Result<PublicKey, ThresholdError> {
     let stripped = hex_str.trim_start_matches("0x");
-    let bytes = hex::decode(stripped)
-        .map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator hex".to_string()))?;
-    PublicKey::from_slice(&bytes)
-        .map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator key".to_string()))
+    let bytes = hex::decode(stripped).map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator hex".to_string()))?;
+    PublicKey::from_slice(&bytes).map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator key".to_string()))
 }
 
-fn recover_validator(
-    secp: &Secp256k1<secp256k1::VerifyOnly>,
-    sig: &Signature,
-    msg: &Message,
-) -> Result<PublicKey, String> {
+fn recover_validator(secp: &Secp256k1<secp256k1::VerifyOnly>, sig: &Signature, msg: &Message) -> Result<PublicKey, String> {
     let sig_bytes: [u8; 65] = sig.into();
     let rec_id_raw = sig_bytes[64];
     let rec_id = match rec_id_raw {
@@ -241,10 +199,7 @@ fn recover_validator(
         0 | 1 => rec_id_raw,
         _ => return Err("invalid recovery id".to_string()),
     };
-    let rid = secp256k1::ecdsa::RecoveryId::from_i32(rec_id as i32)
-        .map_err(|e| format!("recovery id: {e}"))?;
-    let rec_sig = RecoverableSignature::from_compact(&sig_bytes[0..64], rid)
-        .map_err(|e| format!("signature parse: {e}"))?;
-    secp.recover_ecdsa(msg, &rec_sig)
-        .map_err(|e| format!("recover: {e}"))
+    let rid = secp256k1::ecdsa::RecoveryId::from_i32(rec_id as i32).map_err(|e| format!("recovery id: {e}"))?;
+    let rec_sig = RecoverableSignature::from_compact(&sig_bytes[0..64], rid).map_err(|e| format!("signature parse: {e}"))?;
+    secp.recover_ecdsa(msg, &rec_sig).map_err(|e| format!("recover: {e}"))
 }

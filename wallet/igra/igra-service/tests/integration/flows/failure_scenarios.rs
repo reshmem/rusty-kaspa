@@ -175,10 +175,7 @@ async fn wait_for_rejected_acks(storage: &RocksStorage, request_id: &RequestId, 
 }
 
 fn load_proposal(storage: &RocksStorage, request_id: &RequestId) -> ProposedSigningSession {
-    let proposal = storage
-        .get_proposal(request_id)
-        .expect("proposal read")
-        .expect("proposal");
+    let proposal = storage.get_proposal(request_id).expect("proposal read").expect("proposal");
     let request = storage.get_request(request_id).expect("request read").expect("request");
     ProposedSigningSession {
         request_id: request_id.clone(),
@@ -218,20 +215,14 @@ impl ThreeNodeSetup {
         let signer_config = root.join("artifacts/igra-config.ini");
         let signer_profiles = ["signer-1", "signer-2", "signer-3"];
 
-        let mut configs = signer_profiles
-            .iter()
-            .map(|profile| load_app_config_from_profile(&signer_config, profile))
-            .collect::<Vec<_>>();
+        let mut configs =
+            signer_profiles.iter().map(|profile| load_app_config_from_profile(&signer_config, profile)).collect::<Vec<_>>();
 
         if let Some(timeout) = timeout_secs {
             configs[0].runtime.session_timeout_seconds = timeout;
         }
 
-        let group_id_hex = configs[0]
-            .iroh
-            .group_id
-            .clone()
-            .ok_or_else(|| "group_id missing".to_string())?;
+        let group_id_hex = configs[0].iroh.group_id.clone().ok_or_else(|| "group_id missing".to_string())?;
         let group_id = parse_group_id(&group_id_hex);
 
         let account_kind = AccountKind::from(MULTISIG_ACCOUNT_KIND);
@@ -250,9 +241,7 @@ impl ThreeNodeSetup {
             hd.xpubs = vec![xpub_b, xpub_c];
         }
 
-        let network = TestIrohNetwork::new(3)
-            .await
-            .map_err(|err| format!("iroh bind failed: {err}"))?;
+        let network = TestIrohNetwork::new(3).await.map_err(|err| format!("iroh bind failed: {err}"))?;
         network.connect_all(Duration::from_secs(5)).await;
         let topic_id = iroh_gossip::proto::TopicId::from(group_topic_id(&group_id, 0));
         if !network.join_group(topic_id, Duration::from_secs(5)).await {
@@ -314,16 +303,13 @@ impl ThreeNodeSetup {
         let rpc = Arc::new(MockKaspaNode::new());
         let rpc_dyn: Arc<dyn NodeRpc> = rpc.clone();
         let flow_a = Arc::new(
-            ServiceFlow::new_with_rpc(rpc_dyn.clone(), storage_a.clone(), transport_a.clone())
-                .map_err(|err| err.to_string())?,
+            ServiceFlow::new_with_rpc(rpc_dyn.clone(), storage_a.clone(), transport_a.clone()).map_err(|err| err.to_string())?,
         );
         let flow_b = Arc::new(
-            ServiceFlow::new_with_rpc(rpc_dyn.clone(), storage_b.clone(), transport_b.clone())
-                .map_err(|err| err.to_string())?,
+            ServiceFlow::new_with_rpc(rpc_dyn.clone(), storage_b.clone(), transport_b.clone()).map_err(|err| err.to_string())?,
         );
-        let flow_c = Arc::new(
-            ServiceFlow::new_with_rpc(rpc_dyn, storage_c.clone(), transport_c.clone()).map_err(|err| err.to_string())?,
-        );
+        let flow_c =
+            Arc::new(ServiceFlow::new_with_rpc(rpc_dyn, storage_c.clone(), transport_c.clone()).map_err(|err| err.to_string())?);
 
         let app_a = Arc::new(configs.remove(0));
         let app_b = Arc::new(configs.remove(0));
@@ -350,14 +336,7 @@ impl ThreeNodeSetup {
     }
 
     fn add_single_utxo(&self) {
-        let source_address = self
-            .app_a
-            .service
-            .pskt
-            .source_addresses
-            .first()
-            .expect("source address")
-            .clone();
+        let source_address = self.app_a.service.pskt.source_addresses.first().expect("source address").clone();
         let source_address = Address::constructor(&source_address);
         let utxo_amount = 100 * SOMPI_PER_KAS;
         let utxo = UtxoWithOutpoint {
@@ -369,16 +348,17 @@ impl ThreeNodeSetup {
     }
 
     fn destination(&self) -> String {
-        self.app_a
-            .policy
-            .allowed_destinations
-            .first()
-            .cloned()
-            .expect("destination")
+        self.app_a.policy.allowed_destinations.first().cloned().expect("destination")
     }
 }
 
-fn signing_params(request_id: &str, session_seed: u8, coordinator_peer_id: &str, event: &igra_core::model::SigningEvent, signature: Vec<u8>) -> SigningEventParams {
+fn signing_params(
+    request_id: &str,
+    session_seed: u8,
+    coordinator_peer_id: &str,
+    event: &igra_core::model::SigningEvent,
+    signature: Vec<u8>,
+) -> SigningEventParams {
     SigningEventParams {
         session_id_hex: hex::encode([session_seed; 32]),
         request_id: request_id.to_string(),
@@ -442,10 +422,7 @@ async fn coordinator_failure_after_proposal() {
     let signing_event = signing_event_for(
         destination,
         50 * SOMPI_PER_KAS,
-        EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
     );
     let hyperlane = MockHyperlaneValidator::new(2, 2);
     let signature = hyperlane.sign_with_quorum(&signing_event).expect("hyperlane signature");
@@ -462,21 +439,12 @@ async fn coordinator_failure_after_proposal() {
     let params = signing_params(request_id.as_str(), 2, IROH_PEERS[0], &signing_event, signature);
     submit_signing_event(&event_ctx, params).await.expect("submit event");
 
-    assert!(
-        wait_for_request(&setup.storage_b, &request_id, Duration::from_secs(5)).await,
-        "proposal did not reach signer b"
-    );
+    assert!(wait_for_request(&setup.storage_b, &request_id, Duration::from_secs(5)).await, "proposal did not reach signer b");
 
     loop_a.abort();
 
-    assert!(
-        wait_for_partials(&setup.storage_b, &request_id, 1, Duration::from_secs(5)).await,
-        "signer b did not publish partial"
-    );
-    assert!(
-        wait_for_partials(&setup.storage_c, &request_id, 1, Duration::from_secs(5)).await,
-        "signer c did not publish partial"
-    );
+    assert!(wait_for_partials(&setup.storage_b, &request_id, 1, Duration::from_secs(5)).await, "signer b did not publish partial");
+    assert!(wait_for_partials(&setup.storage_c, &request_id, 1, Duration::from_secs(5)).await, "signer c did not publish partial");
 
     let loop_a = spawn_loop(
         setup.app_a.clone(),
@@ -488,11 +456,7 @@ async fn coordinator_failure_after_proposal() {
     );
 
     let proposal = load_proposal(setup.storage_a.as_ref(), &request_id);
-    setup
-        .transport_a
-        .publish_proposal(proposal)
-        .await
-        .expect("re-broadcast proposal");
+    setup.transport_a.publish_proposal(proposal).await.expect("re-broadcast proposal");
 
     assert!(
         wait_for_finalized(&setup.storage_a, &request_id, Duration::from_secs(10)).await,
@@ -504,7 +468,6 @@ async fn coordinator_failure_after_proposal() {
     loop_a.abort();
     loop_b.abort();
     loop_c.abort();
-
 }
 
 #[tokio::test]
@@ -542,10 +505,7 @@ async fn timeout_with_insufficient_signatures() {
     let signing_event = signing_event_for(
         destination,
         50 * SOMPI_PER_KAS,
-        EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
     );
     let hyperlane = MockHyperlaneValidator::new(2, 2);
     let signature = hyperlane.sign_with_quorum(&signing_event).expect("hyperlane signature");
@@ -562,24 +522,16 @@ async fn timeout_with_insufficient_signatures() {
     let params = signing_params(request_id.as_str(), 3, IROH_PEERS[0], &signing_event, signature);
     submit_signing_event(&event_ctx, params).await.expect("submit event");
 
-    assert!(
-        wait_for_request(&setup.storage_b, &request_id, Duration::from_secs(5)).await,
-        "proposal did not reach signer b"
-    );
+    assert!(wait_for_request(&setup.storage_b, &request_id, Duration::from_secs(5)).await, "proposal did not reach signer b");
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let request = setup
-        .storage_a
-        .get_request(&request_id)
-        .expect("request read")
-        .expect("request");
+    let request = setup.storage_a.get_request(&request_id).expect("request read").expect("request");
     assert!(matches!(request.decision, RequestDecision::Pending));
     assert!(setup.rpc.submitted_transactions().is_empty(), "unexpected tx submission");
 
     loop_a.abort();
     loop_b.abort();
-
 }
 
 #[tokio::test]
@@ -617,10 +569,7 @@ async fn redundant_proposers_deduplicate() {
     let signing_event = signing_event_for(
         destination,
         50 * SOMPI_PER_KAS,
-        EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
     );
     let hyperlane = MockHyperlaneValidator::new(2, 2);
     let signature = hyperlane.sign_with_quorum(&signing_event).expect("hyperlane signature");
@@ -637,10 +586,7 @@ async fn redundant_proposers_deduplicate() {
     let params_a = signing_params(request_a.as_str(), 4, IROH_PEERS[0], &signing_event, signature.clone());
     submit_signing_event(&event_ctx_a, params_a).await.expect("submit event a");
 
-    assert!(
-        wait_for_finalized(&setup.storage_a, &request_a, Duration::from_secs(10)).await,
-        "primary proposal did not finalize"
-    );
+    assert!(wait_for_finalized(&setup.storage_a, &request_a, Duration::from_secs(10)).await, "primary proposal did not finalize");
 
     let event_ctx_b = EventContext {
         processor: setup.flow_b.clone(),
@@ -661,7 +607,6 @@ async fn redundant_proposers_deduplicate() {
 
     loop_a.abort();
     loop_c.abort();
-
 }
 
 #[tokio::test]
@@ -699,10 +644,7 @@ async fn partitioned_signer_recovers_after_rebroadcast() {
     let signing_event = signing_event_for(
         destination,
         50 * SOMPI_PER_KAS,
-        EventSource::Hyperlane {
-            domain: "devnet".to_string(),
-            sender: "hyperlane-bridge".to_string(),
-        },
+        EventSource::Hyperlane { domain: "devnet".to_string(), sender: "hyperlane-bridge".to_string() },
     );
     let hyperlane = MockHyperlaneValidator::new(2, 2);
     let signature = hyperlane.sign_with_quorum(&signing_event).expect("hyperlane signature");
@@ -719,10 +661,7 @@ async fn partitioned_signer_recovers_after_rebroadcast() {
     let params = signing_params(request_id.as_str(), 6, IROH_PEERS[0], &signing_event, signature);
     submit_signing_event(&event_ctx, params).await.expect("submit event");
 
-    assert!(
-        wait_for_finalized(&setup.storage_a, &request_id, Duration::from_secs(10)).await,
-        "coordinator did not finalize"
-    );
+    assert!(wait_for_finalized(&setup.storage_a, &request_id, Duration::from_secs(10)).await, "coordinator did not finalize");
 
     assert!(setup.storage_c.get_request(&request_id).expect("request read").is_none());
 
@@ -736,27 +675,15 @@ async fn partitioned_signer_recovers_after_rebroadcast() {
     );
 
     let proposal = load_proposal(setup.storage_a.as_ref(), &request_id);
-    setup
-        .transport_a
-        .publish_proposal(proposal)
-        .await
-        .expect("rebroadcast proposal");
+    setup.transport_a.publish_proposal(proposal).await.expect("rebroadcast proposal");
     assert!(
         wait_for_request(&setup.storage_c, &request_id, Duration::from_secs(5)).await,
         "partitioned signer did not ingest proposal"
     );
 
-    let request = setup
-        .storage_a
-        .get_request(&request_id)
-        .expect("request read")
-        .expect("request");
+    let request = setup.storage_a.get_request(&request_id).expect("request read").expect("request");
     let tx_id = request.final_tx_id.expect("final tx id");
-    setup
-        .transport_a
-        .publish_finalize(request.session_id, &request_id, *tx_id.as_hash())
-        .await
-        .expect("rebroadcast finalize");
+    setup.transport_a.publish_finalize(request.session_id, &request_id, *tx_id.as_hash()).await.expect("rebroadcast finalize");
 
     assert!(
         wait_for_finalized(&setup.storage_c, &request_id, Duration::from_secs(5)).await,
@@ -766,7 +693,6 @@ async fn partitioned_signer_recovers_after_rebroadcast() {
     loop_a.abort();
     loop_b.abort();
     loop_c.abort();
-
 }
 
 #[tokio::test]
@@ -807,25 +733,16 @@ async fn malformed_proposal_rejected_by_signers() {
     );
 
     let destination = setup.destination();
-    let signing_event = signing_event_for(
-        destination.clone(),
-        50 * SOMPI_PER_KAS,
-        EventSource::Api { issuer: "tests".to_string() },
-    );
+    let signing_event = signing_event_for(destination.clone(), 50 * SOMPI_PER_KAS, EventSource::Api { issuer: "tests".to_string() });
     let event_hash = event_hash(&signing_event).expect("event hash");
 
     let (_valid_blob, tx_hash, per_input_hashes) = build_pskt_blob_with_output(output_for_address(&destination, 50 * SOMPI_PER_KAS));
     let validation_hash = validation_hash(&event_hash, &tx_hash, &per_input_hashes);
-    let attacker_output = output_for_address(
-        "kaspadev:qrz9yajzk65v0wyrk0s54drcauzd8rlgaagrl74cjmj042w4crqkust5wycfq",
-        50 * SOMPI_PER_KAS,
-    );
+    let attacker_output =
+        output_for_address("kaspadev:qrz9yajzk65v0wyrk0s54drcauzd8rlgaagrl74cjmj042w4crqkust5wycfq", 50 * SOMPI_PER_KAS);
     let (tampered_blob, _, _) = build_pskt_blob_with_output(attacker_output);
 
-    setup
-        .storage_a
-        .insert_event(event_hash, signing_event.clone())
-        .expect("event insert");
+    setup.storage_a.insert_event(event_hash, signing_event.clone()).expect("event insert");
     setup
         .storage_a
         .insert_request(SigningRequest {
@@ -867,21 +784,14 @@ async fn malformed_proposal_rejected_by_signers() {
         kpsbt_blob: tampered_blob,
     };
 
-    setup
-        .transport_a
-        .publish_proposal(proposal)
-        .await
-        .expect("publish proposal");
+    setup.transport_a.publish_proposal(proposal).await.expect("publish proposal");
 
     assert!(
         wait_for_rejected_acks(&setup.storage_a, &rid("req-malformed"), 2, Duration::from_secs(5)).await,
         "expected rejected acks"
     );
     let acks = setup.storage_a.list_signer_acks(&rid("req-malformed")).expect("acks list");
-    assert!(
-        acks.iter().any(|ack| ack.reason.as_deref() == Some("validation_hash_mismatch")),
-        "expected validation_hash_mismatch"
-    );
+    assert!(acks.iter().any(|ack| ack.reason.as_deref() == Some("validation_hash_mismatch")), "expected validation_hash_mismatch");
 
     let partials = setup.storage_a.list_partial_sigs(&rid("req-malformed")).expect("partials");
     assert!(partials.is_empty(), "unexpected partial signatures");
@@ -901,11 +811,8 @@ async fn invalid_partials_do_not_finalize() {
     let flow = Arc::new(ServiceFlow::new_with_rpc(rpc, storage.clone(), transport.clone()).expect("flow"));
 
     let destination = "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3";
-    let signing_event = signing_event_for(
-        destination.to_string(),
-        50 * SOMPI_PER_KAS,
-        EventSource::Api { issuer: "tests".to_string() },
-    );
+    let signing_event =
+        signing_event_for(destination.to_string(), 50 * SOMPI_PER_KAS, EventSource::Api { issuer: "tests".to_string() });
     let event_hash = event_hash(&signing_event).expect("event hash");
     let (pskt_blob, tx_hash, per_input_hashes) = build_pskt_blob_with_output(output_for_address(destination, 50 * SOMPI_PER_KAS));
     let validation_hash = validation_hash(&event_hash, &tx_hash, &per_input_hashes);
@@ -981,9 +888,6 @@ async fn invalid_partials_do_not_finalize() {
     .await;
     assert!(result.is_err(), "expected finalize error");
 
-    let request = storage
-        .get_request(&request_id)
-        .expect("request read")
-        .expect("request");
+    let request = storage.get_request(&request_id).expect("request read").expect("request");
     assert!(matches!(request.decision, RequestDecision::Pending));
 }

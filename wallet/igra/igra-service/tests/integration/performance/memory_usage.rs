@@ -62,13 +62,10 @@ async fn test_memory_usage_growth() {
 
     let base_event = SigningEvent {
         event_id: "event-memory".to_string(),
-        event_source: EventSource::Api {
-            issuer: "tests".to_string(),
-        },
+        event_source: EventSource::Api { issuer: "tests".to_string() },
         derivation_path: "m/45'/111111'/0'/0/0".to_string(),
         derivation_index: Some(0),
-        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3"
-            .to_string(),
+        destination_address: "kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3".to_string(),
         amount_sompi: 1_000_000,
         metadata: BTreeMap::new(),
         timestamp_nanos: 1,
@@ -78,10 +75,7 @@ async fn test_memory_usage_growth() {
     let mut sys = System::new_all();
     sys.refresh_all();
     let pid = sysinfo::get_current_pid().expect("pid");
-    let initial_rss = sys
-        .process(pid)
-        .map(|proc| proc.memory())
-        .unwrap_or_default();
+    let initial_rss = sys.process(pid).map(|proc| proc.memory()).unwrap_or_default();
 
     let total_events = 200u32;
     for idx in 0..total_events {

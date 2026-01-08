@@ -41,10 +41,7 @@ pub fn validate_transition(from: &RequestDecision, to: &RequestDecision) -> Resu
     if VALID_TRANSITIONS.contains(&(from_state, to_state)) {
         Ok(())
     } else {
-        Err(ThresholdError::InvalidStateTransition {
-            from: format!("{:?}", from),
-            to: format!("{:?}", to),
-        })
+        Err(ThresholdError::InvalidStateTransition { from: format!("{:?}", from), to: format!("{:?}", to) })
     }
 }
 
@@ -68,11 +65,7 @@ mod tests {
     #[test]
     fn test_invalid_transitions() {
         assert!(validate_transition(&RequestDecision::Finalized, &RequestDecision::Pending).is_err());
-        assert!(validate_transition(
-            &RequestDecision::Rejected { reason: "policy".to_string() },
-            &RequestDecision::Approved
-        )
-        .is_err());
+        assert!(validate_transition(&RequestDecision::Rejected { reason: "policy".to_string() }, &RequestDecision::Approved).is_err());
     }
 
     #[test]

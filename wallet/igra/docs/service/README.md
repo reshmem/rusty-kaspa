@@ -165,6 +165,7 @@ Iroh configuration (INI keys):
 - `iroh.group_id` (32-byte hex group id)
 - `iroh.network_id` (u8, default 0)
 - `iroh.bootstrap` (comma-separated EndpointId list, optional; base32 strings)
+- `iroh.bootstrap_addrs` (comma-separated `EndpointId@host:port` entries; optional static addresses used before discovery)
 - `iroh.bind_port` (u16 bind port, optional)
 
 Signing backend configuration:

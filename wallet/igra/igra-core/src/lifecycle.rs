@@ -83,10 +83,7 @@ pub struct AuditLoggingObserver {
 
 impl AuditLoggingObserver {
     pub fn new(storage: Option<Arc<dyn Storage>>, threshold_required: Option<usize>) -> Self {
-        Self {
-            storage,
-            threshold_required,
-        }
+        Self { storage, threshold_required }
     }
 }
 

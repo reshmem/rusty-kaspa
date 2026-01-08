@@ -1,8 +1,8 @@
 use igra_core::config::AppConfig;
 use igra_core::coordination::coordinator::Coordinator;
 use igra_core::hd::derive_keypair_from_key_data;
+use igra_core::hd::SigningKeypair;
 use igra_core::model::{EventSource, PartialSigRecord, RequestDecision, SigningEvent};
-use igra_core::types::{PeerId, RequestId, SessionId, TransactionId as RequestTransactionId};
 use igra_core::pskt::multisig as pskt_multisig;
 use igra_core::rpc::UnimplementedRpc;
 use igra_core::signing::SignerBackend;
@@ -10,20 +10,17 @@ use igra_core::storage::rocks::RocksStorage;
 use igra_core::storage::Storage;
 use igra_core::transport::mock::{MockHub, MockTransport};
 use igra_core::transport::Transport;
+use igra_core::types::{PeerId, RequestId, SessionId, TransactionId as RequestTransactionId};
 use kaspa_consensus_core::config::params::DEVNET_PARAMS;
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId as KaspaTransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::standard::multisig_redeem_script;
-use igra_core::hd::SigningKeypair;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tempfile::TempDir;
 
 fn config_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("igra repo root")
-        .to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("igra repo root").to_path_buf()
 }
 
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -37,8 +34,7 @@ fn load_from_ini_profile(config_path: &Path, profile: &str) -> AppConfig {
 
     env::set_var("KASPA_DATA_DIR", data_dir.path());
 
-    let config = igra_core::config::load_app_config_from_profile_path(config_path, profile)
-        .expect("load app config");
+    let config = igra_core::config::load_app_config_from_profile_path(config_path, profile).expect("load app config");
 
     env::remove_var("KASPA_DATA_DIR");
     config
@@ -59,27 +55,16 @@ async fn two_of_three_signing_flow_finalizes() {
 
     env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
 
-    let configs = signer_profiles
-        .iter()
-        .map(|profile| load_from_ini_profile(&signer_config, profile))
-        .collect::<Vec<_>>();
+    let configs = signer_profiles.iter().map(|profile| load_from_ini_profile(&signer_config, profile)).collect::<Vec<_>>();
 
     let derivation_path = "m/45'/111111'/0'/0/0";
     let keypairs = configs
         .iter()
-        .map(|config| {
-            (
-                PeerId::from(config.iroh.peer_id.clone().expect("peer id")),
-                keypair_from_config(config, derivation_path),
-            )
-        })
+        .map(|config| (PeerId::from(config.iroh.peer_id.clone().expect("peer id")), keypair_from_config(config, derivation_path)))
         .collect::<Vec<_>>();
 
     let public_keys = keypairs.iter().map(|(_, kp)| kp.public_key()).collect::<Vec<_>>();
-    let xonly_keys = public_keys
-        .iter()
-        .map(|pk| pk.x_only_public_key().0.serialize())
-        .collect::<Vec<_>>();
+    let xonly_keys = public_keys.iter().map(|pk| pk.x_only_public_key().0.serialize()).collect::<Vec<_>>();
 
     let redeem = multisig_redeem_script(xonly_keys.iter(), 2).expect("redeem script");
     let spk = kaspa_txscript::standard::pay_to_script_hash_script(&redeem);
@@ -90,10 +75,7 @@ async fn two_of_three_signing_flow_finalizes() {
         redeem_script: redeem.clone(),
         sig_op_count: 2,
     };
-    let output = pskt_multisig::MultisigOutput {
-        amount: 9_000,
-        script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-    };
+    let output = pskt_multisig::MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = pskt_multisig::build_pskt(&[input], &[output]).expect("pskt build");
     let pskt_blob = pskt_multisig::serialize_pskt(&pskt).expect("pskt serialize");
     let signer_pskt = pskt_multisig::deserialize_pskt_signer(&pskt_blob).expect("signer pskt");
@@ -105,11 +87,7 @@ async fn two_of_three_signing_flow_finalizes() {
         event_source: EventSource::Api { issuer: "integration-test".to_string() },
         derivation_path: derivation_path.to_string(),
         derivation_index: Some(0),
-        destination_address: configs[0]
-            .runtime
-            .test_recipient
-            .clone()
-            .expect("test recipient"),
+        destination_address: configs[0].runtime.test_recipient.clone().expect("test recipient"),
         amount_sompi: 123,
         metadata: Default::default(),
         timestamp_nanos: 1,
@@ -120,10 +98,7 @@ async fn two_of_three_signing_flow_finalizes() {
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), [7u8; 32], 0));
-    let _proposal_subscription = transport
-        .subscribe_group([7u8; 32])
-        .await
-        .expect("proposal subscription");
+    let _proposal_subscription = transport.subscribe_group([7u8; 32]).await.expect("proposal subscription");
     let coordinator = Coordinator::new(transport, storage.clone());
 
     let session_id = SessionId::from([1u8; 32]);

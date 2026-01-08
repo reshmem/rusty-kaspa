@@ -60,10 +60,7 @@ impl AppConfig {
 
         if let crate::model::FeePaymentMode::Split { recipient_portion } = self.service.pskt.fee_payment_mode {
             if !(0.0..=1.0).contains(&recipient_portion) {
-                errors.push(format!(
-                    "pskt.fee_payment_mode split recipient_portion ({}) must be 0.0 to 1.0",
-                    recipient_portion
-                ));
+                errors.push(format!("pskt.fee_payment_mode split recipient_portion ({}) must be 0.0 to 1.0", recipient_portion));
             }
         }
 

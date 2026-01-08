@@ -121,10 +121,8 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
 
 fn decode_hash32(value: &str) -> Result<Hash32, ThresholdError> {
     let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let array: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
+    let array: [u8; 32] =
+        bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
     Ok(array)
 }
 
@@ -159,16 +157,12 @@ fn resolve_derivation_path(path: &str, index: Option<u32>) -> Result<String, Thr
             return Ok(expected);
         }
         if trimmed != expected {
-            return Err(ThresholdError::Message(
-                "derivation_path does not match derivation_index".to_string(),
-            ));
+            return Err(ThresholdError::Message("derivation_path does not match derivation_index".to_string()));
         }
         return Ok(expected);
     }
     if trimmed.is_empty() {
-        return Err(ThresholdError::Message(
-            "missing derivation_path (or derivation_index)".to_string(),
-        ));
+        return Err(ThresholdError::Message("missing derivation_path (or derivation_index)".to_string()));
     }
     Ok(trimmed.to_string())
 }

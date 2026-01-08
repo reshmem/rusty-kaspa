@@ -6,6 +6,7 @@ use crate::rpc::grpc::GrpcNodeRpc;
 use crate::rpc::NodeRpc;
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
+use tracing::info;
 
 pub async fn build_pskt_via_rpc(
     config: &PsktBuildConfig,
@@ -18,11 +19,7 @@ pub async fn build_pskt_with_client(
     rpc: &dyn NodeRpc,
     config: &PsktBuildConfig,
 ) -> Result<kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Updater>, ThresholdError> {
-    let addresses = config
-        .source_addresses
-        .iter()
-        .map(|addr| Address::constructor(addr))
-        .collect::<Vec<_>>();
+    let addresses = config.source_addresses.iter().map(|addr| Address::constructor(addr)).collect::<Vec<_>>();
 
     let mut outputs = config
         .outputs
@@ -33,22 +30,19 @@ pub async fn build_pskt_with_client(
         })
         .collect::<Vec<_>>();
 
-    let redeem_script = hex::decode(&config.redeem_script_hex)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let redeem_script = hex::decode(&config.redeem_script_hex).map_err(|err| ThresholdError::Message(err.to_string()))?;
 
     let mut utxos = rpc.get_utxos_by_addresses(&addresses).await?;
+    let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
+    info!("pskt builder: fetched {} utxos totaling {} sompi for {:?}", utxos.len(), total_input, addresses);
 
     // Sort UTXOs deterministically to ensure all nodes build identical transactions
     // Primary sort: by transaction_id (lexicographic)
     // Secondary sort: by output_index (numeric)
     utxos.sort_by(|a, b| {
-        a.outpoint.transaction_id
-            .as_bytes()
-            .cmp(&b.outpoint.transaction_id.as_bytes())
-            .then(a.outpoint.index.cmp(&b.outpoint.index))
+        a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()).then(a.outpoint.index.cmp(&b.outpoint.index))
     });
 
-    let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
     apply_fee_policy(config, total_input, &mut outputs)?;
 
     let inputs = utxos
@@ -64,11 +58,7 @@ pub async fn build_pskt_with_client(
     build_pskt(&inputs, &outputs)
 }
 
-fn apply_fee_policy(
-    config: &PsktBuildConfig,
-    total_input: u64,
-    outputs: &mut Vec<MultisigOutput>,
-) -> Result<(), ThresholdError> {
+fn apply_fee_policy(config: &PsktBuildConfig, total_input: u64, outputs: &mut Vec<MultisigOutput>) -> Result<(), ThresholdError> {
     let fee = config.fee_sompi.unwrap_or(0);
     if fee == 0 {
         return Ok(());
@@ -90,9 +80,7 @@ fn apply_fee_policy(
     };
 
     if recipient_fee > 0 {
-        let first = outputs
-            .first_mut()
-            .ok_or_else(|| ThresholdError::Message("missing recipient output".to_string()))?;
+        let first = outputs.first_mut().ok_or_else(|| ThresholdError::Message("missing recipient output".to_string()))?;
         if first.amount <= recipient_fee {
             return Err(ThresholdError::Message("recipient amount too low for fee".to_string()));
         }
@@ -107,10 +95,7 @@ fn apply_fee_policy(
 
     let change = total_input - required;
     if change > 0 {
-        let address = config
-            .change_address
-            .as_ref()
-            .ok_or_else(|| ThresholdError::Message("missing change_address".to_string()))?;
+        let address = config.change_address.as_ref().ok_or_else(|| ThresholdError::Message("missing change_address".to_string()))?;
         let addr = Address::constructor(address);
         outputs.push(MultisigOutput { amount: change, script_public_key: pay_to_address_script(&addr) });
     }
