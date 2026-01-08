@@ -671,7 +671,8 @@ start_igra() {
       "${IGRA_BIN}" \
       --config "${IGRA_CONFIG}" \
       --data-dir "${profile_data_dir}" \
-      --node-url "grpc://127.0.0.1:16110"
+      --node-url "grpc://127.0.0.1:16110" \
+      --log-level debug
 }
 
 start_fake_hyperlane() {

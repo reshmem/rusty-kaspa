@@ -45,6 +45,7 @@ struct HyperlaneKeyOut {
 struct Output {
     wallet: WalletOut,
     signers: Vec<SignerOut>,
+    signer_addresses: Vec<String>,
     member_pubkeys: Vec<String>,
     redeem_script_hex: String,
     source_addresses: Vec<String>,
@@ -158,7 +159,19 @@ fn main() {
     let redeem_script = igra_core::hd::redeem_script_from_pubkeys(&pubkeys, 2).expect("redeem");
     let redeem_script_hex = hex::encode(redeem_script);
 
-    let change_address = source_addresses.get(0).cloned().unwrap_or_default();
+    let multisig_address = {
+        let keys: Vec<PublicKey> = member_pubkeys
+            .iter()
+            .map(|hex_pk| {
+                let bytes = hex::decode(hex_pk).expect("pubkey hex decode");
+                PublicKey::from_slice(&bytes).expect("pubkey parse")
+            })
+            .collect();
+        create_multisig_address(2, keys, Prefix::Devnet, true)
+            .expect("multisig address")
+            .to_string()
+    };
+    let change_address = multisig_address.clone();
 
     // Hyperlane validators (2)
     let secp = Secp256k1::new();
@@ -191,9 +204,10 @@ fn main() {
     let output = Output {
         wallet,
         signers,
+        signer_addresses: source_addresses.clone(),
         member_pubkeys: member_pubkeys.clone(),
         redeem_script_hex,
-        source_addresses,
+        source_addresses: vec![multisig_address.clone()],
         change_address,
         hyperlane_keys,
         group_id: {
@@ -216,18 +230,7 @@ fn main() {
             };
             hex::encode(compute_group_id(&group_cfg).expect("group id"))
         },
-        multisig_address: {
-            let keys: Vec<PublicKey> = member_pubkeys
-                .iter()
-                .map(|hex_pk| {
-                    let bytes = hex::decode(hex_pk).expect("pubkey hex decode");
-                    PublicKey::from_slice(&bytes).expect("pubkey parse")
-                })
-                .collect();
-            create_multisig_address(2, keys, Prefix::Devnet, true)
-                .expect("multisig address")
-                .to_string()
-        },
+        multisig_address,
     };
 
     let json = serde_json::to_string_pretty(&output).expect("json");

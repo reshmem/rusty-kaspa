@@ -89,9 +89,9 @@ def rewrite_ini(
 
   comments = {
       "hd.mnemonics": f"generated {generated_ts}: signer mnemonics from devnet-keygen at {data['signers'][0]['derivation_path']} (comma-delimited)",
-      "pskt.source_addresses": f"generated {generated_ts}: signer receive addresses at {data['signers'][0]['derivation_path']}",
+      "pskt.source_addresses": f"generated {generated_ts}: multisig address derived from member_pubkeys (fund this)",
       "pskt.redeem_script_hex": f"generated {generated_ts}: 2-of-3 redeem script over member_pubkeys (see group section)",
-      "pskt.change_address": f"generated {generated_ts}: change address = signer-1 receive address",
+      "pskt.change_address": f"generated {generated_ts}: change address = multisig address",
       "group.member_pubkeys": f"generated {generated_ts}: pubkeys derived from signer mnemonics (ordered signer-1..3)",
       "hyperlane.validators": f"generated {generated_ts}: public keys for hyperlane validators from hyperlane-keys.json",
       "iroh.group_id": (
@@ -265,6 +265,7 @@ def write_keyset(keyset_out: pathlib.Path, config_dir: pathlib.Path, data: dict,
       "generated_at": generated_ts,
       "wallet": data["wallet"],
       "signers": data["signers"],
+      "signer_addresses": data.get("signer_addresses", []),
       "member_pubkeys": data["member_pubkeys"],
       "redeem_script_hex": data["redeem_script_hex"],
       "source_addresses": data["source_addresses"],
