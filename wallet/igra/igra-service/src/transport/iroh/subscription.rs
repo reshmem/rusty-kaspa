@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // Maximum message size: 10 MB (must match limit in mod.rs)
-const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+use igra_core::constants::MAX_MESSAGE_SIZE_BYTES;
+
+const MAX_MESSAGE_SIZE: usize = MAX_MESSAGE_SIZE_BYTES;
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn subscribe_stream<E>(

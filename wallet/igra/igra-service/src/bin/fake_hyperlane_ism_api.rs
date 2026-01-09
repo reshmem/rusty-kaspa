@@ -28,7 +28,7 @@ const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000
 
 #[allow(dead_code)]
 fn now_nanos() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_else(|_| Duration::from_secs(0)).as_nanos() as u64
+    igra_core::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
 }
 
 #[allow(dead_code)]
@@ -92,7 +92,7 @@ fn make_signatures(
         let (rec_id, bytes) = rec.serialize_compact();
         let mut out = [0u8; 65];
         out[..64].copy_from_slice(&bytes);
-        out[64] = rec_id.to_i32() as u8;
+        out[64] = u8::try_from(rec_id.to_i32()).unwrap_or(0);
         sigs.push(format!("0x{}", hex::encode(out)));
     }
     Ok(sigs)
@@ -194,9 +194,12 @@ async fn main() -> Result<(), String> {
 
     let client = Client::new();
     loop {
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_else(|_| Duration::from_secs(0)).as_secs();
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
-        let nonce = slot as u32;
+        let nonce: u32 = slot.try_into().unwrap_or(u32::MAX);
         let version = 3u8;
         let origin = domain.parse::<u32>().unwrap_or(5);
         let destination = destination_domain;

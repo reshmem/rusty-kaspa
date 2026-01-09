@@ -5,6 +5,7 @@ use crate::transport::{
     TransportMessage, TransportSubscription,
 };
 use crate::types::{PeerId, RequestId, SessionId};
+use crate::util::time::current_timestamp_nanos_env;
 use async_trait::async_trait;
 use bincode::Options;
 use std::collections::HashMap;
@@ -63,9 +64,7 @@ impl MockTransport {
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 
-    fn now_nanos() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
-    }
+    fn now_nanos() -> u64 { current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0) }
 
     async fn publish(&self, topic: Hash32, session_id: SessionId, payload: TransportMessage) -> Result<(), ThresholdError> {
         let payload_hash = Self::payload_hash(&payload)?;

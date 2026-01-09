@@ -1,7 +1,7 @@
 use crate::integration_harness::test_data::env_lock;
 use crate::integration_harness::test_keys::TestKeyGenerator;
 use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::error::ThresholdError;
 use igra_core::model::{EventSource, GroupPolicy, RequestDecision, SigningEvent, SigningRequest};
 use igra_core::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
@@ -58,6 +58,7 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
     let hub = Arc::new(MockHub::new());
     let transport = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), [3u8; 32], 0));
     let signer = Signer::new(transport, storage.clone());
+    let expiry_day1 = day1 + 10 * 60 * 1_000_000_000;
 
     let keygen = TestKeyGenerator::new("volume-limit");
     let kp1 = keygen.generate_kaspa_keypair_full(1);
@@ -80,11 +81,14 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
             tx_template_hash: [0u8; 32],
             validation_hash: [0u8; 32],
             decision: RequestDecision::Finalized,
-            expires_at_nanos: 0,
+            expires_at_nanos: expiry_day1,
             final_tx_id: Some(RequestTransactionId::from([1u8; 32])),
             final_tx_accepted_blue_score: None,
         })?;
     }
+
+    let total = storage.get_volume_since(day1)?;
+    assert_eq!(total, 100_000_000_000, "expected 100 KAS accounted for day1, got {}", total);
 
     let event_exceed = build_event(1_000_000_000, day1 + 10);
     let ev_hash = event_hash(&event_exceed)?;
@@ -92,24 +96,28 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
     let val_hash = validation_hash(&ev_hash, &tx_hash, &per_input);
     let ack = signer
         .validate_proposal(
-            &RequestId::from("req-exceed"),
-            SessionId::from([9u8; 32]),
-            event_exceed,
-            ev_hash,
-            &pskt_blob,
-            tx_hash,
-            val_hash,
-            PeerId::from("peer-1"),
-            0,
-            Some(&policy),
-            None,
+            ProposalValidationRequestBuilder::new(RequestId::from("req-exceed"), SessionId::from([9u8; 32]), event_exceed)
+                .expected_event_hash(ev_hash)
+                .kpsbt_blob(&pskt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(val_hash)
+                .coordinator_peer_id(PeerId::from("peer-1"))
+                .expires_at_nanos(expiry_day1)
+                .policy(Some(&policy))
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
-    assert!(!ack.accept, "expected rejection due to daily volume limit");
-    assert!(ack.reason.unwrap_or_default().contains("daily volume exceeded"), "expected daily volume limit error");
+    assert!(!ack.accept, "expected rejection due to daily volume limit, got ack={:?}", ack);
+    assert!(
+        ack.reason.clone().unwrap_or_default().contains("daily volume exceeded"),
+        "expected daily volume limit error, got {:?}",
+        ack.reason
+    );
 
     let day2 = day1 + nanos_per_day + 1;
     std::env::set_var("KASPA_IGRA_TEST_NOW_NANOS", day2.to_string());
+    let expiry_day2 = day2 + 10 * 60 * 1_000_000_000;
 
     let event_ok = build_event(20_000_000_000, day2 + 5);
     let ev_hash_ok = event_hash(&event_ok)?;
@@ -117,17 +125,16 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
     let val_hash_ok = validation_hash(&ev_hash_ok, &tx_hash_ok, &per_input_ok);
     let ack_ok = signer
         .validate_proposal(
-            &RequestId::from("req-ok"),
-            SessionId::from([10u8; 32]),
-            event_ok,
-            ev_hash_ok,
-            &pskt_blob_ok,
-            tx_hash_ok,
-            val_hash_ok,
-            PeerId::from("peer-1"),
-            0,
-            Some(&policy),
-            None,
+            ProposalValidationRequestBuilder::new(RequestId::from("req-ok"), SessionId::from([10u8; 32]), event_ok)
+                .expected_event_hash(ev_hash_ok)
+                .kpsbt_blob(&pskt_blob_ok)
+                .tx_template_hash(tx_hash_ok)
+                .expected_validation_hash(val_hash_ok)
+                .coordinator_peer_id(PeerId::from("peer-1"))
+                .expires_at_nanos(expiry_day2)
+                .policy(Some(&policy))
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
     assert!(ack_ok.accept, "expected acceptance after daily reset");

@@ -1,4 +1,5 @@
 use ed25519_dalek::SigningKey;
+use igra_core::error::ThresholdError;
 use igra_core::group_id::compute_group_id;
 use igra_core::model::{GroupConfig, GroupMetadata, GroupPolicy};
 use kaspa_addresses::Prefix;
@@ -56,8 +57,8 @@ struct Output {
     multisig_address: String,
 }
 
-fn mnemonic_phrase() -> Mnemonic {
-    Mnemonic::random(WordCount::Words24, Language::English).expect("mnemonic")
+fn mnemonic_phrase() -> Result<Mnemonic, ThresholdError> {
+    Mnemonic::random(WordCount::Words24, Language::English).map_err(|e| ThresholdError::Message(format!("mnemonic: {e}")))
 }
 
 fn pubkey_hex(pk: &PublicKey) -> String {
@@ -70,11 +71,11 @@ fn random_seed_hex() -> String {
     hex::encode(bytes)
 }
 
-fn peer_id_from_seed(seed_hex: &str) -> String {
-    let bytes = hex::decode(seed_hex).expect("seed hex decode");
+fn peer_id_from_seed(seed_hex: &str) -> Result<String, ThresholdError> {
+    let bytes = hex::decode(seed_hex)?;
     let digest = blake3::hash(&bytes);
     let prefix = &digest.as_bytes()[..8];
-    format!("peer-{}", hex::encode(prefix))
+    Ok(format!("peer-{}", hex::encode(prefix)))
 }
 
 fn derive_pubkey_and_address(
@@ -82,31 +83,38 @@ fn derive_pubkey_and_address(
     is_multisig: bool,
     account_index: u64,
     cosigner_index: Option<u32>,
-) -> (PublicKey, String) {
-    let xprv = kaspa_bip32::ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed("")).expect("xprv");
+) -> Result<(PublicKey, String), ThresholdError> {
+    let xprv = kaspa_bip32::ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed(""))
+        .map_err(|e| ThresholdError::Message(format!("xprv: {e}")))?;
     let xprv_str = xprv.to_string(kaspa_bip32::Prefix::KPRV).to_string();
-    let wallet = WalletDerivationManager::from_master_xprv(&xprv_str, is_multisig, account_index, cosigner_index).expect("wallet");
-    let pk = wallet.derive_receive_pubkey(0).expect("pubkey");
-    let address = PubkeyDerivationManager::create_address(&pk, Prefix::Devnet, false).expect("address").to_string();
-    (pk, address)
+    let wallet = WalletDerivationManager::from_master_xprv(&xprv_str, is_multisig, account_index, cosigner_index)
+        .map_err(|e| ThresholdError::Message(format!("wallet derive: {e}")))?;
+    let pk = wallet.derive_receive_pubkey(0).map_err(|e| ThresholdError::Message(format!("pubkey derive: {e}")))?;
+    let address = PubkeyDerivationManager::create_address(&pk, Prefix::Devnet, false)
+        .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
+    Ok((pk, address.to_string()))
 }
 
-fn derive_wallet_private_key_hex(mnemonic: &Mnemonic) -> String {
-    let xprv = ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed("")).expect("xprv");
-    let path = WalletDerivationManager::build_derivate_path(false, 0, None, Some(AddressType::Receive)).expect("path");
-    let receive_root = xprv.derive_path(&path).expect("receive root");
-    let leaf = receive_root.derive_child(ChildNumber::new(0, false).expect("child")).expect("receive index 0");
-    hex::encode(leaf.private_key().secret_bytes())
+fn derive_wallet_private_key_hex(mnemonic: &Mnemonic) -> Result<String, ThresholdError> {
+    let xprv = ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed(""))
+        .map_err(|e| ThresholdError::Message(format!("xprv: {e}")))?;
+    let path = WalletDerivationManager::build_derivate_path(false, 0, None, Some(AddressType::Receive))
+        .map_err(|e| ThresholdError::Message(format!("derive path: {e}")))?;
+    let receive_root = xprv.derive_path(&path).map_err(|e| ThresholdError::Message(format!("receive root: {e}")))?;
+    let leaf = receive_root
+        .derive_child(ChildNumber::new(0, false).map_err(|e| ThresholdError::Message(format!("child: {e}")))?)
+        .map_err(|e| ThresholdError::Message(format!("derive child: {e}")))?;
+    Ok(hex::encode(leaf.private_key().secret_bytes()))
 }
 
-fn main() {
+fn main() -> Result<(), ThresholdError> {
     let password = "devnet".to_string();
     let name = "devnet".to_string();
 
     // Wallet (funding/mining)
-    let wallet_mnemonic = mnemonic_phrase();
-    let (_, mining_address) = derive_pubkey_and_address(&wallet_mnemonic, false, 0, None);
-    let wallet_private_key_hex = derive_wallet_private_key_hex(&wallet_mnemonic);
+    let wallet_mnemonic = mnemonic_phrase()?;
+    let (_, mining_address) = derive_pubkey_and_address(&wallet_mnemonic, false, 0, None)?;
+    let wallet_private_key_hex = derive_wallet_private_key_hex(&wallet_mnemonic)?;
     let wallet = WalletOut {
         mnemonic: wallet_mnemonic.phrase().to_string(),
         password: password.clone(),
@@ -123,19 +131,23 @@ fn main() {
     let mut source_addresses = Vec::new();
 
     for (i, profile) in ["signer-1", "signer-2", "signer-3"].iter().enumerate() {
-        let mnemonic = mnemonic_phrase();
+        let mnemonic = mnemonic_phrase()?;
 
         // Derive pubkey and address
-        let (pubkey, address) = derive_pubkey_and_address(&mnemonic, true, 0, Some(i as u32));
+        let (pubkey, address) = derive_pubkey_and_address(&mnemonic, true, 0, Some(i as u32))?;
         member_pubkeys.push(pubkey_hex(&pubkey));
         source_addresses.push(address.clone());
 
         // Iroh seed
         let iroh_seed_hex = random_seed_hex();
-        let iroh_seed_bytes: [u8; 32] = hex::decode(&iroh_seed_hex).expect("seed hex").as_slice().try_into().expect("32-byte seed");
+        let iroh_seed_bytes: [u8; 32] = hex::decode(&iroh_seed_hex)
+            .map_err(|e| ThresholdError::Message(format!("seed hex: {e}")))?
+            .as_slice()
+            .try_into()
+            .map_err(|_| ThresholdError::Message("32-byte seed required".to_string()))?;
         let iroh_signing = SigningKey::from_bytes(&iroh_seed_bytes);
         let iroh_pubkey_hex = hex::encode(iroh_signing.verifying_key().to_bytes());
-        let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex);
+        let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex)?;
 
         let signer = SignerOut {
             profile: profile.to_string(),
@@ -154,10 +166,12 @@ fn main() {
     let prv_keys: Vec<PrvKeyData> = signers
         .iter()
         .map(|s| {
-            let mn = Mnemonic::new(s.mnemonic.as_str(), Language::English).expect("mn");
-            PrvKeyData::try_from_mnemonic(mn, payment_secret.as_ref(), EncryptionKind::XChaCha20Poly1305, None).expect("prv")
+            let mn = Mnemonic::new(s.mnemonic.as_str(), Language::English)
+                .map_err(|e| ThresholdError::Message(format!("mn parse: {e}")))?;
+            PrvKeyData::try_from_mnemonic(mn, payment_secret.as_ref(), EncryptionKind::XChaCha20Poly1305, None)
+                .map_err(|e| ThresholdError::Message(format!("prv: {e}")))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let pubkeys = igra_core::hd::derive_pubkeys(igra_core::hd::HdInputs {
         key_data: &prv_keys,
         xpubs: &[],
@@ -213,8 +227,10 @@ fn main() {
         change_address,
         hyperlane_keys,
         group_id: {
-            let member_pubkeys_bytes: Vec<Vec<u8>> =
-                member_pubkeys.iter().map(|hex_pk| hex::decode(hex_pk).expect("pubkey hex decode")).collect();
+            let member_pubkeys_bytes: Vec<Vec<u8>> = member_pubkeys
+                .iter()
+                .map(|hex_pk| hex::decode(hex_pk).map_err(ThresholdError::from))
+                .collect::<Result<_, _>>()?;
             let group_cfg = GroupConfig {
                 network_id: 0,
                 threshold_m: 2,
@@ -228,11 +244,12 @@ fn main() {
                 group_metadata,
                 policy,
             };
-            hex::encode(compute_group_id(&group_cfg).expect("group id"))
+            hex::encode(compute_group_id(&group_cfg)?)
         },
         multisig_address,
     };
 
-    let json = serde_json::to_string_pretty(&output).expect("json");
+    let json = serde_json::to_string_pretty(&output)?;
     println!("{json}");
+    Ok(())
 }

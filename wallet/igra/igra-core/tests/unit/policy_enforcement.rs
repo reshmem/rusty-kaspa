@@ -1,5 +1,5 @@
 use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::Signer;
+use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
 use igra_core::model::{EventSource, GroupPolicy, RequestDecision, SigningEvent, SigningRequest};
 use igra_core::types::{PeerId, RequestId, SessionId, TransactionId as RequestTransactionId};
 use igra_core::pskt::multisig::{build_pskt, deserialize_pskt_signer, serialize_pskt, MultisigInput, MultisigOutput};
@@ -86,17 +86,16 @@ fn policy_blocks_missing_reason() {
     let request_id = RequestId::from("req-1");
     let ack = signer
         .validate_proposal(
-            &request_id,
-            SessionId::from([2u8; 32]),
-            event,
-            ev_hash,
-            &pskt_blob,
-            tx_hash,
-            val_hash,
-            PeerId::from("peer-1"),
-            0,
-            Some(&policy),
-            None,
+            ProposalValidationRequestBuilder::new(request_id.clone(), SessionId::from([2u8; 32]), event)
+                .expected_event_hash(ev_hash)
+                .kpsbt_blob(&pskt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(val_hash)
+                .coordinator_peer_id(PeerId::from("peer-1"))
+                .expires_at_nanos(0)
+                .policy(Some(&policy))
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
 
@@ -149,17 +148,16 @@ fn policy_blocks_daily_volume() {
     let request_id = RequestId::from("req-1");
     let ack = signer
         .validate_proposal(
-            &request_id,
-            SessionId::from([2u8; 32]),
-            event,
-            ev_hash,
-            &pskt_blob,
-            tx_hash,
-            val_hash,
-            PeerId::from("peer-1"),
-            0,
-            Some(&policy),
-            None,
+            ProposalValidationRequestBuilder::new(request_id, SessionId::from([2u8; 32]), event)
+                .expected_event_hash(ev_hash)
+                .kpsbt_blob(&pskt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(val_hash)
+                .coordinator_peer_id(PeerId::from("peer-1"))
+                .expires_at_nanos(0)
+                .policy(Some(&policy))
+                .build()
+                .expect("build request"),
         )
         .expect("ack");
 

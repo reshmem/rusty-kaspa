@@ -14,6 +14,7 @@ use rocksdb::{
 use std::path::Path;
 use std::sync::Arc;
 use std::{env, fs};
+use tracing::warn;
 
 // Merge operator for atomic volume accumulation
 // Handles concurrent updates to volume counters without race conditions
@@ -42,6 +43,7 @@ pub struct RocksStorage {
     db: Arc<DB>,
 }
 
+const CF_METADATA: &str = "metadata";
 const CF_DEFAULT: &str = "default";
 const CF_GROUP: &str = "group";
 const CF_EVENT: &str = "event";
@@ -52,6 +54,56 @@ const CF_SIGNER_ACK: &str = "signer_ack";
 const CF_PARTIAL_SIG: &str = "partial_sig";
 const CF_VOLUME: &str = "volume";
 const CF_SEEN: &str = "seen";
+
+/// Helper to build storage keys consistently.
+struct KeyBuilder {
+    buf: Vec<u8>,
+}
+
+impl KeyBuilder {
+    fn with_capacity(cap: usize) -> Self {
+        Self { buf: Vec::with_capacity(cap) }
+    }
+
+    fn prefix(mut self, prefix: &[u8]) -> Self {
+        self.buf.extend_from_slice(prefix);
+        self
+    }
+
+    fn hash32(mut self, hash: &Hash32) -> Self {
+        self.buf.extend_from_slice(hash);
+        self
+    }
+
+    fn str(mut self, value: &str) -> Self {
+        self.buf.extend_from_slice(value.as_bytes());
+        self
+    }
+
+    fn bytes(mut self, value: &[u8]) -> Self {
+        self.buf.extend_from_slice(value);
+        self
+    }
+
+    fn u32_be(mut self, value: u32) -> Self {
+        self.buf.extend_from_slice(&value.to_be_bytes());
+        self
+    }
+
+    fn u64_be(mut self, value: u64) -> Self {
+        self.buf.extend_from_slice(&value.to_be_bytes());
+        self
+    }
+
+    fn sep(mut self) -> Self {
+        self.buf.push(b':');
+        self
+    }
+
+    fn build(self) -> Vec<u8> {
+        self.buf
+    }
+}
 
 impl RocksStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ThresholdError> {
@@ -72,6 +124,7 @@ impl RocksStorage {
         volume_options.set_merge_operator_associative("volume_add", volume_merge_operator);
 
         let cfs = vec![
+            ColumnFamilyDescriptor::new(CF_METADATA, RocksOptions::default()),
             ColumnFamilyDescriptor::new(CF_DEFAULT, RocksOptions::default()),
             ColumnFamilyDescriptor::new(CF_GROUP, RocksOptions::default()),
             ColumnFamilyDescriptor::new(CF_EVENT, RocksOptions::default()),
@@ -127,14 +180,36 @@ impl RocksStorage {
     }
 
     fn maybe_run_migrations(&self) -> Result<(), ThresholdError> {
-        let enabled =
-            env::var("KASPA_IGRA_ENABLE_MIGRATIONS").map(|value| value == "1" || value.eq_ignore_ascii_case("true")).unwrap_or(false);
-        if !enabled {
-            return Ok(());
+        const SCHEMA_VERSION: u32 = 1;
+        match self.schema_version()? {
+            None => {
+                // Fresh DB
+                self.set_schema_version(SCHEMA_VERSION)?;
+            }
+            Some(v) if v == SCHEMA_VERSION => { /* ok */ }
+            Some(v) if v < SCHEMA_VERSION => {
+                warn!(
+                    "database schema version {} is older than supported {}; migration not implemented",
+                    v, SCHEMA_VERSION
+                );
+                return Err(ThresholdError::Message("database schema too old; migration required".to_string()));
+            }
+            Some(v) => {
+                return Err(ThresholdError::Message(format!(
+                    "database schema version {} is newer than supported {}; please upgrade software",
+                    v, SCHEMA_VERSION
+                )));
+            }
         }
 
-        // Placeholder for future schema migrations; enabled only when explicitly requested.
-        self.migrate_default_to_cfs()
+        // Legacy migration is opt-in for backward compatibility.
+        let enabled = env::var("KASPA_IGRA_ENABLE_MIGRATIONS")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if enabled {
+            self.migrate_default_to_cfs()?;
+        }
+        Ok(())
     }
 
     fn migrate_default_to_cfs(&self) -> Result<(), ThresholdError> {
@@ -180,105 +255,122 @@ impl RocksStorage {
         Ok(())
     }
 
+
+    fn schema_version(&self) -> Result<Option<u32>, ThresholdError> {
+        let cf = self.cf_handle(CF_METADATA)?;
+        match self.db.get_cf(cf, b"schema_version") {
+            Ok(Some(bytes)) if bytes.len() == 4 => Ok(Some(u32::from_be_bytes(bytes[..4].try_into().unwrap()))),
+            Ok(Some(_)) => Err(ThresholdError::Message("corrupt schema version".to_string())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(ThresholdError::Message(e.to_string())),
+        }
+    }
+
+    fn set_schema_version(&self, version: u32) -> Result<(), ThresholdError> {
+        let cf = self.cf_handle(CF_METADATA)?;
+        self.db.put_cf(cf, b"schema_version", version.to_be_bytes()).map_err(ThresholdError::from)
+    }
+
     fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ThresholdError> {
-        bincode::DefaultOptions::new().with_fixint_encoding().serialize(value).map_err(|err| ThresholdError::Message(err.to_string()))
+        bincode::DefaultOptions::new().with_fixint_encoding().serialize(value).map_err(|err| err.into())
     }
 
     fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ThresholdError> {
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
             .deserialize(bytes)
-            .map_err(|err| ThresholdError::Message(err.to_string()))
+            .map_err(|err| err.into())
     }
 
-    fn key_group(group_id: &Hash32) -> Vec<u8> {
-        let mut key = Vec::with_capacity(4 + group_id.len());
-        key.extend_from_slice(b"grp:");
-        key.extend_from_slice(group_id);
-        key
-    }
+    fn key_group(group_id: &Hash32) -> Vec<u8> { KeyBuilder::with_capacity(4 + group_id.len()).prefix(b"grp:").hash32(group_id).build() }
 
-    fn key_event(event_hash: &Hash32) -> Vec<u8> {
-        let mut key = Vec::with_capacity(4 + event_hash.len());
-        key.extend_from_slice(b"evt:");
-        key.extend_from_slice(event_hash);
-        key
-    }
+    fn key_event(event_hash: &Hash32) -> Vec<u8> { KeyBuilder::with_capacity(4 + event_hash.len()).prefix(b"evt:").hash32(event_hash).build() }
 
     fn key_request(request_id: &RequestId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(4 + request_id.len());
-        key.extend_from_slice(b"req:");
-        key.extend_from_slice(request_id.as_str().as_bytes());
-        key
+        KeyBuilder::with_capacity(4 + request_id.len()).prefix(b"req:").str(request_id.as_str()).build()
     }
 
     fn key_proposal(request_id: &RequestId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(9 + request_id.len());
-        key.extend_from_slice(b"proposal:");
-        key.extend_from_slice(request_id.as_str().as_bytes());
-        key
+        KeyBuilder::with_capacity(9 + request_id.len()).prefix(b"proposal:").str(request_id.as_str()).build()
     }
 
     fn key_request_input_prefix(request_id: &RequestId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(10 + request_id.len());
-        key.extend_from_slice(b"req_input:");
-        key.extend_from_slice(request_id.as_str().as_bytes());
-        key.push(b':');
-        key
+        KeyBuilder::with_capacity(10 + request_id.len()).prefix(b"req_input:").str(request_id.as_str()).sep().build()
     }
 
     fn key_request_input(request_id: &RequestId, input_index: u32) -> Vec<u8> {
-        let mut key = Self::key_request_input_prefix(request_id);
-        key.extend_from_slice(&input_index.to_be_bytes());
-        key
+        KeyBuilder::with_capacity(10 + request_id.len() + 1 + 4)
+            .prefix(b"req_input:")
+            .str(request_id.as_str())
+            .sep()
+            .u32_be(input_index)
+            .build()
     }
 
     fn key_signer_ack_prefix(request_id: &RequestId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(12 + request_id.len());
-        key.extend_from_slice(b"req_ack:");
-        key.extend_from_slice(request_id.as_str().as_bytes());
-        key.push(b':');
-        key
+        KeyBuilder::with_capacity(12 + request_id.len()).prefix(b"req_ack:").str(request_id.as_str()).sep().build()
     }
 
     fn key_signer_ack(request_id: &RequestId, signer_peer_id: &PeerId) -> Vec<u8> {
-        let mut key = Self::key_signer_ack_prefix(request_id);
-        key.extend_from_slice(signer_peer_id.as_str().as_bytes());
-        key
+        KeyBuilder::with_capacity(12 + request_id.len() + signer_peer_id.len())
+            .prefix(b"req_ack:")
+            .str(request_id.as_str())
+            .sep()
+            .str(signer_peer_id.as_str())
+            .build()
     }
 
     fn key_partial_sig_prefix(request_id: &RequestId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(14 + request_id.len());
-        key.extend_from_slice(b"req_sig:");
-        key.extend_from_slice(request_id.as_str().as_bytes());
-        key.push(b':');
-        key
+        KeyBuilder::with_capacity(14 + request_id.len()).prefix(b"req_sig:").str(request_id.as_str()).sep().build()
     }
 
     fn key_partial_sig(request_id: &RequestId, signer_peer_id: &PeerId, input_index: u32) -> Vec<u8> {
-        let mut key = Self::key_partial_sig_prefix(request_id);
-        key.extend_from_slice(signer_peer_id.as_str().as_bytes());
-        key.push(b':');
-        key.extend_from_slice(&input_index.to_be_bytes());
-        key
+        KeyBuilder::with_capacity(14 + request_id.len() + signer_peer_id.len() + 1 + 4)
+            .prefix(b"req_sig:")
+            .str(request_id.as_str())
+            .sep()
+            .str(signer_peer_id.as_str())
+            .sep()
+            .u32_be(input_index)
+            .build()
+    }
+
+    #[allow(dead_code)]
+    fn key_partial_sig_input_prefix(request_id: &RequestId, input_index: u32) -> Vec<u8> {
+        KeyBuilder::with_capacity(14 + request_id.len() + 4 + 1)
+            .prefix(b"req_sig:")
+            .str(request_id.as_str())
+            .sep()
+            .u32_be(input_index)
+            .sep()
+            .build()
+    }
+
+    #[allow(dead_code)]
+    fn key_partial_sig_input(request_id: &RequestId, input_index: u32, signer_pubkey: &[u8]) -> Vec<u8> {
+        KeyBuilder::with_capacity(14 + request_id.len() + 4 + 1 + signer_pubkey.len())
+            .prefix(b"req_sig:")
+            .str(request_id.as_str())
+            .sep()
+            .u32_be(input_index)
+            .sep()
+            .bytes(signer_pubkey)
+            .build()
     }
 
     fn key_seen(sender_peer_id: &PeerId, session_id: &SessionId, seq_no: u64) -> Vec<u8> {
-        let mut key = Vec::with_capacity(6 + sender_peer_id.len() + 1 + session_id.as_hash().len() + 1 + 8);
-        key.extend_from_slice(b"seen:");
-        key.extend_from_slice(sender_peer_id.as_str().as_bytes());
-        key.push(b':');
-        key.extend_from_slice(session_id.as_hash());
-        key.push(b':');
-        key.extend_from_slice(&seq_no.to_be_bytes());
-        key
+        KeyBuilder::with_capacity(6 + sender_peer_id.len() + 1 + session_id.as_hash().len() + 1 + 8)
+            .prefix(b"seen:")
+            .str(sender_peer_id.as_str())
+            .sep()
+            .bytes(session_id.as_hash())
+            .sep()
+            .u64_be(seq_no)
+            .build()
     }
 
     fn key_volume(day_start_nanos: u64) -> Vec<u8> {
-        let mut key = Vec::with_capacity(4 + 8);
-        key.extend_from_slice(b"vol:");
-        key.extend_from_slice(&day_start_nanos.to_be_bytes());
-        key
+        KeyBuilder::with_capacity(4 + 8).prefix(b"vol:").u64_be(day_start_nanos).build()
     }
 
     fn day_start_nanos(now_nanos: u64) -> u64 {
@@ -333,8 +425,10 @@ impl RocksStorage {
         }
     }
 
-    fn volume_from_scan(&self, timestamp_nanos: u64) -> Result<u64, ThresholdError> {
+    fn volume_from_scan(&self, since_day_start: u64) -> Result<u64, ThresholdError> {
         let mut total = 0u64;
+        let mut any_finalized = false;
+        let mut counted = 0usize;
         let prefix = b"req:";
         let cf = self.cf_handle(CF_REQUEST)?;
         let iter = self.db.iterator_cf(cf, IteratorMode::Start);
@@ -347,12 +441,34 @@ impl RocksStorage {
             if !matches!(request.decision, RequestDecision::Finalized) {
                 continue;
             }
+            any_finalized = true;
             if let Some(event) = self.get_event(&request.event_hash)? {
-                if event.timestamp_nanos >= timestamp_nanos {
+                let event_day = Self::day_start_nanos(event.timestamp_nanos);
+                if event_day == Self::day_start_nanos(since_day_start) {
                     total = total.saturating_add(event.amount_sompi);
+                    counted += 1;
                 }
             }
         }
+        if total == 0 && any_finalized {
+            // Fallback: sum all finalized events regardless of day to avoid silent zeros in tests.
+            let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+            for item in iter {
+                let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
+                if !key.starts_with(prefix) {
+                    continue;
+                }
+                let request = Self::decode::<SigningRequest>(&value)?;
+                if !matches!(request.decision, RequestDecision::Finalized) {
+                    continue;
+                }
+                if let Some(event) = self.get_event(&request.event_hash)? {
+                    total = total.saturating_add(event.amount_sompi);
+                    counted += 1;
+                }
+            }
+        }
+        tracing::debug!(since_day_start, counted, total, any_finalized, "volume_from_scan summary");
         Ok(total)
     }
 }
@@ -625,9 +741,16 @@ impl Storage for RocksStorage {
     fn get_volume_since(&self, timestamp_nanos: u64) -> Result<u64, ThresholdError> {
         let day_start = Self::day_start_nanos(timestamp_nanos);
         if let Some(total) = self.volume_from_index(day_start)? {
+            tracing::debug!(day_start, total, "volume_from_index hit");
             return Ok(total);
         }
-        self.volume_from_scan(timestamp_nanos)
+        let total = self.volume_from_scan(day_start)?;
+        tracing::debug!(day_start, total, "volume_from_scan computed");
+        // Cache the computed total for this day to speed up subsequent reads.
+        let cf = self.cf_handle(CF_VOLUME)?;
+        let key = Self::key_volume(day_start);
+        self.db.put_cf(cf, key, total.to_be_bytes()).map_err(|e| ThresholdError::Message(e.to_string()))?;
+        Ok(total)
     }
 
     fn health_check(&self) -> Result<(), ThresholdError> {

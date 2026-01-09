@@ -69,21 +69,21 @@ pub fn to_signer(pskt: PSKT<Updater>) -> PSKT<Signer> {
 
 pub fn serialize_pskt<ROLE>(pskt: &PSKT<ROLE>) -> Result<Vec<u8>, ThresholdError> {
     let inner: &Inner = &*pskt;
-    serde_json::to_vec(inner).map_err(|err| ThresholdError::Message(err.to_string()))
+    serde_json::to_vec(inner).map_err(|err| err.into())
 }
 
 pub fn deserialize_pskt_signer(bytes: &[u8]) -> Result<PSKT<Signer>, ThresholdError> {
-    let inner: Inner = serde_json::from_slice(bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let inner: Inner = serde_json::from_slice(bytes)?;
     Ok(PSKT::from(inner))
 }
 
 pub fn deserialize_pskt_combiner(bytes: &[u8]) -> Result<PSKT<Combiner>, ThresholdError> {
-    let inner: Inner = serde_json::from_slice(bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let inner: Inner = serde_json::from_slice(bytes)?;
     Ok(PSKT::from(inner))
 }
 
 pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Result<PSKT<Combiner>, ThresholdError> {
-    let mut inner: Inner = serde_json::from_slice(pskt_blob).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let mut inner: Inner = serde_json::from_slice(pskt_blob)?;
     for sig in partials {
         let input = inner
             .inputs

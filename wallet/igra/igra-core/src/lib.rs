@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod constants;
 pub mod config;
 pub mod coordination;
 pub mod error;
@@ -18,3 +19,5 @@ pub mod storage;
 pub mod transport;
 pub mod types;
 pub mod validation;
+pub mod util;
+pub use error::{Result, ThresholdError};

@@ -19,7 +19,7 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<()
     }
     let signature = event.signature.as_ref().ok_or(ThresholdError::EventSignatureInvalid)?;
     let hash = event_hash_without_signature(event)?;
-    let message = Message::from_digest_slice(&hash).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let message = Message::from_digest_slice(&hash)?;
     let sig = match signature.len() {
         64 => SecpSignature::from_compact(signature).map_err(|err| ThresholdError::Message(err.to_string()))?,
         _ => SecpSignature::from_der(signature).map_err(|err| ThresholdError::Message(err.to_string()))?,

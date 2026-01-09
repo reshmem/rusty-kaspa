@@ -14,11 +14,14 @@ use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use std::str::FromStr;
 use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 // Maximum message size: 10 MB (allows for PSKT with many inputs)
 // PSKT blob size: ~1KB base + ~200 bytes per input × 100 inputs = ~21KB
 // 10 MB provides comfortable headroom while preventing DoS
-const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+use igra_core::constants::MAX_MESSAGE_SIZE_BYTES;
+
+const MAX_MESSAGE_SIZE: usize = MAX_MESSAGE_SIZE_BYTES;
 const PUBLISH_RETRY_ATTEMPTS: usize = 3;
 const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -75,27 +78,33 @@ impl IrohTransport {
         *hasher.finalize().as_bytes()
     }
 
-    fn now_nanos() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
-    }
+    fn now_nanos() -> u64 { igra_core::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0) }
 
     async fn publish_bytes(&self, topic: Hash32, bytes: Vec<u8>) -> Result<(), ThresholdError> {
         // Enforce message size limit to prevent memory exhaustion attacks
         if bytes.len() > MAX_MESSAGE_SIZE {
-            return Err(ThresholdError::Message(format!(
-                "message size {} exceeds maximum allowed size {}",
-                bytes.len(),
-                MAX_MESSAGE_SIZE
-            )));
+            return Err(ThresholdError::MessageTooLarge { size: bytes.len(), max: MAX_MESSAGE_SIZE });
         }
 
         let topic_id = TopicId::from(topic);
         let mut last_err = None;
+        debug!(
+            topic = %hex::encode(topic_id.as_bytes()),
+            byte_len = bytes.len(),
+            bootstrap_peers = self.bootstrap.len(),
+            "publishing gossip message"
+        );
         for attempt in 0..PUBLISH_RETRY_ATTEMPTS {
             let mut topic = match self.gossip.subscribe(topic_id, self.bootstrap.clone()).await {
                 Ok(topic) => topic,
                 Err(err) => {
                     last_err = Some(err);
+                    warn!(
+                        attempt = attempt + 1,
+                        topic = %hex::encode(topic_id.as_bytes()),
+                        error = %last_err.as_ref().unwrap(),
+                        "failed to subscribe for publish"
+                    );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
                         tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
                     }
@@ -103,9 +112,23 @@ impl IrohTransport {
                 }
             };
             match topic.broadcast(bytes.clone().into()).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    info!(
+                        attempt = attempt + 1,
+                        topic = %hex::encode(topic_id.as_bytes()),
+                        byte_len = bytes.len(),
+                        "published gossip message"
+                    );
+                    return Ok(());
+                }
                 Err(err) => {
                     last_err = Some(err);
+                    warn!(
+                        attempt = attempt + 1,
+                        topic = %hex::encode(topic_id.as_bytes()),
+                        error = %last_err.as_ref().unwrap(),
+                        "failed to broadcast gossip message"
+                    );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
                         tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
                     }
@@ -254,6 +277,11 @@ impl Transport for IrohTransport {
     async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
+        info!(
+            topic = %hex::encode(topic),
+            bootstrap_peers = self.bootstrap.len(),
+            "subscribing to group gossip"
+        );
         let topic =
             self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         let (sender, receiver) = topic.split();
@@ -264,6 +292,12 @@ impl Transport for IrohTransport {
     async fn subscribe_session(&self, session_id: SessionId) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::session_topic_id(&session_id);
         let topic_id = TopicId::from(topic);
+        info!(
+            topic = %hex::encode(topic),
+            bootstrap_peers = self.bootstrap.len(),
+            session_id = %hex::encode(session_id.as_hash()),
+            "subscribing to session gossip"
+        );
         let topic =
             self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         let (sender, receiver) = topic.split();

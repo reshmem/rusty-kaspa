@@ -256,7 +256,7 @@ fn parse_signature_hex(value: &str) -> Result<Signature, String> {
     let mut s = [0u8; 32];
     r.copy_from_slice(&bytes[0..32]);
     s.copy_from_slice(&bytes[32..64]);
-    Ok(Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: bytes[64] as u64 })
+    Ok(Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: u64::from(bytes[64]) })
 }
 
 fn format_pubkey(pk: &PublicKey) -> String {
@@ -294,7 +294,7 @@ fn format_signature_hex(sig: &Signature) -> String {
     let mut out = Vec::with_capacity(65);
     out.extend_from_slice(&r_bytes);
     out.extend_from_slice(&s_bytes);
-    out.push(sig.v as u8);
+        out.push(u8::try_from(sig.v).unwrap_or(0));
     format!("0x{}", hex::encode(out))
 }
 
@@ -391,7 +391,7 @@ async fn submit_signing_from_hyperlane(
 }
 pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Result<(), ThresholdError> {
     let app = build_router(state);
-    let listener = TcpListener::bind(addr).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await.map_err(|err| ThresholdError::Message(err.to_string()))
 }
 
@@ -508,6 +508,14 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, headers: HeaderMap, Json
                     .into_response();
                 }
             };
+            if let Some(origin) = params.origin_domain {
+                tracing::debug!(
+                    message_id = %params.message_id,
+                    origin_domain = origin,
+                    destination_domain = params.destination_domain,
+                    "hyperlane.validators_and_threshold request"
+                );
+            }
             let ism = match state.hyperlane_ism.as_ref() {
                 Some(ism) => ism,
                 None => {

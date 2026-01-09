@@ -120,7 +120,7 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
 }
 
 fn decode_hash32(value: &str) -> Result<Hash32, ThresholdError> {
-    let bytes = hex::decode(value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = hex::decode(value.trim())?;
     let array: [u8; 32] =
         bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
     Ok(array)
@@ -130,7 +130,7 @@ impl SigningEventWire {
     fn into_signing_event(self) -> Result<SigningEvent, ThresholdError> {
         let derivation_path = resolve_derivation_path(&self.derivation_path, self.derivation_index)?;
         let signature = if let Some(hex_value) = self.signature_hex {
-            let bytes = hex::decode(hex_value.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let bytes = hex::decode(hex_value.trim())?;
             Some(bytes)
         } else {
             self.signature

@@ -4,9 +4,10 @@ use kaspa_notify::subscription::context::SubscriptionContext;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::notify::mode::NotificationMode;
 use std::env;
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
     let mut rpc = "127.0.0.1:16110".to_string();
     let mut addrs: Vec<String> = Vec::new();
@@ -17,7 +18,7 @@ async fn main() {
             "--rpc" => {
                 if i + 1 >= args.len() {
                     eprintln!("--rpc requires a value");
-                    std::process::exit(1);
+                    return ExitCode::FAILURE;
                 }
                 rpc = args[i + 1].clone();
                 i += 2;
@@ -25,14 +26,14 @@ async fn main() {
             "--addresses" => {
                 if i + 1 >= args.len() {
                     eprintln!("--addresses requires a comma-separated list");
-                    std::process::exit(1);
+                    return ExitCode::FAILURE;
                 }
                 addrs.extend(args[i + 1].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
                 i += 2;
             }
             "--help" | "-h" => {
                 usage();
-                return;
+                return ExitCode::SUCCESS;
             }
             other => {
                 // treat any other positional as address
@@ -44,20 +45,23 @@ async fn main() {
 
     if addrs.is_empty() {
         usage();
-        std::process::exit(1);
+        return ExitCode::FAILURE;
     }
 
     let address_strings = addrs.clone();
-    let addresses: Vec<Address> = addrs
-        .iter()
-        .map(|a| Address::try_from(a.as_str()).unwrap_or_else(|e| {
-            eprintln!("Invalid address '{}': {}", a, e);
-            std::process::exit(1);
-        }))
-        .collect();
+    let mut addresses: Vec<Address> = Vec::new();
+    for a in addrs.iter() {
+        match Address::try_from(a.as_str()) {
+            Ok(addr) => addresses.push(addr),
+            Err(e) => {
+                eprintln!("Invalid address '{}': {}", a, e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     let subscription_context = SubscriptionContext::new();
-    let client = GrpcClient::connect_with_args(
+    let client = match GrpcClient::connect_with_args(
         NotificationMode::Direct,
         format!("grpc://{}", rpc),
         Some(subscription_context),
@@ -67,16 +71,28 @@ async fn main() {
         Some(500_000),
         Default::default(),
     )
-    .await
-    .expect("connect to rpc");
+    .await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to connect to rpc {}: {}", rpc, e);
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let resp = client.get_utxos_by_addresses(addresses).await.expect("get_utxos_by_addresses");
+    let resp = match client.get_utxos_by_addresses(addresses).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_utxos_by_addresses failed: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
     // Group by address so we can print per-address totals.
     use std::collections::HashMap;
     let mut per_addr: HashMap<String, Vec<kaspa_rpc_core::model::tx::RpcUtxoEntry>> = HashMap::new();
     for entry in resp {
-        let addr = entry.address.expect("address field present").to_string();
-        per_addr.entry(addr).or_default().push(entry.utxo_entry);
+        if let Some(addr) = entry.address {
+            per_addr.entry(addr.to_string()).or_default().push(entry.utxo_entry);
+        }
     }
     let mut grand_total = 0u64;
     for addr in address_strings {
@@ -86,6 +102,7 @@ async fn main() {
         println!("Address {}: {} sompi (~{:.8} KAS)", addr, total, total as f64 / 100_000_000.0);
     }
     println!("Grand total: {} sompi (~{:.8} KAS)", grand_total, grand_total as f64 / 100_000_000.0);
+    ExitCode::SUCCESS
 }
 
 fn usage() {

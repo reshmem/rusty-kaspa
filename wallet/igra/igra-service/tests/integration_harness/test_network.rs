@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_constants)]
+
 use crate::integration_harness::mock_node::MockKaspaNode;
 use crate::integration_harness::test_data::TestDataFactory;
 use igra_core::error::ThresholdError;

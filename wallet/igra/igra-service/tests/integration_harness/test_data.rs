@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_constants)]
+
 use crate::integration_harness::test_keys::TestKeyGenerator;
 use igra_core::config::{AppConfig, PsktBuildConfig, PsktOutput, ServiceConfig};
 use igra_core::model::{EventSource, GroupPolicy, SigningEvent};

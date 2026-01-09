@@ -25,7 +25,7 @@ pub async fn finalize_from_json(
     tracing::info!("Finalize mode: loading PSKT from {}", json_path.display());
 
     let json = std::fs::read_to_string(json_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let payload: FinalizePayload = serde_json::from_str(&json).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let payload: FinalizePayload = serde_json::from_str(&json)?;
 
     let request_id = RequestId::from(payload.request_id);
     let proposal = storage

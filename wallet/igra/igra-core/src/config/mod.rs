@@ -1,6 +1,7 @@
 mod encryption;
 mod env;
 mod loader;
+mod loader_unified;
 mod persistence;
 mod types;
 mod validation;
@@ -10,6 +11,7 @@ pub use env::{
     DATA_DIR_ENV, FINALIZE_PSKT_JSON_ENV, HD_WALLET_SECRET_ENV, NODE_URL_ENV, TEST_NOW_NANOS_ENV,
 };
 pub use types::*;
+pub use loader_unified::ConfigLoader;
 
 use crate::error::ThresholdError;
 use crate::hd::{derive_pubkeys, redeem_script_from_pubkeys, HdInputs};
@@ -18,17 +20,7 @@ use std::path::Path;
 
 pub fn load_app_config() -> Result<AppConfig, ThresholdError> {
     let data_dir = env::resolve_data_dir()?;
-    if let Some(config) = persistence::load_config_from_db(&data_dir)? {
-        let mut config = config;
-        env::apply_env_overrides(&mut config)?;
-        return Ok(config);
-    }
-
-    let path = env::resolve_config_path(&data_dir)?;
-    let mut config = load_from_path(&path, &data_dir)?;
-    env::apply_env_overrides(&mut config)?;
-    persistence::store_config_in_db(&data_dir, &config)?;
-    Ok(config)
+    ConfigLoader::new(data_dir).load()
 }
 
 pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: &str) -> Result<String, ThresholdError> {
@@ -45,9 +37,7 @@ pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: &str) -> Res
 
 pub fn load_app_config_from_path(path: &Path) -> Result<AppConfig, ThresholdError> {
     let data_dir = env::resolve_data_dir()?;
-    let mut config = load_from_path(path, &data_dir)?;
-    env::apply_env_overrides(&mut config)?;
-    Ok(config)
+    ConfigLoader::new(data_dir).load_from_file(path)
 }
 
 pub fn load_app_config_from_profile_path(path: &Path, profile: &str) -> Result<AppConfig, ThresholdError> {
@@ -55,14 +45,5 @@ pub fn load_app_config_from_profile_path(path: &Path, profile: &str) -> Result<A
     if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         return Err(ThresholdError::Message("profiled config loading is only supported for INI files".to_string()));
     }
-    let mut config = loader::load_from_ini_profile(path, &data_dir, profile)?;
-    env::apply_env_overrides(&mut config)?;
-    Ok(config)
-}
-
-fn load_from_path(path: &Path, data_dir: &Path) -> Result<AppConfig, ThresholdError> {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("toml") => loader::load_from_toml(path, data_dir),
-        _ => loader::load_from_ini(path, data_dir),
-    }
+    ConfigLoader::new(data_dir).load_from_profile(path, profile)
 }
