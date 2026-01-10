@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use igra_core::domain::hashes::event_hash;
 use igra_core::application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
+use igra_core::domain::hashes::event_hash;
 use igra_core::domain::validation::CompositeVerifier;
 use igra_core::domain::{EventSource, SigningEvent};
 use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
@@ -61,7 +61,7 @@ async fn dos_resistance_invalid_hyperlane_signatures() {
     let ctx = EventContext {
         processor: Arc::new(DummyProcessor),
         config: ServiceConfig::default(),
-        message_verifier: Arc::new(CompositeVerifier::new(validators, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validators, 1, Vec::new())),
         storage: storage.clone(),
     };
 

@@ -1,9 +1,10 @@
-use crate::foundation::{PeerId, RequestId, TransactionId};
-use crate::infrastructure::audit::{audit, AuditEvent, now_nanos};
-use crate::infrastructure::storage::Storage;
 use crate::domain::{RequestDecision, SigningEvent, SigningRequest};
 use crate::foundation::Hash32;
+use crate::foundation::{PeerId, RequestId, TransactionId};
+use crate::infrastructure::audit::{audit, now_nanos, AuditEvent};
+use crate::infrastructure::storage::Storage;
 use std::sync::Arc;
+use tracing::{debug, info, trace, warn};
 
 pub trait LifecycleObserver: Send + Sync {
     fn on_event_received(&self, _event: &SigningEvent, _event_hash: &Hash32) {}
@@ -33,44 +34,78 @@ impl CompositeObserver {
     }
 }
 
+impl Default for CompositeObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LifecycleObserver for CompositeObserver {
     fn on_event_received(&self, event: &SigningEvent, event_hash: &Hash32) {
-        for observer in &self.observers {
+        trace!(observer_count = self.observers.len(), event_hash = %hex::encode(event_hash), "on_event_received dispatch");
+        for (idx, observer) in self.observers.iter().enumerate() {
+            trace!(observer_index = idx, "on_event_received calling observer");
             observer.on_event_received(event, event_hash);
         }
     }
 
     fn on_request_created(&self, request: &SigningRequest) {
-        for observer in &self.observers {
+        trace!(observer_count = self.observers.len(), request_id = %request.request_id, "on_request_created dispatch");
+        for (idx, observer) in self.observers.iter().enumerate() {
+            trace!(observer_index = idx, "on_request_created calling observer");
             observer.on_request_created(request);
         }
     }
 
     fn on_status_changed(&self, request_id: &RequestId, old_status: &RequestDecision, new_status: &RequestDecision) {
+        info!(
+            request_id = %request_id,
+            old_status = ?old_status,
+            new_status = ?new_status,
+            "request status changed"
+        );
         for observer in &self.observers {
             observer.on_status_changed(request_id, old_status, new_status);
         }
     }
 
     fn on_signature_added(&self, request_id: &RequestId, signer_peer_id: &PeerId, input_index: u32) {
+        debug!(
+            request_id = %request_id,
+            signer_peer_id = %signer_peer_id,
+            input_index,
+            "signature added"
+        );
         for observer in &self.observers {
             observer.on_signature_added(request_id, signer_peer_id, input_index);
         }
     }
 
     fn on_threshold_met(&self, request_id: &RequestId, signature_count: usize, threshold: usize) {
+        info!(
+            request_id = %request_id,
+            signature_count,
+            threshold,
+            "signature threshold met"
+        );
         for observer in &self.observers {
             observer.on_threshold_met(request_id, signature_count, threshold);
         }
     }
 
     fn on_finalized(&self, request_id: &RequestId, tx_id: &TransactionId) {
+        info!(
+            request_id = %request_id,
+            tx_id = %hex::encode(tx_id.as_hash()),
+            "request finalized"
+        );
         for observer in &self.observers {
             observer.on_finalized(request_id, tx_id);
         }
     }
 
     fn on_failed(&self, request_id: &RequestId, reason: &str) {
+        warn!(request_id = %request_id, reason = %reason, "request failed");
         for observer in &self.observers {
             observer.on_failed(request_id, reason);
         }
@@ -90,6 +125,7 @@ impl AuditLoggingObserver {
 
 impl LifecycleObserver for AuditLoggingObserver {
     fn on_event_received(&self, event: &SigningEvent, event_hash: &Hash32) {
+        trace!(event_hash = %hex::encode(event_hash), event_id = %event.event_id, "audit: event received");
         crate::audit_event_received!(event_hash, event);
     }
 
@@ -102,6 +138,13 @@ impl LifecycleObserver for AuditLoggingObserver {
         };
         let signature_count = storage.list_partial_sigs(request_id).map(|entries| entries.len()).unwrap_or(0);
         let threshold_required = self.threshold_required.unwrap_or(0);
+        info!(
+            request_id = %request_id,
+            tx_id = %hex::encode(tx_id.as_hash()),
+            signature_count,
+            threshold_required,
+            "audit: finalized transaction"
+        );
         audit(AuditEvent::TransactionFinalized {
             request_id: request_id.to_string(),
             event_hash: hex::encode(request.event_hash),

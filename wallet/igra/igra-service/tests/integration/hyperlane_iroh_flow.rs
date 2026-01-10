@@ -1,5 +1,5 @@
-use igra_core::domain::hashes::event_hash_without_signature;
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::domain::hashes::event_hash_without_signature;
 use igra_core::domain::validation::CompositeVerifier;
 use igra_core::domain::{EventSource, SigningEvent};
 use igra_core::foundation::{PeerId, RequestId};
@@ -20,7 +20,7 @@ use secp256k1::{ecdsa::Signature as SecpSignature, Message, PublicKey, Secp256k1
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 const KASPA_SOMPI_PER_KAS: u64 = 100_000_000;
@@ -29,22 +29,10 @@ fn config_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("igra repo root").to_path_buf()
 }
 
-fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock")
-}
-
 fn load_from_ini_profile(config_path: &Path, profile: &str) -> igra_core::infrastructure::config::AppConfig {
-    let _guard = lock_env();
     let data_dir = tempfile::tempdir().expect("temp data dir");
-
-    env::set_var("KASPA_DATA_DIR", data_dir.path());
-
-    let config = igra_core::infrastructure::config::load_app_config_from_profile_path(config_path, profile).expect("load app config");
-
-    env::remove_var("KASPA_DATA_DIR");
-
-    config
+    let _data_dir_env = crate::harness::ScopedEnvVar::set("KASPA_DATA_DIR", data_dir.path());
+    igra_core::infrastructure::config::load_app_config_from_profile_path(config_path, profile).expect("load app config")
 }
 
 fn parse_group_id(hex_value: &str) -> [u8; 32] {
@@ -96,10 +84,15 @@ async fn join_topic(gossip: &iroh_gossip::net::Gossip, topic_id: TopicId, peers:
 
 #[tokio::test]
 async fn hyperlane_request_over_iroh_reaches_finalized_state() {
-    env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
+    if !crate::harness::iroh_bind_tests_enabled() {
+        eprintln!("skipping: set IGRA_TEST_IROH_BIND=1 to run iroh bind tests");
+        return;
+    }
+
+    let _wallet_secret = crate::harness::ScopedEnvVar::set("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
 
     let root = config_root();
-    let signer_config = root.join("artifacts/igra-config.ini");
+    let signer_config = root.join("artifacts/igra-config.toml");
     let signer_profiles = ["signer-1", "signer-2", "signer-3"];
     let configs = signer_profiles.iter().map(|profile| load_from_ini_profile(&signer_config, profile)).collect::<Vec<_>>();
 
@@ -277,7 +270,7 @@ async fn hyperlane_request_over_iroh_reaches_finalized_state() {
     let event_ctx = EventContext {
         processor: flow_a.clone(),
         config: app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: storage_a.clone(),
     };
 

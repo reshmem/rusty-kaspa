@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 #[derive(Debug)]
 struct BucketState {
@@ -93,6 +94,12 @@ impl RateLimiter {
     }
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub async fn rate_limit_middleware(
     State(state): State<std::sync::Arc<RpcState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -107,6 +114,7 @@ pub async fn rate_limit_middleware(
     let allow = state.rate_limiter.allow(now, client_ip, rps, burst);
 
     if !allow {
+        debug!(client_ip = %client_ip, rps, burst, "rate limit exceeded");
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
 

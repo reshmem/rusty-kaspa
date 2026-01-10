@@ -1,5 +1,6 @@
 pub mod hyperlane;
 pub mod layerzero;
+pub mod types;
 pub mod verifier;
 
 use crate::foundation::ThresholdError;

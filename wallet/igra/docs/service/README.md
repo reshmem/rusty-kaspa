@@ -46,52 +46,47 @@ API endpoints are documented in `docs/service/API_REFERENCE.md`.
 
 ## Service (event-driven)
 
-Run the service binary with configuration stored in RocksDB, an INI file, or a TOML file.
+Run the service binary with configuration loaded from a TOML file (plus optional `IGRA_*` environment overrides).
 
 ### Config File
-
-On startup the service first checks RocksDB for a stored config. If missing, it loads
-an INI or TOML file and persists it into RocksDB for subsequent runs.
 
 Config path resolution:
 
 - `KASPA_CONFIG_PATH` if set, otherwise
-- `<KASPA_DATA_DIR>/igra-config.ini` or `<KASPA_DATA_DIR>/igra-config.toml` if `KASPA_DATA_DIR` is set, otherwise
-- `./.igra/igra-config.ini` or `./.igra/igra-config.toml`
+- `<KASPA_DATA_DIR>/igra-config.toml` if `KASPA_DATA_DIR` is set, otherwise
+- `./.igra/igra-config.toml`
 
-RocksDB lives under `<data_dir>/threshold-signing`.
-
-Example INI:
+Example TOML:
 
 ```bash
-cat > ./.igra/igra-config.ini <<'INI'
+cat > ./.igra/igra-config.toml <<'TOML'
 [service]
-node_rpc_url = grpc://127.0.0.1:16110
-data_dir = ./.igra
+node_rpc_url = "grpc://127.0.0.1:16110"
+data_dir = "./.igra"
 
-[pskt]
-source_addresses = kaspatest:...
-redeem_script_hex = <hex>
+[service.pskt]
+source_addresses = ["kaspatest:..."]
+redeem_script_hex = "<hex>"
 sig_op_count = 2
-fee_payment_mode = recipient_pays
+fee_payment_mode = "recipient_pays"
 fee_sompi = 0
-change_address = kaspatest:...
+change_address = "kaspatest:..."
 
 [runtime]
 test_mode = true
-test_recipient = kaspatest:...
+test_recipient = "kaspatest:..."
 test_amount_sompi = 123456
 session_timeout_seconds = 60
 
 [signing]
-backend = threshold
+backend = "threshold"
 
 [rpc]
-addr = 127.0.0.1:8088
+addr = "127.0.0.1:8088"
 enabled = true
 
 [policy]
-allowed_destinations = kaspatest:...
+allowed_destinations = ["kaspatest:..."]
 min_amount_sompi = 1000000
 max_amount_sompi = 100000000000
 max_daily_volume_sompi = 500000000000
@@ -100,7 +95,7 @@ require_reason = false
 [group]
 threshold_m = 2
 threshold_n = 3
-member_pubkeys = <hex_pubkey1>,<hex_pubkey2>
+member_pubkeys = ["<hex_pubkey1>", "<hex_pubkey2>"]
 fee_rate_sompi_per_gram = 0
 finality_blue_score_threshold = 0
 dust_threshold_sompi = 0
@@ -108,9 +103,9 @@ min_recipient_amount_sompi = 0
 session_timeout_seconds = 60
 
 [iroh]
-group_id = <32-byte-hex>
-verifier_keys = coordinator-1:<hex_pubkey>
-INI
+group_id = "<32-byte-hex>"
+verifier_keys = ["coordinator-1:<hex_pubkey>"]
+TOML
 
 cargo run -p igra-service --bin kaspa-threshold-service
 ```

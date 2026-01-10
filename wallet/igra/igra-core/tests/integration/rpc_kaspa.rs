@@ -32,11 +32,7 @@ impl NodeRpc for TestRpc {
 fn build_rpc(amount: u64, address: &Address) -> TestRpc {
     let entry = UtxoEntry::new(amount, pay_to_address_script(address), 0, false);
     let outpoint = TransactionOutpoint::new(TransactionId::from_slice(&[9u8; 32]), 0);
-    let utxo = UtxoWithOutpoint {
-        address: Some(address.clone()),
-        outpoint,
-        entry,
-    };
+    let utxo = UtxoWithOutpoint { address: Some(address.clone()), outpoint, entry };
     TestRpc { utxos: vec![utxo] }
 }
 
@@ -60,7 +56,8 @@ async fn test_pskt_builder_when_fee_recipient_pays_then_first_output_reduced() {
     let rpc = build_rpc(2000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::RecipientPays;
-    let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let pskt = build.pskt;
     assert_eq!(pskt.outputs[0].amount, 900);
     assert_eq!(pskt.outputs[1].amount, 1100);
 }
@@ -72,7 +69,8 @@ async fn test_pskt_builder_when_fee_signers_pay_then_change_reduced() {
     let rpc = build_rpc(2000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::SignersPay;
-    let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let pskt = build.pskt;
     assert_eq!(pskt.outputs[0].amount, 1000);
     assert_eq!(pskt.outputs[1].amount, 900);
 }
@@ -84,7 +82,8 @@ async fn test_pskt_builder_when_fee_split_then_outputs_adjusted() {
     let rpc = build_rpc(2000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::Split { recipient_parts: 1, signer_parts: 1 };
-    let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
+    let pskt = build.pskt;
     assert_eq!(pskt.outputs[0].amount, 950);
     assert_eq!(pskt.outputs[1].amount, 1000);
 }

@@ -5,7 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 
-pub async fn run_hyperlane_watcher(state: Arc<RpcState>, dir: std::path::PathBuf, poll_interval: Duration) -> Result<(), ThresholdError> {
+pub async fn run_hyperlane_watcher(
+    state: Arc<RpcState>,
+    dir: std::path::PathBuf,
+    poll_interval: Duration,
+) -> Result<(), ThresholdError> {
     loop {
         let mut entries = fs::read_dir(&dir).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         while let Some(entry) = entries.next_entry().await.map_err(|err| ThresholdError::Message(err.to_string()))? {
@@ -34,4 +38,3 @@ pub async fn run_hyperlane_watcher(state: Arc<RpcState>, dir: std::path::PathBuf
         tokio::time::sleep(poll_interval).await;
     }
 }
-

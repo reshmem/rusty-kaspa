@@ -1,5 +1,6 @@
 use crate::domain::pskt::builder::build_pskt_from_utxos;
 use crate::domain::pskt::params::{PsktOutputParams, PsktParams, UtxoInput};
+use crate::domain::pskt::results::{PsktBuildResult, UtxoSelectionResult};
 use crate::foundation::ThresholdError;
 use crate::infrastructure::config::PsktBuildConfig;
 use crate::infrastructure::rpc::{GrpcNodeRpc, NodeRpc};
@@ -12,9 +13,7 @@ pub async fn submit_transaction(
     rpc.submit_transaction(tx).await
 }
 
-pub async fn build_pskt_via_rpc(
-    config: &PsktBuildConfig,
-) -> Result<kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Updater>, ThresholdError> {
+pub async fn build_pskt_via_rpc(config: &PsktBuildConfig) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
     let rpc = GrpcNodeRpc::connect(config.node_rpc_url.clone()).await?;
     build_pskt_with_client(&rpc, config).await
 }
@@ -22,7 +21,7 @@ pub async fn build_pskt_via_rpc(
 pub async fn build_pskt_with_client(
     rpc: &dyn NodeRpc,
     config: &PsktBuildConfig,
-) -> Result<kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Updater>, ThresholdError> {
+) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
     let redeem_script = hex::decode(&config.redeem_script_hex)?;
 
     let params = PsktParams {
@@ -42,10 +41,7 @@ pub async fn build_pskt_with_client(
     let addresses = params.source_addresses.iter().map(|addr| Address::constructor(addr)).collect::<Vec<_>>();
     let mut utxos = rpc.get_utxos_by_addresses(&addresses).await?;
 
-    let inputs = utxos
-        .drain(..)
-        .map(|utxo| UtxoInput { outpoint: utxo.outpoint, entry: utxo.entry })
-        .collect::<Vec<_>>();
+    let inputs = utxos.drain(..).map(|utxo| UtxoInput { outpoint: utxo.outpoint, entry: utxo.entry }).collect::<Vec<_>>();
 
     build_pskt_from_utxos(&params, inputs)
 }
@@ -53,6 +49,6 @@ pub async fn build_pskt_with_client(
 pub async fn build_pskt_from_rpc(
     rpc: &dyn NodeRpc,
     config: &PsktBuildConfig,
-) -> Result<kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Updater>, ThresholdError> {
+) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
     build_pskt_with_client(rpc, config).await
 }

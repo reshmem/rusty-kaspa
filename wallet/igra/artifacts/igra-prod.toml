@@ -1,0 +1,103 @@
+# =============================================================================
+# Igra Configuration (TOML)
+# =============================================================================
+# Converted from: igra-prod.ini
+# See CONFIG_REFACTORING.md for migration details
+#
+# Environment variable required:
+#   export KASPA_IGRA_WALLET_SECRET=<your-wallet-secret>
+
+[service]
+node_rpc_url = "grpc://127.0.0.1:16110"
+data_dir = "/var/lib/igra"
+
+[service.pskt]
+source_addresses = [
+    "<kaspanet:...>",
+    "<kaspanet:...>"
+]
+redeem_script_hex = "<hex>"
+sig_op_count = 2
+fee_payment_mode = "recipient_pays"
+fee_sompi = 0
+change_address = "<kaspanet:...>"
+
+[service.hd]
+mnemonics = []
+required_sigs = 2
+
+[runtime]
+test_mode = false
+session_timeout_seconds = 600
+
+[signing]
+backend = "threshold"
+
+[rpc]
+addr = "0.0.0.0:8088"
+enabled = true
+
+[policy]
+allowed_destinations = ["<kaspanet:...>"]
+min_amount_sompi = 1000000
+max_amount_sompi = 100000000000
+max_daily_volume_sompi = 500000000000
+require_reason = true
+
+[group]
+threshold_m = 2
+threshold_n = 3
+member_pubkeys = [
+    "<pubkey1>",
+    "<pubkey2>",
+    "<pubkey3>"
+]
+fee_rate_sompi_per_gram = 0
+finality_blue_score_threshold = 0
+dust_threshold_sompi = 0
+min_recipient_amount_sompi = 0
+session_timeout_seconds = 600
+
+[hyperlane]
+validators = [
+    "<pubkey1>",
+    "<pubkey2>"
+]
+threshold = 2
+poll_secs = 10
+
+[iroh]
+group_id = "<hex>"
+verifier_keys = [
+    "signer-1:<pubkey>",
+    "signer-2:<pubkey>",
+    "signer-3:<pubkey>"
+]
+
+# =============================================================================
+# Signer Profiles
+# =============================================================================
+# Use --profile <name> to load a specific profile
+# Example: igra-service --profile signer-1
+
+[profiles.signer]
+
+[profiles.signer.service]
+data_dir = "/var/lib/igra/signer"
+
+[profiles.signer.hd]
+mnemonics = ["<24-word-bip39>"]
+
+[profiles.signer.rpc]
+addr = "0.0.0.0:8088"
+
+[profiles.signer.iroh]
+peer_id = "signer-1"
+signer_seed_hex = "<hex>"
+group_id = "<hex>"
+network_id = 0
+verifier_keys = [
+    "signer-1:<pubkey>",
+    "signer-2:<pubkey>",
+    "signer-3:<pubkey>"
+]

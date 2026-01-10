@@ -8,4 +8,3 @@ pub struct PartialSigSubmit {
     pub pubkey: Vec<u8>,
     pub signature: Vec<u8>,
 }
-

@@ -13,6 +13,7 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use tracing::{debug, info};
 
 #[derive(Debug, Deserialize)]
 struct ValidatorsAndThresholdParams {
@@ -330,8 +331,10 @@ pub async fn handle_validators_and_threshold(
     id: serde_json::Value,
     params: Option<serde_json::Value>,
 ) -> serde_json::Value {
+    debug!("rpc hyperlane.validators_and_threshold called");
     let Some(ism) = state.hyperlane_ism.as_ref() else {
         state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
+        debug!("hyperlane not configured");
         return json_err(id, RpcErrorCode::HyperlaneNotConfigured, "hyperlane not configured");
     };
 
@@ -339,6 +342,7 @@ pub async fn handle_validators_and_threshold(
         Some(params) => params,
         None => {
             state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
+            debug!("missing params");
             return json_err(id, RpcErrorCode::InvalidParams, "missing params");
         }
     };
@@ -347,6 +351,7 @@ pub async fn handle_validators_and_threshold(
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
+            debug!(error = %err, "invalid params");
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
@@ -356,9 +361,17 @@ pub async fn handle_validators_and_threshold(
         Some(set) => set,
         None => {
             state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
+            debug!(domain, "unknown destination domain");
             return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
         }
     };
+    info!(
+        domain,
+        threshold = set.threshold,
+        validator_count = set.validators.len(),
+        mode = ?set.mode,
+        "resolved validators and threshold"
+    );
 
     let result = ValidatorsAndThresholdResult {
         domain,
@@ -371,13 +384,11 @@ pub async fn handle_validators_and_threshold(
     json_ok(id, result)
 }
 
-pub async fn handle_mailbox_process(
-    state: &RpcState,
-    id: serde_json::Value,
-    params: Option<serde_json::Value>,
-) -> serde_json::Value {
+pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, params: Option<serde_json::Value>) -> serde_json::Value {
+    debug!("rpc hyperlane.mailbox_process called");
     let Some(ism) = state.hyperlane_ism.as_ref() else {
         state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+        debug!("hyperlane not configured");
         return json_err(id, RpcErrorCode::HyperlaneNotConfigured, "hyperlane not configured");
     };
 
@@ -385,6 +396,7 @@ pub async fn handle_mailbox_process(
         Some(params) => params,
         None => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            debug!("missing params");
             return json_err(id, RpcErrorCode::InvalidParams, "missing params");
         }
     };
@@ -393,50 +405,69 @@ pub async fn handle_mailbox_process(
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            debug!(error = %err, "invalid params");
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
 
     let message: HyperlaneMessage = params.message.into();
+    debug!(
+        origin_domain = message.origin,
+        destination_domain = message.destination,
+        message_id = %format_h256(message.id()),
+        "parsed mailbox process message"
+    );
     let Some(set) = ism.validators_and_threshold(message.origin, message.id()) else {
         state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+        debug!(origin_domain = message.origin, "unknown destination domain");
         return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
     };
     let mode = params.mode.unwrap_or(set.mode.clone());
+    debug!(mode = ?mode, threshold = set.threshold, validator_count = set.validators.len(), "selected ism mode");
     let metadata = match params.metadata.into_core(message.id(), mode.clone()) {
         Ok(meta) => meta,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            debug!(error = %err, "invalid mailbox metadata");
             return json_err(id, RpcErrorCode::InvalidParams, err);
         }
     };
 
     match ism.verify_proof(&message, &metadata, mode.clone()) {
         Ok(report) => {
+            info!(
+                message_id = %format_h256(report.message_id),
+                root = %format_h256(report.root),
+                quorum = report.quorum,
+                validators_used = report.validators_used.len(),
+                "hyperlane proof verified"
+            );
             let session_id = derive_session_id_hex(state.group_id_hex.as_deref(), report.message_id);
             if session_id.is_empty() {
                 state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+                debug!("missing or invalid group_id for session derivation");
                 return json_err(id, RpcErrorCode::MissingGroupId, "missing or invalid group_id for session derivation");
             }
-            let signing_submitted =
-                match submit_signing_from_hyperlane(
-                    &state.event_ctx,
-                    &message,
-                    &metadata,
-                    &session_id,
-                    &set,
-                    &state.coordinator_peer_id,
-                    state.session_expiry_seconds,
-                    &state.hyperlane_default_derivation_path,
-                )
-                .await
+            let signing_submitted = match submit_signing_from_hyperlane(
+                &state.event_ctx,
+                &message,
+                &metadata,
+                &session_id,
+                &set,
+                &state.coordinator_peer_id,
+                state.session_expiry_seconds,
+                &state.hyperlane_default_derivation_path,
+            )
+            .await
             {
-                    Ok(flag) => flag,
-                    Err(err) => {
-                        state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-                        return json_err(id, RpcErrorCode::SigningFailed, err);
-                    }
-                };
+                Ok(flag) => flag,
+                Err(err) => {
+                    state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+                    debug!(error = %err, "failed to submit signing event");
+                    return json_err(id, RpcErrorCode::SigningFailed, err);
+                }
+            };
+            info!(session_id = %session_id, signing_submitted, "hyperlane mailbox processed");
 
             let result = MailboxProcessResult {
                 status: "proven",

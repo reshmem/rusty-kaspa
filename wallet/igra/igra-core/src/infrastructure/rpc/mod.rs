@@ -86,12 +86,12 @@ impl NodeRpc for UnimplementedRpc {
     }
 }
 
-pub mod grpc;
-pub mod retry;
 pub mod circuit_breaker;
+pub mod grpc;
 pub mod kaspa_integration;
+pub mod retry;
 
-pub use grpc::GrpcNodeRpc;
-pub use retry::retry;
 pub use circuit_breaker::CircuitBreaker;
+pub use grpc::GrpcNodeRpc;
 pub use kaspa_integration::*;
+pub use retry::retry;

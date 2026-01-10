@@ -9,18 +9,18 @@ use axum::Router;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-async fn call_rpc(router: &Router, client_addr: std::net::SocketAddr, token: Option<&str>, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/rpc")
-        .header("content-type", "application/json");
+async fn call_rpc(
+    router: &Router,
+    client_addr: std::net::SocketAddr,
+    token: Option<&str>,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder().method("POST").uri("/rpc").header("content-type", "application/json");
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {}", token));
     }
 
-    let mut request = builder
-        .body(Body::from(serde_json::to_string(&body).expect("serialize body")))
-        .expect("request");
+    let mut request = builder.body(Body::from(serde_json::to_string(&body).expect("serialize body"))).expect("request");
     request.extensions_mut().insert(ConnectInfo(client_addr));
 
     let response = router.clone().oneshot(request).await.expect("rpc response");

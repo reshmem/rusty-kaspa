@@ -1,5 +1,5 @@
-use crate::foundation::ThresholdError;
 use crate::domain::SigningEvent;
+use crate::foundation::ThresholdError;
 use crate::foundation::{Hash32, PeerId, RequestId, SessionId};
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;

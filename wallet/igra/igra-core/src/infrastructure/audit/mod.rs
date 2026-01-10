@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::info;
+use tracing::{info, trace, warn};
 
 pub use crate::domain::audit::types::{AuditEvent, PolicyDecision};
 
@@ -53,6 +53,12 @@ impl MultiAuditLogger {
     }
 }
 
+impl Default for MultiAuditLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuditLogger for MultiAuditLogger {
     fn log(&self, event: AuditEvent) {
         for logger in &self.loggers {
@@ -64,12 +70,15 @@ impl AuditLogger for MultiAuditLogger {
 static AUDIT_LOGGER: OnceLock<Box<dyn AuditLogger>> = OnceLock::new();
 
 pub fn init_audit_logger(logger: Box<dyn AuditLogger>) {
-    let _ = AUDIT_LOGGER.set(logger);
+    if AUDIT_LOGGER.set(logger).is_err() {
+        warn!("init_audit_logger called more than once; ignoring");
+    }
 }
 
 pub fn audit(event: AuditEvent) {
-    if let Some(logger) = AUDIT_LOGGER.get() {
-        logger.log(event);
+    match AUDIT_LOGGER.get() {
+        Some(logger) => logger.log(event),
+        None => trace!(event = ?event, "audit event dropped: no logger configured"),
     }
 }
 

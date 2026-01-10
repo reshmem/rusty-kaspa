@@ -1,30 +1,41 @@
-use crate::domain::pskt::multisig::{MultisigInput, MultisigOutput};
 use crate::domain::pskt::params::PsktParams;
-use crate::foundation::ThresholdError;
 
-pub fn validate_inputs(inputs: &[MultisigInput]) -> Result<(), ThresholdError> {
-    if inputs.is_empty() {
-        return Err(ThresholdError::PsktValidationFailed("pskt requires at least one input".to_string()));
-    }
-    Ok(())
+#[derive(Debug, Clone)]
+pub struct PsktValidationResult {
+    pub valid: bool,
+    pub input_count: usize,
+    pub output_count: usize,
+    pub sig_op_count: u8,
+    pub validation_errors: Vec<PsktValidationError>,
 }
 
-pub fn validate_outputs(outputs: &[MultisigOutput]) -> Result<(), ThresholdError> {
-    if outputs.is_empty() {
-        return Err(ThresholdError::PsktValidationFailed("pskt requires at least one output".to_string()));
-    }
-    Ok(())
+#[derive(Debug, Clone)]
+pub enum PsktValidationError {
+    NoInputs,
+    NoOutputs,
+    ZeroSigOpCount,
+    NoSourceAddresses,
+    NoOutputParams,
 }
 
-pub fn validate_params(params: &PsktParams) -> Result<(), ThresholdError> {
+pub fn validate_params(params: &PsktParams) -> PsktValidationResult {
+    let mut errors = Vec::new();
+
     if params.sig_op_count == 0 {
-        return Err(ThresholdError::PsktValidationFailed("pskt.sig_op_count must be > 0".to_string()));
+        errors.push(PsktValidationError::ZeroSigOpCount);
     }
     if params.source_addresses.is_empty() {
-        return Err(ThresholdError::PsktValidationFailed("pskt.source_addresses must not be empty".to_string()));
+        errors.push(PsktValidationError::NoSourceAddresses);
     }
     if params.outputs.is_empty() {
-        return Err(ThresholdError::PsktValidationFailed("pskt.outputs must not be empty".to_string()));
+        errors.push(PsktValidationError::NoOutputParams);
     }
-    Ok(())
+
+    PsktValidationResult {
+        valid: errors.is_empty(),
+        input_count: 0,
+        output_count: params.outputs.len(),
+        sig_op_count: params.sig_op_count,
+        validation_errors: errors,
+    }
 }

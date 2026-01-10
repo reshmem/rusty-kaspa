@@ -1,7 +1,7 @@
-use crate::foundation::ThresholdError;
 use crate::domain::{
     GroupConfig, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal,
 };
+use crate::foundation::ThresholdError;
 use crate::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
 
 pub type Result<T> = std::result::Result<T, ThresholdError>;

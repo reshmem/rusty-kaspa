@@ -1,14 +1,15 @@
-use crate::infrastructure::audit::{audit, AuditEvent};
-use crate::foundation::ThresholdError;
-use crate::domain::{PartialSigRecord, SignerAckRecord, StoredProposal};
-use crate::infrastructure::transport::RateLimiter;
-use crate::infrastructure::storage::Storage;
 use super::traits::{
     FinalizeNotice, MessageEnvelope, PartialSigSubmit, SignatureVerifier, SigningEventPropose, TransportMessage, TransportSubscription,
 };
+use crate::domain::{PartialSigRecord, SignerAckRecord, StoredProposal};
+use crate::foundation::ThresholdError;
 use crate::foundation::{PeerId, SessionId, TransactionId};
+use crate::infrastructure::audit::{audit, AuditEvent};
+use crate::infrastructure::storage::Storage;
+use crate::infrastructure::transport::RateLimiter;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use tracing::{debug, trace, warn};
 
 use super::encoding;
 
@@ -35,6 +36,12 @@ pub fn filter_stream(
 
             // Rate limit check - prevent DoS attacks
             if !rate_limiter.check_rate_limit(envelope.sender_peer_id.as_str()) {
+                debug!(
+                    peer_id = %envelope.sender_peer_id,
+                    session_id = %hex::encode(envelope.session_id.as_hash()),
+                    seq_no = envelope.seq_no,
+                    "rate limit blocked message"
+                );
                 audit(AuditEvent::RateLimitExceeded {
                     peer_id: envelope.sender_peer_id.to_string(),
                     timestamp_ns: envelope.timestamp_nanos,
@@ -55,10 +62,21 @@ pub fn filter_stream(
             };
             let payload_hash_match = expected.ct_eq(&envelope.payload_hash);
             if !bool::from(payload_hash_match) {
+                warn!(
+                    peer_id = %envelope.sender_peer_id,
+                    expected_hash = %hex::encode(expected),
+                    actual_hash = %hex::encode(envelope.payload_hash),
+                    "payload hash mismatch"
+                );
                 yield Err(ThresholdError::Message("payload hash mismatch".to_string()));
                 continue;
             }
             if !verifier.verify(&envelope.sender_peer_id, &envelope.payload_hash, envelope.signature.as_slice()) {
+                warn!(
+                    peer_id = %envelope.sender_peer_id,
+                    payload_hash = %hex::encode(envelope.payload_hash),
+                    "invalid signature"
+                );
                 yield Err(ThresholdError::Message("invalid signature".to_string()));
                 continue;
             }
@@ -70,6 +88,12 @@ pub fn filter_stream(
                 envelope.timestamp_nanos,
             ) {
                 Ok(true) => {
+                    debug!(
+                        peer_id = %envelope.sender_peer_id,
+                        session_id = %hex::encode(envelope.session_id.as_hash()),
+                        seq_no = envelope.seq_no,
+                        "accepted new message"
+                    );
                     if cleanup_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SEEN_MESSAGE_CLEANUP_INTERVAL == 0 {
                         let local_now_nanos: u64 = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -78,10 +102,14 @@ pub fn filter_stream(
                             .try_into()
                             .unwrap_or(u64::MAX);
                         let cutoff = local_now_nanos.saturating_sub(SEEN_MESSAGE_TTL_NANOS);
-                        if let Err(err) = storage.cleanup_seen_messages(cutoff) {
-                            yield Err(err);
-                            continue;
-                        }
+                        trace!(cutoff, "cleanup_seen_messages tick");
+                        match storage.cleanup_seen_messages(cutoff) {
+                            Ok(deleted) => trace!(deleted, "cleanup_seen_messages complete"),
+                            Err(err) => {
+                                yield Err(err);
+                                continue;
+                            }
+                        };
                     }
                     if let Err(err) = record_payload(
                         &storage,
@@ -95,8 +123,17 @@ pub fn filter_stream(
                     }
                     yield Ok(envelope)
                 }
-                Ok(false) => continue,
+                Ok(false) => {
+                    debug!(
+                        peer_id = %envelope.sender_peer_id,
+                        session_id = %hex::encode(envelope.session_id.as_hash()),
+                        seq_no = envelope.seq_no,
+                        "duplicate message ignored"
+                    );
+                    continue;
+                }
                 Err(err) => {
+                    warn!(peer_id = %envelope.sender_peer_id, error = %err, "mark_seen_message failed");
                     yield Err(err);
                     continue;
                 }
@@ -116,6 +153,12 @@ pub fn record_payload(
     timestamp_nanos: u64,
     payload: &TransportMessage,
 ) -> Result<(), ThresholdError> {
+    trace!(
+        sender_peer_id = %sender_peer_id,
+        session_id = %hex::encode(session_id.as_hash()),
+        timestamp_nanos,
+        "record_payload"
+    );
     match payload {
         TransportMessage::SigningEventPropose(SigningEventPropose {
             request_id,
@@ -125,6 +168,14 @@ pub fn record_payload(
             kpsbt_blob,
             ..
         }) => {
+            trace!(
+                request_id = %request_id,
+                event_hash = %hex::encode(event_hash),
+                validation_hash = %hex::encode(validation_hash),
+                event_id = %signing_event.event_id,
+                kpsbt_len = kpsbt_blob.len(),
+                "record proposal payload"
+            );
             match storage.insert_event(*event_hash, signing_event.clone()) {
                 Ok(()) => {}
                 Err(ThresholdError::EventReplayed(_)) => {}
@@ -143,6 +194,12 @@ pub fn record_payload(
             )?;
         }
         TransportMessage::SignerAck(ack) => {
+            trace!(
+                request_id = %ack.request_id,
+                accept = ack.accept,
+                reason = ?ack.reason,
+                "record signer ack payload"
+            );
             storage.insert_signer_ack(
                 &ack.request_id,
                 SignerAckRecord {
@@ -154,6 +211,13 @@ pub fn record_payload(
             )?;
         }
         TransportMessage::PartialSigSubmit(PartialSigSubmit { request_id, input_index, pubkey, signature }) => {
+            trace!(
+                request_id = %request_id,
+                input_index = *input_index,
+                pubkey_len = pubkey.len(),
+                signature_len = signature.len(),
+                "record partial sig payload"
+            );
             storage.insert_partial_sig(
                 request_id,
                 PartialSigRecord {
@@ -166,6 +230,11 @@ pub fn record_payload(
             )?;
         }
         TransportMessage::FinalizeNotice(FinalizeNotice { request_id, final_tx_id }) => {
+            trace!(
+                request_id = %request_id,
+                final_tx_id = %hex::encode(final_tx_id),
+                "record finalize payload"
+            );
             storage.update_request_final_tx(request_id, TransactionId::from(*final_tx_id))?;
         }
         _ => {}

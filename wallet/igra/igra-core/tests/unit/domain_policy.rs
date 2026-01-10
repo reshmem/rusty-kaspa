@@ -1,7 +1,4 @@
-#[path = "../fixtures/mod.rs"]
-mod fixtures;
-
-use fixtures::builders::SigningEventBuilder;
+use crate::fixtures::builders::SigningEventBuilder;
 use igra_core::domain::policy::enforcement::{DefaultPolicyEnforcer, PolicyEnforcer};
 use igra_core::domain::GroupPolicy;
 use igra_core::foundation::ThresholdError;

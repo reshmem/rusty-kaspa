@@ -45,7 +45,9 @@ impl Cli {
         }
 
         if let Some(node_url) = &self.node_url {
-            std::env::set_var(igra_core::infrastructure::config::NODE_URL_ENV, node_url);
+            // Figment env override for `service.node_rpc_url` (and pskt cascade).
+            std::env::set_var("IGRA_SERVICE__NODE_RPC_URL", node_url);
+            std::env::set_var("IGRA_SERVICE__PSKT__NODE_RPC_URL", node_url);
         }
 
         if let Some(finalize_path) = &self.finalize {

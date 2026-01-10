@@ -1,12 +1,13 @@
+use super::traits::{SignatureVerifier, TransportSubscription};
+use super::{encoding, filtering};
 use crate::foundation::ThresholdError;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
-use super::{encoding, filtering};
-use super::traits::{SignatureVerifier, TransportSubscription};
 use futures_util::StreamExt;
 use iroh_gossip::api::Event as GossipEvent;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::warn;
 
 // Maximum message size: 10 MB (must match limit in mod.rs)
 use crate::foundation::constants::MAX_MESSAGE_SIZE_BYTES;
@@ -29,6 +30,7 @@ where
             let item: Option<Result<GossipEvent, E>> = match tokio::time::timeout(RECEIVE_TIMEOUT, stream.next()).await {
                 Ok(item) => item,
                 Err(_) => {
+                    warn!("iroh gossip receive timeout");
                     yield Err(ThresholdError::Message("iroh gossip receive timeout".to_string()));
                     continue;
                 }
@@ -39,6 +41,7 @@ where
             let item = match item {
                 Ok(item) => item,
                 Err(err) => {
+                    warn!(error = %err, "iroh gossip stream error");
                     yield Err(ThresholdError::Message(err.to_string()));
                     continue;
                 }
@@ -47,6 +50,7 @@ where
                 GossipEvent::Received(message) => {
                     // Reject oversized messages to prevent memory exhaustion
                     if message.content.len() > MAX_MESSAGE_SIZE {
+                        warn!(size = message.content.len(), max = MAX_MESSAGE_SIZE, "iroh gossip oversized message");
                         yield Err(ThresholdError::Message(format!(
                             "received message size {} exceeds maximum {}",
                             message.content.len(),
@@ -58,6 +62,7 @@ where
                     let envelope = match encoding::decode_envelope(message.content.as_ref()) {
                         Ok(envelope) => envelope,
                         Err(err) => {
+                            warn!(error = %err, "iroh gossip decode error");
                             yield Err(err);
                             continue;
                         }
@@ -65,6 +70,7 @@ where
                     yield Ok(envelope);
                 }
                 GossipEvent::Lagged => {
+                    warn!("iroh gossip stream lagged");
                     yield Err(ThresholdError::Message("iroh gossip stream lagged".to_string()));
                 }
                 _ => {}

@@ -13,4 +13,3 @@ fn test_audit_event_when_serialized_then_roundtrips() {
     let back: AuditEvent = serde_json::from_str(&json).expect("parse");
     assert!(matches!(back, AuditEvent::EventReceived { .. }));
 }
-

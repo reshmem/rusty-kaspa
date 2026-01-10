@@ -26,18 +26,10 @@ impl Metrics {
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
-        registry
-            .register(Box::new(signing_sessions_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(signer_acks_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(partial_sigs_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry
-            .register(Box::new(rpc_requests_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(signer_acks_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
 
         Ok(Self { registry, signing_sessions_total, signer_acks_total, partial_sigs_total, rpc_requests_total })
     }

@@ -23,4 +23,3 @@ pub struct UtxoInput {
     pub outpoint: TransactionOutpoint,
     pub entry: UtxoEntry,
 }
-

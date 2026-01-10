@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
-use igra_core::foundation::ThresholdError;
 use igra_core::domain::group_id::compute_group_id;
 use igra_core::domain::{GroupConfig, GroupMetadata, GroupPolicy};
+use igra_core::foundation::ThresholdError;
 use kaspa_addresses::Prefix;
 use kaspa_bip32::{AddressType, ChildNumber, ExtendedPrivateKey, Language, Mnemonic, WordCount};
 use kaspa_wallet_core::derivation::create_multisig_address;
@@ -227,10 +227,8 @@ fn main() -> Result<(), ThresholdError> {
         change_address,
         hyperlane_keys,
         group_id: {
-            let member_pubkeys_bytes: Vec<Vec<u8>> = member_pubkeys
-                .iter()
-                .map(|hex_pk| hex::decode(hex_pk).map_err(ThresholdError::from))
-                .collect::<Result<_, _>>()?;
+            let member_pubkeys_bytes: Vec<Vec<u8>> =
+                member_pubkeys.iter().map(|hex_pk| hex::decode(hex_pk).map_err(ThresholdError::from)).collect::<Result<_, _>>()?;
             let group_cfg = GroupConfig {
                 network_id: 0,
                 threshold_m: 2,
@@ -244,7 +242,7 @@ fn main() -> Result<(), ThresholdError> {
                 group_metadata,
                 policy,
             };
-            hex::encode(compute_group_id(&group_cfg)?)
+            hex::encode(compute_group_id(&group_cfg)?.group_id)
         },
         multisig_address,
     };

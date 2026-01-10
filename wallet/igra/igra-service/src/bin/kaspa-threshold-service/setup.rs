@@ -1,11 +1,11 @@
 use ed25519_dalek::VerifyingKey;
-use igra_core::infrastructure::config::AppConfig;
-use igra_core::foundation::ThresholdError;
-use igra_core::domain::group_id::compute_group_id;
+use igra_core::domain::group_id::verify_group_id;
 use igra_core::foundation::Hash32;
+use igra_core::foundation::PeerId;
+use igra_core::foundation::ThresholdError;
+use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
-use igra_core::foundation::PeerId;
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -22,10 +22,12 @@ pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(true).with_thread_ids(true).try_init();
     igra_core::infrastructure::audit::init_audit_logger(Box::new(igra_core::infrastructure::audit::StructuredAuditLogger));
+    info!(level = %level, "logging initialized");
     Ok(())
 }
 
 pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
+    info!("loading application config");
     let app_config = Arc::new(igra_core::infrastructure::config::load_app_config()?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
@@ -36,6 +38,7 @@ pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
 }
 
 pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<Arc<AppConfig>, ThresholdError> {
+    info!(path = %path.display(), profile = %profile, "loading application config profile");
     let app_config = Arc::new(igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile)?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
@@ -46,10 +49,11 @@ pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<
 }
 
 pub fn validate_startup_config(app_config: &AppConfig) -> bool {
-    if app_config.service.pskt.source_addresses.is_empty()
-        || (app_config.service.pskt.redeem_script_hex.is_empty() && app_config.service.hd.is_none())
-    {
-        warn!("missing source_addresses or redeem script/HD config");
+    let missing_source_addresses = app_config.service.pskt.source_addresses.is_empty();
+    let missing_redeem_script = app_config.service.pskt.redeem_script_hex.trim().is_empty();
+    let missing_hd = app_config.service.hd.is_none();
+    if missing_source_addresses || (missing_redeem_script && missing_hd) {
+        warn!(missing_source_addresses, missing_redeem_script, missing_hd, "startup config missing required PSKT fields");
         return false;
     }
     true
@@ -60,11 +64,12 @@ pub fn warn_test_mode(app_config: &AppConfig) {
     let recipient = runtime.test_recipient.clone().unwrap_or_default();
     let amount_sompi = runtime.test_amount_sompi.unwrap_or(0);
     if !runtime.test_mode && (recipient.is_empty() || amount_sompi == 0) {
-        warn!("service expects signing events to supply recipient+amount; enable runtime.test_mode in the INI config to use test overrides");
+        warn!("service expects signing events to supply recipient+amount; enable runtime.test_mode in the TOML config to use test overrides");
     }
 }
 
 pub fn init_storage(data_dir: &str) -> Result<Arc<RocksStorage>, ThresholdError> {
+    info!(data_dir = %data_dir, "initializing storage");
     RocksStorage::open_in_dir(data_dir).map(Arc::new).map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
 }
 
@@ -78,8 +83,10 @@ pub fn init_signer_identity(app_config: &AppConfig) -> Result<SignerIdentity, Th
     let peer_id_env = app_config.iroh.peer_id.clone().unwrap_or_default();
     let seed_hex_env = app_config.iroh.signer_seed_hex.clone().unwrap_or_default();
     let (peer_id, seed_hex) = if !peer_id_env.is_empty() && !seed_hex_env.is_empty() {
+        info!(peer_id = %peer_id_env, "using iroh identity from config");
         (PeerId::from(peer_id_env), seed_hex_env)
     } else {
+        info!("loading or creating iroh identity");
         load_or_create_iroh_identity(&app_config.service.data_dir)?
     };
 
@@ -100,14 +107,17 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
     }
     let group_id = parse_hash32_hex(&group_id_hex)?;
     if let Some(group_config) = app_config.group.as_ref() {
-        let computed = compute_group_id(group_config)?;
-        if computed != group_id {
+        let verification = verify_group_id(group_config, &group_id)?;
+        if !verification.matches {
             return Err(ThresholdError::ConfigError(format!(
                 "group_id mismatch: computed={} configured={}",
-                hex::encode(computed),
+                hex::encode(verification.computed),
                 group_id_hex
             )));
         }
+        info!(group_id = %group_id_hex, "group_id validated against group config");
+    } else {
+        info!(group_id = %group_id_hex, "group_id loaded");
     }
     Ok(group_id)
 }
@@ -117,6 +127,7 @@ pub async fn init_iroh_gossip(
     static_addrs: Vec<EndpointAddr>,
     secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
+    info!(bind_port = bind_port, static_addr_count = static_addrs.len(), "initializing iroh gossip");
     let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
     let static_provider = iroh::discovery::static_provider::StaticProvider::new();
     if !static_addrs.is_empty() {
@@ -131,6 +142,7 @@ pub async fn init_iroh_gossip(
     let endpoint = builder.bind().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = iroh::protocol::Router::builder(endpoint).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
+    info!("iroh gossip initialized");
     Ok((gossip, router))
 }
 

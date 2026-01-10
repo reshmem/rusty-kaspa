@@ -66,7 +66,7 @@ pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdE
             .map_err(|err| ThresholdError::Message(err.to_string()))?
             .derive_path(&path)
             .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        pubkeys.push(xpub.public_key().clone());
+        pubkeys.push(*xpub.public_key());
     }
 
     Ok(pubkeys)
@@ -86,7 +86,7 @@ pub fn derive_keypair_from_key_data(
     let secret = xprv.private_key();
     let secret_bytes = secret.secret_bytes();
     let secp = Secp256k1::new();
-    let public_key = PublicKey::from_secret_key(&secp, &secret);
+    let public_key = PublicKey::from_secret_key(&secp, secret);
     Ok(SigningKeypair { public_key, secret_bytes })
 }
 
@@ -104,4 +104,3 @@ pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -
 pub fn derivation_path_from_index(index: u32) -> String {
     format!("m/45'/111111'/0'/0/{}", index)
 }
-

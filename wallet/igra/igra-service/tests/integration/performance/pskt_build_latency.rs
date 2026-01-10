@@ -5,10 +5,10 @@ use kaspa_wallet_core::prelude::Address;
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use std::time::Instant;
 
+use crate::harness::MockKaspaNode;
 use igra_core::infrastructure::config::{PsktBuildConfig, PsktOutput};
 use igra_core::infrastructure::rpc::kaspa_integration::build_pskt_with_client;
 use igra_core::infrastructure::rpc::UtxoWithOutpoint;
-use crate::harness::MockKaspaNode;
 
 fn test_keypair(seed: u8) -> Keypair {
     let secp = Secp256k1::new();
@@ -55,8 +55,8 @@ async fn pskt_build_latency_smoke() {
 
     let start = Instant::now();
     for _ in 0..10 {
-        let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt build");
-        assert!(!pskt.inputs.is_empty(), "expected inputs");
+        let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt build");
+        assert!(!build.pskt.inputs.is_empty(), "expected inputs");
     }
     let elapsed = start.elapsed();
     assert!(elapsed.as_secs_f64() < 2.0, "pskt builds too slow: {elapsed:?}");

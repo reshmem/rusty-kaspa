@@ -1,11 +1,11 @@
-use igra_core::infrastructure::config;
-use igra_core::foundation::ThresholdError;
 use igra_core::domain::pskt::multisig as pskt_multisig;
+use igra_core::foundation::RequestId;
+use igra_core::foundation::ThresholdError;
+use igra_core::infrastructure::config;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::NodeRpc;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
-use igra_core::foundation::RequestId;
 use igra_service::service::coordination;
 use serde::Deserialize;
 use std::path::Path;
@@ -40,8 +40,9 @@ pub async fn finalize_from_json(
     let ordered_pubkeys = coordination::derive_ordered_pubkeys(&app_config.service, &proposal.signing_event)?;
     let params = coordination::params_for_network_id(app_config.iroh.network_id);
 
-    let finalizer = pskt_multisig::finalize_multisig(pskt, required, &ordered_pubkeys)?;
-    let tx = pskt_multisig::extract_tx(finalizer, params)?;
+    let finalize_result = pskt_multisig::finalize_multisig(pskt, required, &ordered_pubkeys)?;
+    let tx_result = pskt_multisig::extract_tx(finalize_result.pskt, params)?;
+    let tx = tx_result.tx;
     let rpc = GrpcNodeRpc::connect(app_config.service.node_rpc_url.clone()).await?;
     let tx_id = rpc.submit_transaction(tx).await?;
     storage.update_request_final_tx(&request_id, igra_core::foundation::TransactionId::from(tx_id))?;

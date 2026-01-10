@@ -1,10 +1,10 @@
 //! End-to-end timeout scenarios.
 
-use igra_core::infrastructure::config::AppConfig;
 use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::domain::{EventSource, RequestDecision, SigningEvent, SigningRequest, StoredProposal};
 use igra_core::foundation::{PeerId, RequestId, SessionId};
+use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::rpc::UnimplementedRpc;
 use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
@@ -40,8 +40,8 @@ fn build_test_pskt() -> (Vec<u8>, Vec<[u8; 32]>) {
     };
     let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
-    let pskt_blob = serialize_pskt(&pskt).expect("serialize");
-    let signer = pskt.signer();
+    let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize");
+    let signer = pskt.pskt.signer();
     let hashes = input_hashes(&signer).expect("input hashes");
     (pskt_blob, hashes)
 }

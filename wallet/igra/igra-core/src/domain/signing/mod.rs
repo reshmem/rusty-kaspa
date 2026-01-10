@@ -1,12 +1,15 @@
-use crate::foundation::ThresholdError;
 use crate::foundation::RequestId;
+use crate::foundation::ThresholdError;
+use std::str::FromStr;
 
+pub mod aggregation;
 pub mod mpc;
 pub mod musig2;
+pub mod results;
 pub mod threshold;
-pub mod aggregation;
 pub mod types;
 
+pub use results::*;
 pub use types::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,18 +19,20 @@ pub enum SigningBackendKind {
     Mpc,
 }
 
-impl SigningBackendKind {
-    pub fn from_str(value: &str) -> Option<Self> {
+impl FromStr for SigningBackendKind {
+    type Err = ThresholdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_lowercase().as_str() {
-            "threshold" | "multisig" => Some(Self::Threshold),
-            "musig2" => Some(Self::MuSig2),
-            "mpc" | "frost" => Some(Self::Mpc),
-            _ => None,
+            "threshold" | "multisig" => Ok(Self::Threshold),
+            "musig2" => Ok(Self::MuSig2),
+            "mpc" | "frost" => Ok(Self::Mpc),
+            _ => Err(ThresholdError::ConfigError(format!("unknown signing backend: {value}"))),
         }
     }
 }
 
 pub trait SignerBackend: Send + Sync {
     fn kind(&self) -> SigningBackendKind;
-    fn sign(&self, kpsbt_blob: &[u8], request_id: &RequestId) -> Result<Vec<PartialSigSubmit>, ThresholdError>;
+    fn sign(&self, kpsbt_blob: &[u8], request_id: &RequestId) -> Result<SigningResult, ThresholdError>;
 }

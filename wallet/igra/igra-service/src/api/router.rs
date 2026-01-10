@@ -11,10 +11,13 @@ use igra_core::foundation::ThresholdError;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tracing::{debug, info};
 
 pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Result<(), ThresholdError> {
+    info!(addr = %addr, "binding json-rpc server");
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;
+    debug!(addr = %addr, "json-rpc server listening");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .map_err(|err| ThresholdError::Message(err.to_string()))
@@ -22,10 +25,7 @@ pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Resu
 
 pub fn build_router(state: Arc<RpcState>) -> Router {
     Router::new()
-        .route(
-            "/rpc",
-            post(handle_rpc).route_layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit_middleware)),
-        )
+        .route("/rpc", post(handle_rpc).route_layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit_middleware)))
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
         .route("/metrics", get(handle_metrics))

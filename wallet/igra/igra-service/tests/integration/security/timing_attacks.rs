@@ -1,5 +1,5 @@
-use std::time::Instant;
 use std::hint::black_box;
+use std::time::Instant;
 use subtle::ConstantTimeEq;
 
 fn mean(values: &[u128]) -> f64 {

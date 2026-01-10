@@ -4,8 +4,8 @@ use crate::harness::{
     assert_request_finalized, config_root, load_app_config_from_profile, signing_event_for, MockHyperlaneValidator, MockKaspaNode,
     TestIrohNetwork, IROH_PEERS, IROH_SEED_HEX, SIGNER_MNEMONICS, SOMPI_PER_KAS,
 };
-use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::domain::validation::CompositeVerifier;
 use igra_core::domain::{EventSource, PartialSigRecord, RequestDecision, SigningRequest, StoredProposal};
@@ -94,8 +94,8 @@ fn output_for_address(address: &str, amount: u64) -> MultisigOutput {
 fn build_pskt_blob_with_output(output: MultisigOutput) -> (Vec<u8>, [u8; 32], Vec<[u8; 32]>) {
     let input = build_multisig_input();
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
-    let blob = serialize_pskt(&pskt).expect("serialize pskt");
-    let signer_pskt = pskt.signer();
+    let blob = serialize_pskt(&pskt.pskt).expect("serialize pskt");
+    let signer_pskt = pskt.pskt.signer();
     let tx_hash = tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input_hashes = input_hashes(&signer_pskt).expect("input hashes");
     (blob, tx_hash, per_input_hashes)
@@ -210,8 +210,12 @@ struct ThreeNodeSetup {
 
 impl ThreeNodeSetup {
     async fn new(timeout_secs: Option<u64>) -> Result<Self, String> {
+        if !crate::harness::iroh_bind_tests_enabled() {
+            return Err("set IGRA_TEST_IROH_BIND=1 to run iroh bind tests".to_string());
+        }
+
         let root = config_root();
-        let signer_config = root.join("artifacts/igra-config.ini");
+        let signer_config = root.join("artifacts/igra-config.toml");
         let signer_profiles = ["signer-1", "signer-2", "signer-3"];
 
         let mut configs =
@@ -225,7 +229,7 @@ impl ThreeNodeSetup {
         let group_id = parse_group_id(&group_id_hex);
 
         let account_kind = AccountKind::from(MULTISIG_ACCOUNT_KIND);
-        let xpub_b = create_xpub_from_mnemonic(SIGNER_MNEMONICS[1], account_kind.clone(), 0)
+        let xpub_b = create_xpub_from_mnemonic(SIGNER_MNEMONICS[1], account_kind, 0)
             .await
             .map_err(|err| err.to_string())?
             .to_string(Some(Prefix::KPUB))
@@ -430,7 +434,7 @@ async fn coordinator_failure_after_proposal() {
     let event_ctx = EventContext {
         processor: setup.flow_a.clone(),
         config: setup.app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: setup.storage_a.clone(),
     };
 
@@ -513,7 +517,7 @@ async fn timeout_with_insufficient_signatures() {
     let event_ctx = EventContext {
         processor: setup.flow_a.clone(),
         config: setup.app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: setup.storage_a.clone(),
     };
 
@@ -577,7 +581,7 @@ async fn redundant_proposers_deduplicate() {
     let event_ctx_a = EventContext {
         processor: setup.flow_a.clone(),
         config: setup.app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys.clone(), Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys.clone(), 1, Vec::new())),
         storage: setup.storage_a.clone(),
     };
 
@@ -590,7 +594,7 @@ async fn redundant_proposers_deduplicate() {
     let event_ctx_b = EventContext {
         processor: setup.flow_b.clone(),
         config: setup.app_b.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: setup.storage_b.clone(),
     };
 
@@ -652,7 +656,7 @@ async fn partitioned_signer_recovers_after_rebroadcast() {
     let event_ctx = EventContext {
         processor: setup.flow_a.clone(),
         config: setup.app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: setup.storage_a.clone(),
     };
 
@@ -893,7 +897,9 @@ async fn invalid_partials_do_not_finalize() {
 
 mod legacy_coordinator_failure_timeout {
     use igra_core::domain::hashes::{event_hash, validation_hash};
-    use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
+    use igra_core::domain::pskt::multisig::{
+        build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput,
+    };
     use igra_core::domain::{EventSource, PartialSigRecord, RequestDecision, SigningEvent, SigningRequest, StoredProposal};
     use igra_core::foundation::{PeerId, RequestId, SessionId};
     use igra_core::infrastructure::config::AppConfig;
@@ -932,8 +938,8 @@ mod legacy_coordinator_failure_timeout {
         };
         let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
         let pskt = build_pskt(&[input], &[output]).expect("pskt");
-        let pskt_blob = serialize_pskt(&pskt).expect("serialize");
-        let signer = pskt.signer();
+        let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize");
+        let signer = pskt.pskt.signer();
         let hashes = input_hashes(&signer).expect("input hashes");
         (pskt_blob, hashes)
     }
@@ -1062,12 +1068,12 @@ mod legacy_iroh_transport {
 
         #[tokio::test]
         async fn iroh_transport_receives_published_proposal() {
+            if !crate::harness::iroh_bind_tests_enabled() {
+                eprintln!("skipping: set IGRA_TEST_IROH_BIND=1 to run iroh bind tests");
+                return;
+            }
             let discovery = StaticProvider::new();
-            let endpoint_a = match iroh::Endpoint::builder()
-                .discovery(discovery.clone())
-                .relay_mode(RelayMode::Disabled)
-                .bind()
-                .await
+            let endpoint_a = match iroh::Endpoint::builder().discovery(discovery.clone()).relay_mode(RelayMode::Disabled).bind().await
             {
                 Ok(endpoint) => endpoint,
                 Err(err) => {
@@ -1075,11 +1081,7 @@ mod legacy_iroh_transport {
                     return;
                 }
             };
-            let endpoint_b = match iroh::Endpoint::builder()
-                .discovery(discovery.clone())
-                .relay_mode(RelayMode::Disabled)
-                .bind()
-                .await
+            let endpoint_b = match iroh::Endpoint::builder().discovery(discovery.clone()).relay_mode(RelayMode::Disabled).bind().await
             {
                 Ok(endpoint) => endpoint,
                 Err(err) => {
@@ -1091,12 +1093,10 @@ mod legacy_iroh_transport {
             discovery.add_endpoint_info(endpoint_b.addr());
             let gossip_a = iroh_gossip::net::Gossip::builder().spawn(endpoint_a.clone());
             let gossip_b = iroh_gossip::net::Gossip::builder().spawn(endpoint_b.clone());
-            let _router_a = iroh::protocol::Router::builder(endpoint_a.clone())
-                .accept(iroh_gossip::net::GOSSIP_ALPN, gossip_a.clone())
-                .spawn();
-            let _router_b = iroh::protocol::Router::builder(endpoint_b.clone())
-                .accept(iroh_gossip::net::GOSSIP_ALPN, gossip_b.clone())
-                .spawn();
+            let _router_a =
+                iroh::protocol::Router::builder(endpoint_a.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip_a.clone()).spawn();
+            let _router_b =
+                iroh::protocol::Router::builder(endpoint_b.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip_b.clone()).spawn();
             let _conn_a = match endpoint_a.connect(endpoint_b.addr(), iroh_gossip::net::GOSSIP_ALPN).await {
                 Ok(conn) => conn,
                 Err(err) => {
@@ -1219,8 +1219,8 @@ mod storage_volume_tracking;
 mod legacy_core_replay_protection {
     use async_trait::async_trait;
     use igra_core::application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
-    use igra_core::domain::{EventSource, SigningEvent};
     use igra_core::domain::validation::NoopVerifier;
+    use igra_core::domain::{EventSource, SigningEvent};
     use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
     use igra_core::infrastructure::config::{AppConfig, ServiceConfig};
     use igra_core::infrastructure::storage::RocksStorage;
@@ -1253,7 +1253,7 @@ mod legacy_core_replay_protection {
         let event_ctx = EventContext {
             processor: Arc::new(DummyProcessor),
             config: config.service.clone(),
-            message_verifier: Arc::new(NoopVerifier::default()),
+            message_verifier: Arc::new(NoopVerifier),
             storage: storage.clone(),
         };
 

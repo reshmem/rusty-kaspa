@@ -1,5 +1,5 @@
-use crate::foundation::Hash32;
 use super::traits::{SignatureSigner, SignatureVerifier};
+use crate::foundation::Hash32;
 use crate::foundation::PeerId;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use std::collections::HashMap;

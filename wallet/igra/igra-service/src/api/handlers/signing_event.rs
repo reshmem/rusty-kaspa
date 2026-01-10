@@ -2,16 +2,19 @@ use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
 use igra_core::application::{submit_signing_event, SigningEventParams};
 use igra_core::foundation::ThresholdError;
+use tracing::{debug, info, warn};
 
 pub async fn handle_signing_event_submit(
     state: &RpcState,
     id: serde_json::Value,
     params: Option<serde_json::Value>,
 ) -> serde_json::Value {
+    info!("rpc signing_event.submit called");
     let params = match params {
         Some(params) => params,
         None => {
             state.metrics.inc_rpc_request("signing_event.submit", "error");
+            warn!("rpc signing_event.submit missing params");
             return json_err(id, RpcErrorCode::InvalidParams, "missing params");
         }
     };
@@ -20,13 +23,28 @@ pub async fn handle_signing_event_submit(
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("signing_event.submit", "error");
+            warn!(error = %err, "rpc signing_event.submit invalid params");
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
 
+    debug!(
+        request_id = %params.request_id,
+        session_id = %params.session_id_hex,
+        event_id = %params.signing_event.event_id,
+        expires_at_nanos = params.expires_at_nanos,
+        "rpc signing_event.submit parsed"
+    );
+
     match submit_signing_event(&state.event_ctx, params).await {
         Ok(result) => {
             state.metrics.inc_rpc_request("signing_event.submit", "ok");
+            info!(
+                session_id = %result.session_id_hex,
+                event_hash = %result.event_hash_hex,
+                validation_hash = %result.validation_hash_hex,
+                "rpc signing_event.submit ok"
+            );
             json_ok(id, result)
         }
         Err(err) => {
@@ -40,6 +58,7 @@ pub async fn handle_signing_event_submit(
                 | ThresholdError::MemoRequired => RpcErrorCode::PolicyViolation,
                 _ => RpcErrorCode::SigningFailed,
             };
+            warn!(code = code as i64, error = %err, "rpc signing_event.submit failed");
             json_err(id, code, err.to_string())
         }
     }

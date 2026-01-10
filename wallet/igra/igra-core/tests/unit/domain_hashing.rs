@@ -1,5 +1,5 @@
-use igra_core::domain::hashes::{event_hash, event_hash_without_signature, validation_hash};
 use igra_core::domain::group_id::compute_group_id;
+use igra_core::domain::hashes::{event_hash, event_hash_without_signature, validation_hash};
 use igra_core::domain::{EventSource, GroupConfig, GroupMetadata, GroupPolicy, SigningEvent};
 use std::collections::BTreeMap;
 
@@ -64,25 +64,25 @@ fn base_group_config() -> GroupConfig {
 
 #[test]
 fn test_group_id_when_same_config_then_is_deterministic() {
-    let id1 = compute_group_id(&base_group_config()).expect("group id");
-    let id2 = compute_group_id(&base_group_config()).expect("group id");
+    let id1 = compute_group_id(&base_group_config()).expect("group id").group_id;
+    let id2 = compute_group_id(&base_group_config()).expect("group id").group_id;
     assert_eq!(id1, id2);
 }
 
 #[test]
 fn test_group_id_when_threshold_changes_then_changes() {
     let mut config = base_group_config();
-    let id1 = compute_group_id(&config).expect("group id");
+    let id1 = compute_group_id(&config).expect("group id").group_id;
     config.threshold_m = 3;
-    let id2 = compute_group_id(&config).expect("group id");
+    let id2 = compute_group_id(&config).expect("group id").group_id;
     assert_ne!(id1, id2);
 }
 
 #[test]
 fn test_group_id_when_pubkeys_change_then_changes() {
     let mut config = base_group_config();
-    let id1 = compute_group_id(&config).expect("group id");
+    let id1 = compute_group_id(&config).expect("group id").group_id;
     config.member_pubkeys.push(vec![10, 11, 12]);
-    let id2 = compute_group_id(&config).expect("group id");
+    let id2 = compute_group_id(&config).expect("group id").group_id;
     assert_ne!(id1, id2);
 }

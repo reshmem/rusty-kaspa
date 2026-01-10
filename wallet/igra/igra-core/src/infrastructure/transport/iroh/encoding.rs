@@ -1,6 +1,6 @@
-use crate::foundation::ThresholdError;
-use crate::foundation::Hash32;
 use super::traits::{MessageEnvelope, TransportMessage};
+use crate::foundation::Hash32;
+use crate::foundation::ThresholdError;
 use bincode::Options;
 
 pub fn encode_envelope(envelope: &MessageEnvelope) -> Result<Vec<u8>, ThresholdError> {

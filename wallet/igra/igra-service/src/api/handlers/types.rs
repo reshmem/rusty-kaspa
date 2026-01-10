@@ -46,14 +46,10 @@ pub struct JsonRpcErrorBody {
 }
 
 pub fn json_ok<T: Serialize>(id: serde_json::Value, result: T) -> serde_json::Value {
-    serde_json::to_value(JsonRpcResponse { jsonrpc: "2.0", id, result }).unwrap_or_else(|_| serde_json::Value::Null)
+    serde_json::to_value(JsonRpcResponse { jsonrpc: "2.0", id, result }).unwrap_or(serde_json::Value::Null)
 }
 
 pub fn json_err(id: serde_json::Value, code: RpcErrorCode, message: impl Into<String>) -> serde_json::Value {
-    serde_json::to_value(JsonRpcError {
-        jsonrpc: "2.0",
-        id,
-        error: JsonRpcErrorBody { code: code as i64, message: message.into() },
-    })
-    .unwrap_or_else(|_| serde_json::Value::Null)
+    serde_json::to_value(JsonRpcError { jsonrpc: "2.0", id, error: JsonRpcErrorBody { code: code as i64, message: message.into() } })
+        .unwrap_or(serde_json::Value::Null)
 }

@@ -5,7 +5,9 @@ use crate::harness::{
     TestIrohNetwork, TestKeyGenerator, IROH_PEERS, IROH_SEED_HEX, SIGNER_MNEMONICS, SOMPI_PER_KAS,
 };
 use igra_core::application::{submit_signing_event, Coordinator, EventContext, SigningEventParams, SigningEventWire};
-use igra_core::domain::pskt::multisig::{apply_partial_sigs, build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
+use igra_core::domain::pskt::multisig::{
+    apply_partial_sigs, build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput,
+};
 use igra_core::domain::signing::threshold::ThresholdSigner;
 use igra_core::domain::signing::SignerBackend;
 use igra_core::domain::validation::CompositeVerifier;
@@ -66,12 +68,7 @@ fn build_event(event_id: &str, amount_sompi: u64, destination: &str) -> SigningE
     }
 }
 
-fn build_pskt_bundle(
-    keygen: &TestKeyGenerator,
-    m: usize,
-    n: usize,
-    amount_sompi: u64,
-) -> (Vec<SigningKeypair>, Vec<secp256k1::PublicKey>, Vec<u8>, [u8; 32], Vec<[u8; 32]>) {
+fn build_pskt_bundle(keygen: &TestKeyGenerator, m: usize, n: usize, amount_sompi: u64) -> PsktBundle {
     let mut keypairs = Vec::with_capacity(n);
     let mut pubkeys = Vec::with_capacity(n);
     let mut xonly = Vec::with_capacity(n);
@@ -96,11 +93,19 @@ fn build_pskt_bundle(
     let output = MultisigOutput { amount: amount_sompi, script_public_key: pay_to_address_script(&destination) };
 
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
-    let pskt_blob = serialize_pskt(&pskt).expect("serialize");
-    let signer_pskt = pskt.signer();
+    let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize");
+    let signer_pskt = pskt.pskt.signer();
     let tx_hash = tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input = input_hashes(&signer_pskt).expect("input hashes");
-    (keypairs, pubkeys, pskt_blob, tx_hash, per_input)
+    PsktBundle { keypairs, pubkeys, pskt_blob, tx_hash, per_input }
+}
+
+struct PsktBundle {
+    keypairs: Vec<SigningKeypair>,
+    pubkeys: Vec<secp256k1::PublicKey>,
+    pskt_blob: Vec<u8>,
+    tx_hash: [u8; 32],
+    per_input: Vec<[u8; 32]>,
 }
 
 mod legacy_rpc_integration_env {
@@ -142,20 +147,20 @@ mod legacy_rpc_integration_env {
             change_address: None,
         };
 
-        let pskt = build_pskt_with_client(&rpc, &config).await.expect("pskt build");
+        let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt build");
 
-        assert!(!pskt.inputs.is_empty(), "expected at least one input from RPC utxos");
+        assert!(!build.pskt.inputs.is_empty(), "expected at least one input from RPC utxos");
     }
 }
 
+#[path = "harness_smoke.rs"]
+mod harness_smoke;
 #[path = "hyperlane_iroh_flow.rs"]
 mod hyperlane_iroh_flow;
 #[path = "hyperlane_rpc.rs"]
 mod hyperlane_rpc;
 #[path = "v1_service_integration.rs"]
 mod v1_service_integration;
-#[path = "harness_smoke.rs"]
-mod harness_smoke;
 
 #[path = "rpc/authentication.rs"]
 mod rpc_authentication;
@@ -172,7 +177,10 @@ mod legacy_core_event_ingestion {
     use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
     use igra_core::infrastructure::config::ServiceConfig;
     use igra_core::infrastructure::storage::{RocksStorage, Storage};
-    use igra_core::{application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire}, ThresholdError};
+    use igra_core::{
+        application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire},
+        ThresholdError,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -205,7 +213,7 @@ mod legacy_core_event_ingestion {
         let ctx = EventContext {
             processor: Arc::new(RecordingProcessor { calls: calls.clone() }),
             config: ServiceConfig::default(),
-            message_verifier: Arc::new(NoopVerifier::default()),
+            message_verifier: Arc::new(NoopVerifier),
             storage: storage.clone(),
         };
 
@@ -232,13 +240,7 @@ mod legacy_core_event_ingestion {
 
         let result = submit_signing_event(&ctx, params).await.expect("submit");
         let stored = storage
-            .get_event(
-                &hex::decode(&result.event_hash_hex)
-                    .expect("hash hex")
-                    .as_slice()
-                    .try_into()
-                    .expect("hash"),
-            )
+            .get_event(&hex::decode(&result.event_hash_hex).expect("hash hex").as_slice().try_into().expect("hash"))
             .expect("get event");
         assert!(stored.is_some());
 
@@ -255,9 +257,13 @@ mod legacy_core_event_ingestion {
 #[tokio::test]
 async fn happy_path_hyperlane_2_of_3() {
     ensure_wallet_secret();
+    if !crate::harness::iroh_bind_tests_enabled() {
+        eprintln!("skipping: set IGRA_TEST_IROH_BIND=1 to run iroh bind tests");
+        return;
+    }
 
     let root = config_root();
-    let signer_config = root.join("artifacts/igra-config.ini");
+    let signer_config = root.join("artifacts/igra-config.toml");
     let signer_profiles = ["signer-1", "signer-2", "signer-3"];
 
     let mut configs = signer_profiles.iter().map(|profile| load_app_config_from_profile(&signer_config, profile)).collect::<Vec<_>>();
@@ -266,7 +272,7 @@ async fn happy_path_hyperlane_2_of_3() {
     let group_id = parse_group_id(&group_id_hex);
 
     let account_kind = AccountKind::from(MULTISIG_ACCOUNT_KIND);
-    let xpub_b = create_xpub_from_mnemonic(SIGNER_MNEMONICS[1], account_kind.clone(), 0)
+    let xpub_b = create_xpub_from_mnemonic(SIGNER_MNEMONICS[1], account_kind, 0)
         .await
         .expect("xpub b")
         .to_string(Some(Prefix::KPUB))
@@ -408,7 +414,7 @@ async fn happy_path_hyperlane_2_of_3() {
     let event_ctx = EventContext {
         processor: flow_a.clone(),
         config: app_a.service.clone(),
-        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, Vec::new())),
+        message_verifier: Arc::new(CompositeVerifier::new(validator_pubkeys, 1, Vec::new())),
         storage: storage_a.clone(),
     };
 
@@ -458,7 +464,7 @@ async fn happy_path_hyperlane_2_of_3() {
 #[tokio::test]
 async fn happy_path_threshold_3_of_5_all_signers() {
     let keygen = TestKeyGenerator::new("3of5-all");
-    let (keypairs, pubkeys, pskt_blob, tx_hash, per_input) = build_pskt_bundle(&keygen, 3, 5, 50 * SOMPI_PER_KAS);
+    let PsktBundle { keypairs, pubkeys, pskt_blob, tx_hash, per_input } = build_pskt_bundle(&keygen, 3, 5, 50 * SOMPI_PER_KAS);
 
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
@@ -488,7 +494,7 @@ async fn happy_path_threshold_3_of_5_all_signers() {
     for (idx, kp) in keypairs.iter().enumerate() {
         let signer = ThresholdSigner::new(kp.clone());
         let sigs = signer.sign(&pskt_blob, &request_id).expect("sign");
-        for sig in sigs {
+        for sig in sigs.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_id,
@@ -518,7 +524,7 @@ async fn happy_path_threshold_3_of_5_all_signers() {
 #[tokio::test]
 async fn happy_path_threshold_3_of_5_exactly_three_signers() {
     let keygen = TestKeyGenerator::new("3of5-exact");
-    let (keypairs, pubkeys, pskt_blob, tx_hash, per_input) = build_pskt_bundle(&keygen, 3, 5, 25 * SOMPI_PER_KAS);
+    let PsktBundle { keypairs, pubkeys, pskt_blob, tx_hash, per_input } = build_pskt_bundle(&keygen, 3, 5, 25 * SOMPI_PER_KAS);
 
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
@@ -548,7 +554,7 @@ async fn happy_path_threshold_3_of_5_exactly_three_signers() {
     for (idx, kp) in keypairs.iter().take(3).enumerate() {
         let signer = ThresholdSigner::new(kp.clone());
         let sigs = signer.sign(&pskt_blob, &request_id).expect("sign");
-        for sig in sigs {
+        for sig in sigs.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_id,
@@ -578,7 +584,7 @@ async fn happy_path_threshold_3_of_5_exactly_three_signers() {
 #[tokio::test]
 async fn happy_path_threshold_3_of_5_insufficient_signers() {
     let keygen = TestKeyGenerator::new("3of5-insufficient");
-    let (keypairs, pubkeys, pskt_blob, tx_hash, per_input) = build_pskt_bundle(&keygen, 3, 5, 10 * SOMPI_PER_KAS);
+    let PsktBundle { keypairs, pubkeys, pskt_blob, tx_hash, per_input } = build_pskt_bundle(&keygen, 3, 5, 10 * SOMPI_PER_KAS);
 
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("storage"));
@@ -611,7 +617,7 @@ async fn happy_path_threshold_3_of_5_insufficient_signers() {
     for (idx, kp) in keypairs.iter().take(2).enumerate() {
         let signer = ThresholdSigner::new(kp.clone());
         let sigs = signer.sign(&pskt_blob, &request_id).expect("sign");
-        for sig in sigs {
+        for sig in sigs.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_id,

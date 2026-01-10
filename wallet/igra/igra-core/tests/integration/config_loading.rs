@@ -15,7 +15,7 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock")
 }
 
-fn load_from_ini_profile(config_path: &Path, profile: &str) -> igra_core::infrastructure::config::AppConfig {
+fn load_from_profile(config_path: &Path, profile: &str) -> igra_core::infrastructure::config::AppConfig {
     let _guard = lock_env();
     let data_dir = tempfile::tempdir().expect("temp data dir");
 
@@ -31,9 +31,9 @@ fn load_from_ini_profile(config_path: &Path, profile: &str) -> igra_core::infras
 }
 
 #[test]
-fn test_config_loading_when_profiled_ini_then_group_id_matches_iroh_group_id() {
+fn test_config_loading_when_profiled_toml_then_group_id_matches_iroh_group_id() {
     let root = config_root();
-    let signer_config = root.join("artifacts/igra-config.ini");
+    let signer_config = root.join("artifacts/igra-config.toml");
     let expected_peers = ["signer-1", "signer-2", "signer-3"];
     let expected_verifiers = [
         "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
@@ -42,9 +42,9 @@ fn test_config_loading_when_profiled_ini_then_group_id_matches_iroh_group_id() {
     ];
 
     for (idx, profile) in expected_peers.iter().enumerate() {
-        let config = load_from_ini_profile(&signer_config, profile);
+        let config = load_from_profile(&signer_config, profile);
         let group = config.group.as_ref().expect("group config");
-        let group_id = compute_group_id(group).expect("group id");
+        let group_id = compute_group_id(group).expect("group id").group_id;
         let group_id_hex = hex::encode(group_id);
 
         assert_eq!(group.threshold_m, 2);
@@ -69,14 +69,18 @@ fn test_config_loading_when_hyperlane_validators_present_then_loads() {
     let data_dir = tempfile::tempdir().expect("temp data dir");
     env::set_var("KASPA_DATA_DIR", data_dir.path());
 
-    let ini_path = data_dir.path().join("igra-hyperlane.ini");
+    let toml_path = data_dir.path().join("igra-hyperlane.toml");
     std::fs::write(
-        &ini_path,
-        "[hyperlane]\nvalidators = 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\nthreshold = 1\n",
+        &toml_path,
+        r#"
+        [hyperlane]
+        validators = ["03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"]
+        threshold = 1
+        "#,
     )
-    .expect("write ini");
+    .expect("write toml");
 
-    let config = load_app_config_from_path(&ini_path).expect("load app config");
+    let config = load_app_config_from_path(&toml_path).expect("load app config");
     assert_eq!(config.hyperlane.validators.len(), 1);
     assert_eq!(config.hyperlane.threshold, Some(1));
 

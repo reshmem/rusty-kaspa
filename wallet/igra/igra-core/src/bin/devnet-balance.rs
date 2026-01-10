@@ -71,7 +71,8 @@ async fn main() -> ExitCode {
         Some(500_000),
         Default::default(),
     )
-    .await {
+    .await
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to connect to rpc {}: {}", rpc, e);

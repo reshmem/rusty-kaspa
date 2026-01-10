@@ -4,7 +4,9 @@ use igra_core::application::Coordinator;
 use igra_core::domain::pskt::multisig as pskt_multisig;
 use igra_core::domain::signing::SignerBackend;
 use igra_core::domain::{EventSource, PartialSigRecord, RequestDecision, SigningEvent};
-use igra_core::foundation::{derive_keypair_from_key_data, PeerId, RequestId, SessionId, SigningKeypair, TransactionId as RequestTransactionId};
+use igra_core::foundation::{
+    derive_keypair_from_key_data, PeerId, RequestId, SessionId, SigningKeypair, TransactionId as RequestTransactionId,
+};
 use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::rpc::UnimplementedRpc;
 use igra_core::infrastructure::storage::{RocksStorage, Storage};
@@ -32,9 +34,9 @@ mod legacy_core_full_signing_flow {
     use igra_core::domain::{EventSource, SigningEvent};
     use igra_core::foundation::{PeerId, RequestId, SessionId, SigningKeypair};
     use igra_core::infrastructure::storage::RocksStorage;
-    use igra_core::infrastructure::transport::Transport;
-    use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
     use igra_core::infrastructure::transport::messages::TransportMessage;
+    use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
+    use igra_core::infrastructure::transport::Transport;
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
     use kaspa_txscript::standard::multisig_redeem_script;
     use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -63,14 +65,11 @@ mod legacy_core_full_signing_flow {
             redeem_script: redeem.clone(),
             sig_op_count: 2,
         };
-        let output = MultisigOutput {
-            amount: 9_000,
-            script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-        };
+        let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
         let pskt = build_pskt(&[input], &[output]).expect("pskt");
         let kp1 = SigningKeypair::from_keypair(&kp1_raw);
         let kp2 = SigningKeypair::from_keypair(&kp2_raw);
-        (serialize_pskt(&pskt).expect("serialize"), vec![kp1, kp2])
+        (serialize_pskt(&pskt.pskt).expect("serialize"), vec![kp1, kp2])
     }
 
     fn test_event() -> SigningEvent {
@@ -89,8 +88,7 @@ mod legacy_core_full_signing_flow {
 
     #[tokio::test]
     async fn test_signing_flow_when_partial_sig_submitted_then_propagates() {
-        let _guard = crate::harness::env_lock();
-        std::env::set_var("KASPA_IGRA_TEST_NOW_NANOS", "0");
+        let _now = crate::harness::ScopedEnvVar::set("KASPA_IGRA_TEST_NOW_NANOS", "0");
         let hub = Arc::new(MockHub::new());
         let group_id = [7u8; 32];
         let transport_a = Arc::new(MockTransport::new(hub.clone(), PeerId::from("peer-a"), group_id, 0));
@@ -128,11 +126,8 @@ mod legacy_core_full_signing_flow {
             .await
             .expect("propose");
 
-        let envelope = timeout(Duration::from_secs(2), proposal_stream.next())
-            .await
-            .expect("timeout")
-            .expect("closed")
-            .expect("envelope");
+        let envelope =
+            timeout(Duration::from_secs(2), proposal_stream.next()).await.expect("timeout").expect("closed").expect("envelope");
 
         let TransportMessage::SigningEventPropose(proposal) = envelope.payload else {
             panic!("unexpected payload");
@@ -140,17 +135,21 @@ mod legacy_core_full_signing_flow {
 
         let ack = signer
             .validate_proposal(
-                ProposalValidationRequestBuilder::new(proposal.request_id.clone(), envelope.session_id, proposal.signing_event.clone())
-                    .expected_group_id(group_id)
-                    .proposal_group_id(envelope.group_id)
-                    .expected_event_hash(proposal.event_hash)
-                    .kpsbt_blob(&proposal.kpsbt_blob)
-                    .tx_template_hash(tx_hash)
-                    .expected_validation_hash(proposal.validation_hash)
-                    .coordinator_peer_id(proposal.coordinator_peer_id.clone())
-                    .expires_at_nanos(proposal.expires_at_nanos)
-                    .build()
-                    .expect("build request"),
+                ProposalValidationRequestBuilder::new(
+                    proposal.request_id.clone(),
+                    envelope.session_id,
+                    proposal.signing_event.clone(),
+                )
+                .expected_group_id(group_id)
+                .proposal_group_id(envelope.group_id)
+                .expected_event_hash(proposal.event_hash)
+                .kpsbt_blob(&proposal.kpsbt_blob)
+                .tx_template_hash(tx_hash)
+                .expected_validation_hash(proposal.validation_hash)
+                .coordinator_peer_id(proposal.coordinator_peer_id.clone())
+                .expires_at_nanos(proposal.expires_at_nanos)
+                .build()
+                .expect("build request"),
                 &PeerId::from("peer-b"),
             )
             .expect("ack");
@@ -160,23 +159,23 @@ mod legacy_core_full_signing_flow {
 
         let backend = ThresholdSigner::new(keypairs[0].clone());
         signer
-            .sign_and_submit_backend(envelope.session_id, &proposal.request_id, &proposal.kpsbt_blob, &backend, &PeerId::from("peer-b"))
+            .sign_and_submit_backend(
+                envelope.session_id,
+                &proposal.request_id,
+                &proposal.kpsbt_blob,
+                &backend,
+                &PeerId::from("peer-b"),
+            )
             .await
             .expect("sign");
 
-        let sig_env = timeout(Duration::from_secs(2), session_stream.next())
-            .await
-            .expect("timeout")
-            .expect("closed")
-            .expect("env");
+        let sig_env = timeout(Duration::from_secs(2), session_stream.next()).await.expect("timeout").expect("closed").expect("env");
         match sig_env.payload {
             TransportMessage::PartialSigSubmit(sig) => {
                 assert_eq!(sig.request_id, proposal.request_id);
             }
             _ => panic!("expected partial sig"),
         }
-
-        std::env::remove_var("KASPA_IGRA_TEST_NOW_NANOS");
     }
 }
 
@@ -186,13 +185,8 @@ fn config_root() -> PathBuf {
 
 fn load_from_ini_profile(config_path: &Path, profile: &str) -> AppConfig {
     let data_dir = tempfile::tempdir().expect("temp data dir");
-
-    env::set_var("KASPA_DATA_DIR", data_dir.path());
-
-    let config = igra_core::infrastructure::config::load_app_config_from_profile_path(config_path, profile).expect("load app config");
-
-    env::remove_var("KASPA_DATA_DIR");
-    config
+    let _data_dir_env = crate::harness::ScopedEnvVar::set("KASPA_DATA_DIR", data_dir.path());
+    igra_core::infrastructure::config::load_app_config_from_profile_path(config_path, profile).expect("load app config")
 }
 
 fn keypair_from_config(config: &AppConfig, derivation_path: &str) -> SigningKeypair {
@@ -204,12 +198,10 @@ fn keypair_from_config(config: &AppConfig, derivation_path: &str) -> SigningKeyp
 
 #[tokio::test]
 async fn two_of_three_signing_flow_finalizes() {
-    let _guard = crate::harness::env_lock();
     let root = config_root();
-    let signer_config = root.join("artifacts/igra-config.ini");
+    let signer_config = root.join("artifacts/igra-config.toml");
     let signer_profiles = ["signer-1", "signer-2", "signer-3"];
-
-    env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
+    let _wallet_secret = crate::harness::ScopedEnvVar::set("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
 
     let configs = signer_profiles.iter().map(|profile| load_from_ini_profile(&signer_config, profile)).collect::<Vec<_>>();
 
@@ -233,7 +225,7 @@ async fn two_of_three_signing_flow_finalizes() {
     };
     let output = pskt_multisig::MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = pskt_multisig::build_pskt(&[input], &[output]).expect("pskt build");
-    let pskt_blob = pskt_multisig::serialize_pskt(&pskt).expect("pskt serialize");
+    let pskt_blob = pskt_multisig::serialize_pskt(&pskt.pskt).expect("pskt serialize");
     let signer_pskt = pskt_multisig::deserialize_pskt_signer(&pskt_blob).expect("signer pskt");
     let tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input_hashes = pskt_multisig::input_hashes(&signer_pskt).expect("input hashes");
@@ -277,7 +269,7 @@ async fn two_of_three_signing_flow_finalizes() {
     for (peer_id, keypair) in keypairs.iter().take(2) {
         let signer = igra_core::domain::signing::threshold::ThresholdSigner::new(keypair.clone());
         let sigs = signer.sign(&pskt_blob, &request_id).expect("sign pskt");
-        for sig in sigs {
+        for sig in sigs.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_id,
@@ -306,5 +298,4 @@ async fn two_of_three_signing_flow_finalizes() {
     let stored = storage.get_request(&request_id).expect("stored request").expect("request");
     assert!(matches!(stored.decision, RequestDecision::Finalized));
     assert_eq!(stored.final_tx_id, Some(RequestTransactionId::from(tx_id)));
-
 }

@@ -2,9 +2,9 @@
 
 use super::mocks::MockKaspaNode;
 use igra_core::foundation::ThresholdError;
+use igra_core::foundation::{PeerId, RequestId};
 use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use igra_core::infrastructure::transport::iroh::mock::{MockHub, MockTransport};
-use igra_core::foundation::{PeerId, RequestId};
 use igra_service::service::flow::ServiceFlow;
 use iroh::discovery::static_provider::StaticProvider;
 use iroh::protocol::Router;
@@ -36,9 +36,8 @@ impl TestIrohNetwork {
                 .await
                 .map_err(|err| ThresholdError::Message(err.to_string()))?;
             let gossip = Gossip::builder().spawn(endpoint.clone());
-            let router = iroh::protocol::Router::builder(endpoint.clone())
-                .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-                .spawn();
+            let router =
+                iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
             discovery.add_endpoint_info(endpoint.addr());
             endpoints.push(endpoint);
             gossips.push(gossip);
@@ -270,14 +269,10 @@ pub fn config_root() -> PathBuf {
 }
 
 pub fn load_app_config_from_profile(path: &Path, profile: &str) -> AppConfig {
-    let _guard = super::cleanup::env_lock();
     let data_dir = tempfile::tempdir().expect("temp data dir");
-    env::set_var("KASPA_DATA_DIR", data_dir.path());
-    env::set_var("KASPA_IGRA_WALLET_SECRET", "test-secret");
-    let config = igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile).expect("load app config");
-    env::remove_var("KASPA_DATA_DIR");
-    env::remove_var("KASPA_IGRA_WALLET_SECRET");
-    config
+    let _data_dir_env = super::cleanup::ScopedEnvVar::set("KASPA_DATA_DIR", data_dir.path());
+    let _wallet_secret_env = super::cleanup::ScopedEnvVar::set("KASPA_IGRA_WALLET_SECRET", "test-secret");
+    igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile).expect("load app config")
 }
 
 pub fn signing_event_for(destination_address: String, amount_sompi: u64, source: EventSource) -> SigningEvent {
@@ -337,6 +332,7 @@ impl TestDataFactory {
             hyperlane: Default::default(),
             layerzero: Default::default(),
             iroh: Default::default(),
+            profiles: None,
         }
     }
 }

@@ -26,7 +26,7 @@ services:
       - "8088:8088"
     volumes:
       - igra-data-1:/data/igra
-      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./igra-devnet.toml:/data/igra/igra-config.toml:ro
       - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
 
   igra-signer-2:
@@ -51,7 +51,7 @@ services:
       - "8089:8089"
     volumes:
       - igra-data-2:/data/igra
-      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./igra-devnet.toml:/data/igra/igra-config.toml:ro
       - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
 
   igra-signer-3:
@@ -76,7 +76,7 @@ services:
       - "8090:8090"
     volumes:
       - igra-data-3:/data/igra
-      - ./igra-devnet.ini:/data/igra/igra-config.ini:ro
+      - ./igra-devnet.toml:/data/igra/igra-config.toml:ro
       - ./hyperlane-keys.json:/data/igra/hyperlane-keys.json:ro
 
   kaspad:

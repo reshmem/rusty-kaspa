@@ -68,12 +68,7 @@ async fn rpc_event_submission() {
     let count = Arc::new(std::sync::Mutex::new(0u32));
     let processor = Arc::new(CountingProcessor { count: count.clone() });
 
-    let ctx = EventContext {
-        processor,
-        config: ServiceConfig::default(),
-        message_verifier: Arc::new(NoopVerifier),
-        storage,
-    };
+    let ctx = EventContext { processor, config: ServiceConfig::default(), message_verifier: Arc::new(NoopVerifier), storage };
 
     let metrics = Arc::new(Metrics::new().expect("metrics"));
     let state = Arc::new(RpcState {
@@ -99,11 +94,11 @@ async fn rpc_event_submission() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_string(&json!({
-            "jsonrpc": "2.0",
-            "method": "signing_event.submit",
-            "params": params,
-            "id": 1,
-        }))
+                "jsonrpc": "2.0",
+                "method": "signing_event.submit",
+                "params": params,
+                "id": 1,
+            }))
             .expect("json"),
         ))
         .expect("request");

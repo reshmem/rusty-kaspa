@@ -48,7 +48,10 @@ impl Default for MockKaspaNode {
 
 #[async_trait::async_trait]
 impl NodeRpc for MockKaspaNode {
-    async fn get_utxos_by_addresses(&self, addresses: &[kaspa_wallet_core::prelude::Address]) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
+    async fn get_utxos_by_addresses(
+        &self,
+        addresses: &[kaspa_wallet_core::prelude::Address],
+    ) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
         let entries = self.utxos.lock().map_err(|_| ThresholdError::Message("utxo store lock poisoned".to_string()))?;
         if addresses.is_empty() {
             return Ok(entries.clone());

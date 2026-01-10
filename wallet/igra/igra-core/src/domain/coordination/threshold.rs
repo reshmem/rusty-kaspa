@@ -19,5 +19,5 @@ pub fn has_threshold(partials: &[PartialSigRecord], input_count: usize, required
         per_input.entry(idx).or_default().insert(sig.pubkey.as_slice());
     }
 
-    (0..input_count as u32).all(|idx| per_input.get(&idx).map_or(false, |set| set.len() >= required))
+    (0..input_count as u32).all(|idx| per_input.get(&idx).is_some_and(|set| set.len() >= required))
 }

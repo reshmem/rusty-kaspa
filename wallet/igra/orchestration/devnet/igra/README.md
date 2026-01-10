@@ -19,11 +19,11 @@ Mount a config file and data directory:
 
 ```bash
 docker run --rm -p 8088:8088 \
-  -v $(pwd)/orchestration/devnet/igra-devnet.ini:/data/igra/igra-config.ini \
+  -v $(pwd)/orchestration/devnet/igra-devnet.toml:/data/igra/igra-config.toml \
   -v $(pwd)/.igra:/data/igra \
   igra-service
 ```
 
 Notes:
 - The service uses `KASPA_DATA_DIR=/data/igra` by default.
-- Config is loaded from `/data/igra/igra-config.ini` unless `KASPA_CONFIG_PATH` is set.
+- Config is loaded from `/data/igra/igra-config.toml` unless `KASPA_CONFIG_PATH` is set.

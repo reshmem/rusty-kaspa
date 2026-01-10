@@ -15,8 +15,8 @@ async-stream.workspace = true
 bincode.workspace = true
 blake3 = "1.5.1"
 borsh.workspace = true
-configparser = "1.0.0"
 ed25519-dalek = "2.1.1"
+figment = { version = "0.10", features = ["toml", "env"] }
 futures-util.workspace = true
 hex.workspace = true
 once_cell.workspace = true

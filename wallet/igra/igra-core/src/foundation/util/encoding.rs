@@ -7,9 +7,7 @@ pub fn decode_hex(s: &str) -> Result<Vec<u8>, ThresholdError> {
 pub fn decode_hex_exact<const N: usize>(s: &str) -> Result<[u8; N], ThresholdError> {
     let bytes = decode_hex(s)?;
     let len = bytes.len();
-    let array: [u8; N] = bytes
-        .try_into()
-        .map_err(|_| ThresholdError::Message(format!("expected {N} bytes hex, got {}", len)))?;
+    let array: [u8; N] = bytes.try_into().map_err(|_| ThresholdError::Message(format!("expected {N} bytes hex, got {}", len)))?;
     Ok(array)
 }
 

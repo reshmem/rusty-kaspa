@@ -19,4 +19,3 @@ fn test_serialization_when_signing_event_json_roundtrip_then_preserves_fields() 
     assert_eq!(back.event_id, "event-1");
     assert_eq!(back.amount_sompi, 123);
 }
-

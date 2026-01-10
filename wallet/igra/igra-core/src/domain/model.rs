@@ -107,17 +107,16 @@ pub struct PartialSigRecord {
     pub timestamp_nanos: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FeePaymentMode {
+    #[default]
     RecipientPays,
     SignersPay,
-    Split { recipient_parts: u32, signer_parts: u32 },
-}
-
-impl Default for FeePaymentMode {
-    fn default() -> Self {
-        FeePaymentMode::RecipientPays
-    }
+    Split {
+        recipient_parts: u32,
+        signer_parts: u32,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -129,4 +128,3 @@ pub struct StoredProposal {
     pub signing_event: SigningEvent,
     pub kpsbt_blob: Vec<u8>,
 }
-

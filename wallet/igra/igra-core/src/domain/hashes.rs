@@ -1,6 +1,6 @@
+use crate::domain::SigningEvent;
 use crate::foundation::error::ThresholdError;
 use crate::foundation::Hash32;
-use crate::domain::SigningEvent;
 use bincode::Options;
 use blake3::Hasher;
 

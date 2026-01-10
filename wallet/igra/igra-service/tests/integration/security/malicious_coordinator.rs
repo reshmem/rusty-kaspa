@@ -1,6 +1,6 @@
-use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::application::signer::ProposalValidationRequestBuilder;
 use igra_core::application::Signer;
+use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::domain::{EventSource, SigningEvent};
 use igra_core::foundation::{PeerId, RequestId, SessionId};
@@ -73,15 +73,15 @@ async fn malicious_coordinator_tampered_pskt_is_rejected() {
 
     let input = build_inputs();
     let output = output_to_address(destination, 50_000_000);
-    let pskt = build_pskt(&[input.clone()], &[output]).expect("pskt");
-    let signer_pskt = pskt.signer();
+    let pskt = build_pskt(std::slice::from_ref(&input), std::slice::from_ref(&output)).expect("pskt");
+    let signer_pskt = pskt.pskt.signer();
     let tx_hash = tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input_hashes = input_hashes(&signer_pskt).expect("input hashes");
     let expected_validation = validation_hash(&expected_event_hash, &tx_hash, &per_input_hashes);
 
     let tampered_output = output_to_address(attacker_destination, 50_000_000);
     let tampered_pskt = build_pskt(&[input], &[tampered_output]).expect("tampered pskt");
-    let tampered_blob = serialize_pskt(&tampered_pskt).expect("serialize tampered");
+    let tampered_blob = serialize_pskt(&tampered_pskt.pskt).expect("serialize tampered");
 
     let request_id = RequestId::from("req-1");
     let ack = signer

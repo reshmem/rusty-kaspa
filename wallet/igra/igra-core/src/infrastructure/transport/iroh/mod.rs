@@ -2,16 +2,16 @@
 //!
 //! Provides a stable path `infrastructure::transport::iroh::*`.
 
+pub mod client;
+pub mod config;
+pub mod encoding;
+pub mod filtering;
 pub mod identity;
 pub mod messages;
 pub mod mock;
-pub mod traits;
-pub mod client;
-pub mod encoding;
-pub mod filtering;
 pub mod subscription;
-pub mod config;
+pub mod traits;
 
-pub use traits::*;
 pub use client::IrohTransport;
 pub use config::IrohConfig;
+pub use traits::*;

@@ -1,5 +1,6 @@
 use crate::domain::pskt::multisig::{build_pskt, MultisigInput, MultisigOutput};
 use crate::domain::pskt::params::{PsktParams, UtxoInput};
+use crate::domain::pskt::results::{PsktBuildResult, UtxoSelectionResult};
 use crate::domain::FeePaymentMode;
 use crate::foundation::ThresholdError;
 use kaspa_addresses::Address;
@@ -8,7 +9,7 @@ use kaspa_txscript::pay_to_address_script;
 pub fn build_pskt_from_utxos(
     params: &PsktParams,
     mut utxos: Vec<UtxoInput>,
-) -> Result<kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Updater>, ThresholdError> {
+) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
     let mut outputs = params
         .outputs
         .iter()
@@ -20,13 +21,10 @@ pub fn build_pskt_from_utxos(
 
     // Deterministic ordering across nodes.
     utxos.sort_by(|a, b| {
-        a.outpoint
-            .transaction_id
-            .as_bytes()
-            .cmp(&b.outpoint.transaction_id.as_bytes())
-            .then(a.outpoint.index.cmp(&b.outpoint.index))
+        a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()).then(a.outpoint.index.cmp(&b.outpoint.index))
     });
 
+    let selected_utxos = utxos.len();
     let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
     apply_fee_policy(params, total_input, &mut outputs)?;
 
@@ -40,7 +38,22 @@ pub fn build_pskt_from_utxos(
         })
         .collect::<Vec<_>>();
 
-    build_pskt(&inputs, &outputs)
+    let total_output_amount = outputs.iter().map(|out| out.amount).sum::<u64>();
+    let has_change_output = outputs.len() > params.outputs.len();
+    let change_amount = if has_change_output { outputs.last().map(|out| out.amount).unwrap_or(0) } else { 0 };
+    let fee_amount = params.fee_sompi.unwrap_or(0);
+
+    let selection = UtxoSelectionResult {
+        selected_utxos,
+        total_input_amount: total_input,
+        total_output_amount,
+        fee_amount,
+        change_amount,
+        has_change_output,
+    };
+
+    let build = build_pskt(&inputs, &outputs)?;
+    Ok((selection, build))
 }
 
 struct FeeConfig {
@@ -82,8 +95,7 @@ fn apply_fee_policy(params: &PsktParams, total_input: u64, outputs: &mut Vec<Mul
     let fee_cfg = FeeConfig::from_mode(fee, &params.fee_payment_mode)?;
 
     if fee_cfg.recipient_fee > 0 {
-        let first =
-            outputs.first_mut().ok_or_else(|| ThresholdError::PsktValidationFailed("missing recipient output".to_string()))?;
+        let first = outputs.first_mut().ok_or_else(|| ThresholdError::PsktValidationFailed("missing recipient output".to_string()))?;
         if first.amount < fee_cfg.recipient_fee {
             return Err(ThresholdError::InsufficientUTXOs);
         }

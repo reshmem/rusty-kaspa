@@ -1,5 +1,5 @@
-use crate::infrastructure::config::types::AppConfig;
 use crate::foundation::ThresholdError;
+use crate::infrastructure::config::types::AppConfig;
 use rocksdb::{ColumnFamilyDescriptor, MergeOperands, Options as RocksOptions, DB};
 use std::path::{Path, PathBuf};
 
@@ -36,9 +36,7 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
     let db = open_config_db(&db_path, false)?;
     let value = db.get(CONFIG_KEY).map_err(|err| ThresholdError::Message(err.to_string()))?;
     match value {
-        Some(bytes) => {
-            Ok(Some(serde_json::from_slice(&bytes)?))
-        }
+        Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
         None => Ok(None),
     }
 }

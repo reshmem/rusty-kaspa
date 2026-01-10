@@ -7,4 +7,3 @@ pub fn assert_request_finalized(storage: &dyn Storage, request_id: &str) {
     assert!(matches!(request.decision, RequestDecision::Finalized));
     assert!(request.final_tx_id.is_some(), "missing final tx id");
 }
-

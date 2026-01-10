@@ -7,7 +7,7 @@ use igra_core::infrastructure::hyperlane::{ConfiguredIsm, IsmMode, IsmVerifier, 
 use secp256k1::{rand::rngs::OsRng, Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
 
 fn pk_hex(pk: &PublicKey) -> String {
-    format!("{}", hex::encode(pk.serialize()))
+    hex::encode(pk.serialize())
 }
 
 fn make_sig(hash: H256, sk: &SecretKey) -> Signature {
@@ -129,11 +129,8 @@ fn merkle_root_multisig_succeeds() {
     let sig1 = make_sig(signing_hash, &sk1);
     let sig2 = make_sig(signing_hash, &sk2);
 
-    let meta = ProofMetadata {
-        checkpoint: cp_with_msg,
-        merkle_proof: Some(Proof { leaf, index: 0, path }),
-        signatures: vec![sig1, sig2],
-    };
+    let meta =
+        ProofMetadata { checkpoint: cp_with_msg, merkle_proof: Some(Proof { leaf, index: 0, path }), signatures: vec![sig1, sig2] };
 
     let report = ism.verify_proof(&message, &meta, IsmMode::MerkleRootMultisig).expect("verification should pass");
 

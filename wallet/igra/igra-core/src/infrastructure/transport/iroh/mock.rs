@@ -1,10 +1,10 @@
-use crate::foundation::ThresholdError;
+use super::traits::{
+    FinalizeNotice, MessageEnvelope, PartialSigSubmit, ProposedSigningSession, SignerAck, SigningEventPropose, Transport,
+    TransportMessage, TransportSubscription,
+};
 use crate::foundation::util::time::current_timestamp_nanos_env;
 use crate::foundation::Hash32;
-use super::traits::{
-    FinalizeNotice, MessageEnvelope, PartialSigSubmit, ProposedSigningSession, SignerAck, SigningEventPropose, Transport, TransportMessage,
-    TransportSubscription,
-};
+use crate::foundation::ThresholdError;
 use crate::foundation::{PeerId, RequestId, SessionId};
 use async_trait::async_trait;
 use bincode::Options;
@@ -25,6 +25,12 @@ impl MockHub {
     async fn topic(&self, topic: Hash32) -> broadcast::Sender<MessageEnvelope> {
         let mut guard = self.topics.lock().await;
         guard.entry(topic).or_insert_with(|| broadcast::channel(256).0).clone()
+    }
+}
+
+impl Default for MockHub {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -64,7 +70,9 @@ impl MockTransport {
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 
-    fn now_nanos() -> u64 { current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0) }
+    fn now_nanos() -> u64 {
+        current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
+    }
 
     async fn publish(&self, topic: Hash32, session_id: SessionId, payload: TransportMessage) -> Result<(), ThresholdError> {
         let payload_hash = Self::payload_hash(&payload)?;

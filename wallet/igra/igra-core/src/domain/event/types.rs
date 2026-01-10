@@ -1,4 +1,5 @@
-use crate::domain::{EventSource, SigningEvent};
+use super::validation::EventParsingResult;
+use crate::domain::EventSource;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -32,7 +33,7 @@ pub struct SigningEventWire {
 }
 
 impl SigningEventWire {
-    pub fn into_signing_event(self) -> Result<SigningEvent, crate::foundation::error::ThresholdError> {
+    pub fn into_signing_event(self) -> Result<EventParsingResult, crate::foundation::error::ThresholdError> {
         super::validation::into_signing_event(self)
     }
 }

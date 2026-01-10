@@ -1,6 +1,6 @@
-use crate::foundation::ThresholdError;
-use crate::domain::FeePaymentMode;
 use crate::domain::pskt::multisig::MultisigOutput;
+use crate::domain::FeePaymentMode;
+use crate::foundation::ThresholdError;
 
 /// Split fee into recipient/signer parts according to policy.
 pub fn split_fee(fee: u64, mode: &FeePaymentMode) -> Result<(u64, u64), ThresholdError> {

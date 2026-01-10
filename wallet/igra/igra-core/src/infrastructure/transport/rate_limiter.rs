@@ -2,6 +2,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{debug, trace};
 
 /// Token bucket rate limiter implementation
 /// Allows burst traffic up to capacity, then enforces a steady rate
@@ -33,10 +34,13 @@ impl TokenBucket {
     /// Try to consume a token. Returns true if allowed, false if rate limited
     pub fn try_consume(&mut self) -> bool {
         self.refill();
+        trace!(tokens = self.tokens, capacity = self.capacity, "rate limiter try_consume");
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
+            trace!(tokens_remaining = self.tokens, "rate limiter token consumed");
             true
         } else {
+            trace!(tokens_remaining = self.tokens, "rate limited: no tokens");
             false
         }
     }
@@ -96,10 +100,13 @@ impl RateLimiter {
     pub fn check_rate_limit(&self, peer_id: &str) -> bool {
         let mut guard = self.state.lock();
         guard.maybe_cleanup();
-        let bucket = guard
-            .limiters
-            .entry(peer_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
+        let bucket = match guard.limiters.entry(peer_id.to_string()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                debug!(peer_id = %peer_id, "rate limiter: new peer bucket");
+                entry.insert(TokenBucket::new(self.capacity, self.refill_rate))
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        };
         bucket.try_consume()
     }
 
@@ -108,10 +115,7 @@ impl RateLimiter {
     pub fn check_rate_limit_tokens(&self, peer_id: &str, tokens: f64) -> bool {
         let mut guard = self.state.lock();
         guard.maybe_cleanup();
-        let bucket = guard
-            .limiters
-            .entry(peer_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
+        let bucket = guard.limiters.entry(peer_id.to_string()).or_insert_with(|| TokenBucket::new(self.capacity, self.refill_rate));
         bucket.try_consume_tokens(tokens)
     }
 
@@ -119,9 +123,12 @@ impl RateLimiter {
     /// Call periodically from a cleanup task
     pub fn cleanup_old_entries(&self, max_age: Duration) {
         let mut guard = self.state.lock();
+        let before = guard.limiters.len();
         let cutoff = Instant::now() - max_age;
         guard.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
+        let after = guard.limiters.len();
         guard.last_cleanup = Instant::now();
+        debug!(before, after, removed = before.saturating_sub(after), "rate limiter cleanup_old_entries");
     }
 
     /// Get the number of tracked peers (for monitoring)
@@ -141,7 +148,10 @@ impl RateLimiterState {
         }
         self.last_cleanup = now;
         let cutoff = now.checked_sub(MAX_AGE).unwrap_or(now);
+        let before = self.limiters.len();
         self.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
+        let after = self.limiters.len();
+        debug!(before, after, removed = before.saturating_sub(after), "rate limiter periodic cleanup");
     }
 }
 

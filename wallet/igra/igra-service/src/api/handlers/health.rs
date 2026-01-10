@@ -18,10 +18,7 @@ pub async fn handle_ready(State(state): State<Arc<RpcState>>, headers: HeaderMap
     }
 
     let storage_ok = state.event_ctx.storage.health_check().is_ok();
-    let node_connected = match igra_core::infrastructure::rpc::GrpcNodeRpc::connect(state.node_rpc_url.clone()).await {
-        Ok(_) => true,
-        Err(_) => false,
-    };
+    let node_connected = igra_core::infrastructure::rpc::GrpcNodeRpc::connect(state.node_rpc_url.clone()).await.is_ok();
     let status = if storage_ok && node_connected { "ready" } else { "degraded" };
     Json(serde_json::json!({
         "status": status,
@@ -49,4 +46,3 @@ pub async fn handle_metrics(State(state): State<Arc<RpcState>>, headers: HeaderM
         }
     }
 }
-

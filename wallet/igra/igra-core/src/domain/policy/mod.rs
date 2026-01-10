@@ -1,3 +1,5 @@
 pub mod enforcement;
-pub use enforcement::{DefaultPolicyEnforcer, PolicyEnforcer};
+pub mod types;
 pub use crate::domain::GroupPolicy;
+pub use enforcement::{DefaultPolicyEnforcer, PolicyEnforcer};
+pub use types::*;

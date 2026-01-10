@@ -49,4 +49,3 @@ async fn test_transport_mock_when_proposal_published_then_subscriber_receives() 
         _ => panic!("expected SigningEventPropose"),
     }
 }
-

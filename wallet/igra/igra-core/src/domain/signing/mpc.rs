@@ -1,7 +1,7 @@
-use crate::foundation::ThresholdError;
-use crate::foundation::RequestId;
+use crate::domain::signing::results::SigningResult;
 use crate::domain::signing::{SignerBackend, SigningBackendKind};
-use crate::domain::signing::PartialSigSubmit;
+use crate::foundation::RequestId;
+use crate::foundation::ThresholdError;
 
 pub struct MpcSigner;
 
@@ -11,12 +11,18 @@ impl MpcSigner {
     }
 }
 
+impl Default for MpcSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SignerBackend for MpcSigner {
     fn kind(&self) -> SigningBackendKind {
         SigningBackendKind::Mpc
     }
 
-    fn sign(&self, _kpsbt_blob: &[u8], _request_id: &RequestId) -> Result<Vec<PartialSigSubmit>, ThresholdError> {
+    fn sign(&self, _kpsbt_blob: &[u8], _request_id: &RequestId) -> Result<SigningResult, ThresholdError> {
         Err(ThresholdError::Message("MPC backend not implemented".to_string()))
     }
 }

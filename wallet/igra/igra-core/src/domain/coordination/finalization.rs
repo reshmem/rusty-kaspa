@@ -1,24 +1,28 @@
-use crate::domain::coordination::threshold::has_threshold;
+use crate::domain::coordination::results::ThresholdStatus;
 use crate::domain::PartialSigRecord;
 
-pub fn ready_to_finalize(partials: &[PartialSigRecord], input_count: usize, required: usize) -> bool {
-    has_threshold(partials, input_count, required)
-}
-
-pub fn missing_signatures(partials: &[PartialSigRecord], input_count: usize, required: usize) -> usize {
-    if input_count == 0 {
-        return required;
-    }
-    let mut counts = vec![0usize; input_count];
+pub fn threshold_status(partials: &[PartialSigRecord], input_count: usize, required: usize) -> ThresholdStatus {
+    let mut per_input_signature_counts = vec![0usize; input_count];
     for sig in partials {
         if let Ok(idx) = usize::try_from(sig.input_index) {
             if idx < input_count {
-                counts[idx] = counts[idx].saturating_add(1);
+                per_input_signature_counts[idx] = per_input_signature_counts[idx].saturating_add(1);
             }
         }
     }
-    counts
-        .into_iter()
-        .map(|count| required.saturating_sub(count))
-        .sum()
+
+    let missing_inputs = per_input_signature_counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &count)| count < required)
+        .map(|(idx, _)| idx as u32)
+        .collect::<Vec<_>>();
+
+    ThresholdStatus {
+        ready: missing_inputs.is_empty() && input_count > 0,
+        input_count,
+        required_signatures: required,
+        per_input_signature_counts,
+        missing_inputs,
+    }
 }

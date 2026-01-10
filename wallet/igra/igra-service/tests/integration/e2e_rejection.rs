@@ -1,9 +1,9 @@
 //! End-to-end rejection and policy scenarios.
 
 use crate::harness::{env_lock, TestKeyGenerator};
-use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::application::signer::ProposalValidationRequestBuilder;
 use igra_core::application::Signer;
+use igra_core::domain::hashes::{event_hash, validation_hash};
 use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
 use igra_core::domain::{EventSource, GroupPolicy, RequestDecision, SigningEvent, SigningRequest};
 use igra_core::foundation::{PeerId, RequestId, SessionId, TransactionId as RequestTransactionId};
@@ -26,8 +26,8 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
     };
     let output = MultisigOutput { amount, script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
-    let pskt_blob = serialize_pskt(&pskt).expect("serialize pskt");
-    let signer_pskt = pskt.signer();
+    let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize pskt");
+    let signer_pskt = pskt.pskt.signer();
     let tx_hash = tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input = input_hashes(&signer_pskt).expect("input hashes");
     (pskt_blob, tx_hash, per_input)
@@ -152,12 +152,12 @@ async fn test_daily_volume_limit_with_reset() -> Result<(), ThresholdError> {
 
 mod legacy_core_event_validation {
     use async_trait::async_trait;
-    use igra_core::infrastructure::config::ServiceConfig;
-    use igra_core::domain::hashes::event_hash_without_signature;
     use igra_core::application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
-    use igra_core::domain::{EventSource, SigningEvent};
+    use igra_core::domain::hashes::event_hash_without_signature;
     use igra_core::domain::validation::{CompositeVerifier, NoopVerifier};
+    use igra_core::domain::{EventSource, SigningEvent};
     use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
+    use igra_core::infrastructure::config::ServiceConfig;
     use igra_core::infrastructure::storage::RocksStorage;
     use secp256k1::{Message, Secp256k1, SecretKey};
     use std::collections::BTreeMap;
@@ -203,7 +203,7 @@ mod legacy_core_event_validation {
         let ctx = EventContext {
             processor: Arc::new(DummyProcessor),
             config: ServiceConfig::default(),
-            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), Vec::new())),
+            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), 1, Vec::new())),
             storage,
         };
 
@@ -226,7 +226,7 @@ mod legacy_core_event_validation {
         let ctx = EventContext {
             processor: Arc::new(DummyProcessor),
             config: ServiceConfig::default(),
-            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), Vec::new())),
+            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), 1, Vec::new())),
             storage,
         };
 
@@ -270,7 +270,7 @@ mod legacy_core_event_validation {
         let ctx = EventContext {
             processor: Arc::new(DummyProcessor),
             config: ServiceConfig::default(),
-            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), vec![pubkey])),
+            message_verifier: Arc::new(CompositeVerifier::new(Vec::new(), 1, vec![pubkey])),
             storage,
         };
 
@@ -304,7 +304,7 @@ mod legacy_core_event_validation {
         let ctx = EventContext {
             processor: Arc::new(DummyProcessor),
             config: ServiceConfig::default(),
-            message_verifier: Arc::new(NoopVerifier::default()),
+            message_verifier: Arc::new(NoopVerifier),
             storage,
         };
 
@@ -328,8 +328,8 @@ mod legacy_core_event_validation {
 mod legacy_core_policy_enforcement {
     use igra_core::application::signer::{ProposalValidationRequestBuilder, Signer};
     use igra_core::domain::hashes::{event_hash, validation_hash};
-    use igra_core::domain::{EventSource, GroupPolicy, RequestDecision, SigningEvent, SigningRequest};
     use igra_core::domain::pskt::multisig::{build_pskt, deserialize_pskt_signer, serialize_pskt, MultisigInput, MultisigOutput};
+    use igra_core::domain::{EventSource, GroupPolicy, RequestDecision, SigningEvent, SigningRequest};
     use igra_core::foundation::{PeerId, RequestId, SessionId, TransactionId as RequestTransactionId};
     use igra_core::infrastructure::storage::{RocksStorage, Storage};
     use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
@@ -362,7 +362,7 @@ mod legacy_core_policy_enforcement {
         };
         let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
         let pskt = build_pskt(&[input], &[output]).expect("pskt");
-        serialize_pskt(&pskt).expect("serialize")
+        serialize_pskt(&pskt.pskt).expect("serialize")
     }
 
     fn test_event(amount: u64, reason: Option<&str>) -> SigningEvent {
@@ -499,8 +499,9 @@ mod legacy_core_policy_enforcement {
 mod legacy_core_policy_rejection_disallowed_destination {
     use igra_core::application::signer::{ProposalValidationRequestBuilder, Signer};
     use igra_core::domain::hashes::{event_hash, validation_hash};
-    use igra_core::domain::{EventSource, GroupPolicy, SigningEvent};
     use igra_core::domain::pskt::multisig::{build_pskt, deserialize_pskt_signer, serialize_pskt, MultisigInput, MultisigOutput};
+    use igra_core::domain::{EventSource, GroupPolicy, SigningEvent};
+    use igra_core::foundation::{PeerId, SessionId};
     use igra_core::infrastructure::storage::RocksStorage;
     use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
@@ -509,7 +510,6 @@ mod legacy_core_policy_rejection_disallowed_destination {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use igra_core::foundation::{PeerId, SessionId};
 
     fn test_keypair(seed: u8) -> Keypair {
         let secp = Secp256k1::new();
@@ -533,7 +533,7 @@ mod legacy_core_policy_rejection_disallowed_destination {
         };
         let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
         let pskt = build_pskt(&[input], &[output]).expect("pskt");
-        serialize_pskt(&pskt).expect("serialize")
+        serialize_pskt(&pskt.pskt).expect("serialize")
     }
 
     fn test_event(destination: &str, amount: u64) -> SigningEvent {

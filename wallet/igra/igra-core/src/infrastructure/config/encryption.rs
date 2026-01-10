@@ -1,10 +1,11 @@
-use crate::infrastructure::config::env::HD_WALLET_SECRET_ENV;
-use crate::infrastructure::config::types::PsktHdConfig;
 use crate::foundation::ThresholdError;
+use crate::infrastructure::config::types::PsktHdConfig;
+use crate::infrastructure::config::HD_WALLET_SECRET_ENV;
 use kaspa_bip32::{Language, Mnemonic};
 use kaspa_wallet_core::encryption::{Encryptable, EncryptionKind};
 use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
+use tracing::{debug, info, warn};
 use zeroize::Zeroize;
 
 pub fn load_wallet_secret() -> Result<Secret, ThresholdError> {
@@ -12,6 +13,7 @@ pub fn load_wallet_secret() -> Result<Secret, ThresholdError> {
     if value.trim().is_empty() {
         return Err(ThresholdError::ConfigError(format!("{} is required to manage HD mnemonics", HD_WALLET_SECRET_ENV)));
     }
+    debug!("wallet secret loaded from env");
     Ok(Secret::from(value))
 }
 
@@ -20,6 +22,7 @@ pub fn encrypt_mnemonics(
     payment_secret: Option<&Secret>,
     wallet_secret: &Secret,
 ) -> Result<Encryptable<Vec<PrvKeyData>>, ThresholdError> {
+    info!(mnemonic_count = mnemonics.len(), has_payment_secret = payment_secret.is_some(), "encrypting mnemonics");
     let mut key_data = Vec::with_capacity(mnemonics.len());
     for mut phrase in mnemonics.drain(..) {
         let mnemonic = Mnemonic::new(phrase.trim(), Language::English)
@@ -41,9 +44,10 @@ impl PsktHdConfig {
             None => return Ok(Vec::new()),
         };
         let wallet_secret = load_wallet_secret()?;
-        let decrypted = encrypted
-            .decrypt(Some(&wallet_secret))
-            .map_err(|err| ThresholdError::ConfigError(format!("failed to decrypt hd.mnemonics: {}", err)))?;
+        let decrypted = encrypted.decrypt(Some(&wallet_secret)).map_err(|err| {
+            warn!("failed to decrypt hd.mnemonics");
+            ThresholdError::ConfigError(format!("failed to decrypt hd.mnemonics: {}", err))
+        })?;
         Ok(decrypted.unwrap())
     }
 }

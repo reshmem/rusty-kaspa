@@ -7,24 +7,19 @@ use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::infrastructure::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode};
 use crate::foundation::ThresholdError;
+use crate::infrastructure::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode};
 
-pub mod types;
 pub mod ism_client;
+pub mod types;
 
 /// ISM verification mode.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IsmMode {
+    #[default]
     MessageIdMultisig,
     MerkleRootMultisig,
-}
-
-impl Default for IsmMode {
-    fn default() -> Self {
-        IsmMode::MessageIdMultisig
-    }
 }
 
 /// Per-domain validator set and quorum.
@@ -103,10 +98,7 @@ impl ConfiguredIsm {
             return Err(ThresholdError::ConfigError(format!("hyperlane domain {} has no validators", cfg.domain)));
         }
         if cfg.threshold == 0 {
-            return Err(ThresholdError::ConfigError(format!(
-                "hyperlane domain {} requires non-zero threshold",
-                cfg.domain
-            )));
+            return Err(ThresholdError::ConfigError(format!("hyperlane domain {} requires non-zero threshold", cfg.domain)));
         }
         let threshold = cfg.threshold;
         if usize::from(threshold) > validators.len() {
@@ -154,11 +146,8 @@ impl IsmVerifier for ConfiguredIsm {
                 return Err("merkle proof leaf != message_id".to_string());
             }
             let depth = proof.path.len();
-            let checkpoint_index: usize = metadata
-                .checkpoint
-                .index
-                .try_into()
-                .map_err(|_| "checkpoint index too large".to_string())?;
+            let checkpoint_index: usize =
+                metadata.checkpoint.index.try_into().map_err(|_| "checkpoint index too large".to_string())?;
             if proof.index != checkpoint_index {
                 return Err("merkle proof index mismatch checkpoint index".to_string());
             }
@@ -214,7 +203,7 @@ fn recover_validator(secp: &Secp256k1<secp256k1::VerifyOnly>, sig: &Signature, m
         0 | 1 => rec_id_raw,
         v => return Err(format!("invalid recovery id: {} (expected 0, 1, 27, or 28)", v)),
     };
-    let rid_i32: i32 = rec_id.try_into().map_err(|_| "recovery id out of range".to_string())?;
+    let rid_i32: i32 = rec_id.into();
     let rid = secp256k1::ecdsa::RecoveryId::from_i32(rid_i32).map_err(|e| format!("recovery id: {e}"))?;
     let rec_sig = RecoverableSignature::from_compact(&sig_bytes[0..64], rid).map_err(|e| format!("signature parse: {e}"))?;
     secp.recover_ecdsa(msg, &rec_sig).map_err(|e| format!("recover: {e}"))

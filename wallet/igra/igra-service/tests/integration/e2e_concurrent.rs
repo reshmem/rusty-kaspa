@@ -2,7 +2,9 @@
 
 use crate::harness::TestKeyGenerator;
 use igra_core::application::Coordinator;
-use igra_core::domain::pskt::multisig::{apply_partial_sigs, build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
+use igra_core::domain::pskt::multisig::{
+    apply_partial_sigs, build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput,
+};
 use igra_core::domain::signing::threshold::ThresholdSigner;
 use igra_core::domain::signing::SignerBackend;
 use igra_core::domain::{EventSource, PartialSigRecord, RequestDecision, SigningEvent};
@@ -27,8 +29,8 @@ fn build_pskt_blob(redeem_script: &[u8], amount: u64) -> (Vec<u8>, [u8; 32], Vec
     };
     let output = MultisigOutput { amount, script_public_key: kaspa_consensus_core::tx::ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
     let pskt = build_pskt(&[input], &[output]).expect("pskt");
-    let pskt_blob = serialize_pskt(&pskt).expect("serialize pskt");
-    let signer_pskt = pskt.signer();
+    let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize pskt");
+    let signer_pskt = pskt.pskt.signer();
     let tx_hash = tx_template_hash(&signer_pskt).expect("tx hash");
     let per_input = input_hashes(&signer_pskt).expect("input hashes");
     (pskt_blob, tx_hash, per_input)
@@ -108,7 +110,7 @@ async fn test_interleaved_session_processing() {
     for (idx, signer) in signers.iter().enumerate() {
         let sigs_a = signer.sign(&pskt_a, &request_a).expect("sign a");
         let sigs_b = signer.sign(&pskt_b, &request_b).expect("sign b");
-        for sig in sigs_a {
+        for sig in sigs_a.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_a,
@@ -122,7 +124,7 @@ async fn test_interleaved_session_processing() {
                 )
                 .expect("partial a");
         }
-        for sig in sigs_b {
+        for sig in sigs_b.signatures_produced {
             storage
                 .insert_partial_sig(
                     &request_b,
@@ -139,10 +141,8 @@ async fn test_interleaved_session_processing() {
     }
 
     let public_keys = vec![kp1.public_key(), kp2.public_key()];
-    let combined_a =
-        apply_partial_sigs(&pskt_a, &storage.list_partial_sigs(&request_a).expect("partials a")).expect("apply a");
-    let combined_b =
-        apply_partial_sigs(&pskt_b, &storage.list_partial_sigs(&request_b).expect("partials b")).expect("apply b");
+    let combined_a = apply_partial_sigs(&pskt_a, &storage.list_partial_sigs(&request_a).expect("partials a")).expect("apply a");
+    let combined_b = apply_partial_sigs(&pskt_b, &storage.list_partial_sigs(&request_b).expect("partials b")).expect("apply b");
 
     coordinator
         .finalize_and_submit_multisig(
@@ -176,7 +176,9 @@ async fn test_interleaved_session_processing() {
 
 mod legacy_concurrent_sessions_timeout {
     use igra_core::domain::hashes::{event_hash, validation_hash};
-    use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
+    use igra_core::domain::pskt::multisig::{
+        build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput,
+    };
     use igra_core::domain::{EventSource, RequestDecision, SigningEvent, SigningRequest, StoredProposal};
     use igra_core::foundation::{PeerId, RequestId, SessionId};
     use igra_core::infrastructure::config::AppConfig;
@@ -215,8 +217,8 @@ mod legacy_concurrent_sessions_timeout {
         };
         let output = MultisigOutput { amount: 9_000, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) };
         let pskt = build_pskt(&[input], &[output]).expect("pskt");
-        let pskt_blob = serialize_pskt(&pskt).expect("serialize");
-        let signer = pskt.signer();
+        let pskt_blob = serialize_pskt(&pskt.pskt).expect("serialize");
+        let signer = pskt.pskt.signer();
         let hashes = input_hashes(&signer).expect("input hashes");
         (pskt_blob, hashes)
     }

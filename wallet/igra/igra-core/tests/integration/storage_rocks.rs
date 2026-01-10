@@ -1,6 +1,6 @@
 use igra_core::domain::{
-    EventSource, GroupConfig, GroupMetadata, GroupPolicy, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent,
-    SigningRequest, StoredProposal,
+    EventSource, GroupConfig, GroupMetadata, GroupPolicy, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord,
+    SigningEvent, SigningRequest, StoredProposal,
 };
 use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
 use igra_core::infrastructure::storage::{RocksStorage, Storage};
@@ -57,12 +57,7 @@ fn test_storage_rocks_when_roundtrip_then_persists_and_tracks_volume() {
     };
     storage.insert_proposal(&request.request_id, proposal).expect("insert proposal");
 
-    let ack = SignerAckRecord {
-        signer_peer_id: PeerId::from("peer-2"),
-        accept: true,
-        reason: None,
-        timestamp_nanos: 11,
-    };
+    let ack = SignerAckRecord { signer_peer_id: PeerId::from("peer-2"), accept: true, reason: None, timestamp_nanos: 11 };
     storage.insert_signer_ack(&request.request_id, ack).expect("insert ack");
 
     let sig = PartialSigRecord {
@@ -87,9 +82,7 @@ fn test_storage_rocks_when_roundtrip_then_persists_and_tracks_volume() {
     let volume = storage.get_volume_since(5).expect("volume");
     assert_eq!(volume, 100);
 
-    let volume_none = storage
-        .get_volume_since(24 * 60 * 60 * 1_000_000_000u64 + 20)
-        .expect("volume none");
+    let volume_none = storage.get_volume_since(24 * 60 * 60 * 1_000_000_000u64 + 20).expect("volume none");
     assert_eq!(volume_none, 0);
 }
 
@@ -128,13 +121,9 @@ fn test_storage_rocks_when_checkpoint_roundtrip_then_restores() {
     storage.insert_request(request.clone()).expect("insert request");
 
     let checkpoint_dir = TempDir::new().expect("checkpoint dir");
-    storage
-        .create_checkpoint(checkpoint_dir.path())
-        .expect("create checkpoint");
+    storage.create_checkpoint(checkpoint_dir.path()).expect("create checkpoint");
 
     let restored = RocksStorage::open(checkpoint_dir.path()).expect("open checkpoint");
-    let loaded = restored
-        .get_request(&RequestId::from("req-checkpoint"))
-        .expect("get request");
+    let loaded = restored.get_request(&RequestId::from("req-checkpoint")).expect("get request");
     assert!(loaded.is_some());
 }

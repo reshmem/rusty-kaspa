@@ -1,10 +1,9 @@
-use crate::foundation::ThresholdError;
 use crate::domain::{
     GroupConfig, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal,
 };
-use crate::domain::request::state_machine::validate_transition;
-use crate::infrastructure::storage::{BatchTransaction, Storage};
+use crate::foundation::ThresholdError;
 use crate::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
+use crate::infrastructure::storage::{BatchTransaction, Storage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -46,9 +45,7 @@ impl MemoryStorage {
     }
 
     fn lock_inner(&self) -> Result<MutexGuard<'_, MemoryInner>, ThresholdError> {
-        self.inner
-            .lock()
-            .map_err(|_| ThresholdError::StorageError("memory storage lock poisoned".to_string()))
+        self.inner.lock().map_err(|_| ThresholdError::StorageError("memory storage lock poisoned".to_string()))
     }
 }
 
@@ -89,7 +86,7 @@ impl Storage for MemoryStorage {
     fn update_request_decision(&self, request_id: &RequestId, decision: RequestDecision) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         if let Some(req) = inner.request.get_mut(request_id) {
-            validate_transition(&req.decision, &decision)?;
+            crate::domain::request::state_machine::ensure_valid_transition(&req.decision, &decision)?;
             req.decision = decision;
         }
         Ok(())
@@ -144,7 +141,7 @@ impl Storage for MemoryStorage {
                 Some(req) if req.final_tx_id.is_none() => req,
                 _ => return Ok(()),
             };
-            validate_transition(&req.decision, &RequestDecision::Finalized)?;
+            crate::domain::request::state_machine::ensure_valid_transition(&req.decision, &RequestDecision::Finalized)?;
             req.final_tx_id = Some(final_tx_id);
             req.decision = RequestDecision::Finalized;
             req.event_hash // Copy out before borrow ends
@@ -176,9 +173,15 @@ impl Storage for MemoryStorage {
         Err(ThresholdError::Unimplemented("batch transactions are not supported by MemoryStorage".to_string()))
     }
 
-    fn mark_seen_message(&self, sender_peer_id: &PeerId, session_id: &SessionId, seq_no: u64, timestamp_nanos: u64) -> Result<bool, ThresholdError> {
+    fn mark_seen_message(
+        &self,
+        sender_peer_id: &PeerId,
+        session_id: &SessionId,
+        seq_no: u64,
+        timestamp_nanos: u64,
+    ) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
-        let key = (sender_peer_id.clone(), session_id.clone(), seq_no);
+        let key = (sender_peer_id.clone(), *session_id, seq_no);
         Ok(inner.seen.insert(key, timestamp_nanos).is_none())
     }
 

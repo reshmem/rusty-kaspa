@@ -1,6 +1,7 @@
-use crate::foundation::ThresholdError;
-use crate::foundation::Hash32;
+use crate::domain::request::results::StateTransitionResult;
 use crate::domain::{RequestDecision, SigningRequest};
+use crate::foundation::Hash32;
+use crate::foundation::ThresholdError;
 use crate::foundation::{PeerId, RequestId, SessionId, TransactionId};
 use std::marker::PhantomData;
 
@@ -35,16 +36,30 @@ fn decision_state(decision: &RequestDecision) -> DecisionState {
     }
 }
 
-pub fn validate_transition(from: &RequestDecision, to: &RequestDecision) -> Result<(), ThresholdError> {
+pub fn validate_transition(from: &RequestDecision, to: &RequestDecision) -> StateTransitionResult {
     let from_state = decision_state(from);
     let to_state = decision_state(to);
     if from_state == to_state {
-        return Ok(());
+        return StateTransitionResult {
+            valid: true,
+            from_state: format!("{:?}", from),
+            to_state: format!("{:?}", to),
+            transition_reason: Some("no_op".to_string()),
+        };
     }
     if VALID_TRANSITIONS.contains(&(from_state, to_state)) {
-        Ok(())
-    } else {
-        Err(ThresholdError::InvalidStateTransition { from: format!("{:?}", from), to: format!("{:?}", to) })
+        return StateTransitionResult {
+            valid: true,
+            from_state: format!("{:?}", from),
+            to_state: format!("{:?}", to),
+            transition_reason: None,
+        };
+    }
+    StateTransitionResult {
+        valid: false,
+        from_state: format!("{:?}", from),
+        to_state: format!("{:?}", to),
+        transition_reason: Some("not_allowed".to_string()),
     }
 }
 
@@ -143,7 +158,7 @@ fn transition<TargetState>(
     mut inner: SigningRequest,
     next: RequestDecision,
 ) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
-    validate_transition(&inner.decision, &next)?;
+    ensure_valid_transition(&inner.decision, &next)?;
     inner.decision = next;
     Ok(TypedSigningRequest { inner, _state: PhantomData })
 }
@@ -154,11 +169,20 @@ fn transition_with_tx<TargetState>(
     tx_id: Option<TransactionId>,
     accepted_blue_score: Option<u64>,
 ) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
-    validate_transition(&inner.decision, &next)?;
+    ensure_valid_transition(&inner.decision, &next)?;
     inner.decision = next;
     inner.final_tx_id = tx_id;
     inner.final_tx_accepted_blue_score = accepted_blue_score;
     Ok(TypedSigningRequest { inner, _state: PhantomData })
+}
+
+pub fn ensure_valid_transition(from: &RequestDecision, to: &RequestDecision) -> Result<(), ThresholdError> {
+    let transition = validate_transition(from, to);
+    if transition.valid {
+        Ok(())
+    } else {
+        Err(ThresholdError::InvalidStateTransition { from: transition.from_state, to: transition.to_state })
+    }
 }
 
 #[cfg(test)]
@@ -167,14 +191,14 @@ mod tests {
 
     #[test]
     fn test_valid_transitions() {
-        assert!(validate_transition(&RequestDecision::Pending, &RequestDecision::Approved).is_ok());
-        assert!(validate_transition(&RequestDecision::Approved, &RequestDecision::Finalized).is_ok());
+        assert!(validate_transition(&RequestDecision::Pending, &RequestDecision::Approved).valid);
+        assert!(validate_transition(&RequestDecision::Approved, &RequestDecision::Finalized).valid);
     }
 
     #[test]
     fn test_invalid_transitions() {
-        assert!(validate_transition(&RequestDecision::Finalized, &RequestDecision::Pending).is_err());
-        assert!(validate_transition(&RequestDecision::Rejected { reason: "policy".to_string() }, &RequestDecision::Approved).is_err());
+        assert!(!validate_transition(&RequestDecision::Finalized, &RequestDecision::Pending).valid);
+        assert!(!validate_transition(&RequestDecision::Rejected { reason: "policy".to_string() }, &RequestDecision::Approved).valid);
     }
 
     #[test]

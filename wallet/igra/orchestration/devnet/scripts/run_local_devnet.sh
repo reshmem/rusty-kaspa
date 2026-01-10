@@ -176,7 +176,7 @@ BIN_DIR="${RUN_ROOT}/bin"
 
 ENV_FILE="${CONFIG_DIR}/.env"
 IGRA_CONFIG_TEMPLATE=""
-IGRA_CONFIG="${CONFIG_DIR}/igra-config.ini"
+IGRA_CONFIG="${CONFIG_DIR}/igra-config.toml"
 HYPERLANE_KEYS_SRC=""
 HYPERLANE_KEYS="${CONFIG_DIR}/hyperlane-keys.json"
 KEYSET_JSON_TEMPLATE=""
@@ -446,9 +446,19 @@ setup_config_source() {
     config_source="${DEVNET_DIR}"
   fi
 
-  IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet.ini"
+  IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet-template.toml"
   HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
   KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
+
+  # In clone mode, the cloned repo may not match the local branch's orchestration templates.
+  # Prefer local templates when the cloned repo doesn't include the expected TOML files.
+  if [[ ! -f "${IGRA_CONFIG_TEMPLATE}" || ! -f "${HYPERLANE_KEYS_SRC}" || ! -f "${KEYSET_JSON_TEMPLATE}" ]]; then
+    log_warn "Devnet templates missing under ${config_source}; falling back to local templates under ${DEVNET_DIR}"
+    config_source="${DEVNET_DIR}"
+    IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet-template.toml"
+    HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
+    KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
+  fi
 
   log_info "Using config templates from: ${config_source}"
 }
@@ -495,13 +505,13 @@ prepare_igra_config() {
     cp -f "${HYPERLANE_KEYS_SRC}" "${HYPERLANE_KEYS}"
   fi
   if [[ ! -f "${IGRA_CONFIG}" ]]; then
-    log_info "Seeding igra-config.ini from template into ${CONFIG_DIR}"
+    log_info "Seeding igra-config.toml from template into ${CONFIG_DIR}"
     sed \
-      -e "s|/data/igra|${IGRA_DATA}|g" \
+      -e "s|data_dir = \"\"|data_dir = \"${IGRA_DATA}\"|g" \
       -e "s|grpc://kaspad:16110|grpc://127.0.0.1:16110|g" \
       "${IGRA_CONFIG_TEMPLATE}" > "${IGRA_CONFIG}"
   else
-    log_info "Using existing igra-config.ini (not overwriting)"
+    log_info "Using existing igra-config.toml (not overwriting)"
   fi
 }
 
@@ -687,7 +697,7 @@ start_igra() {
       --config "${IGRA_CONFIG}" \
       --data-dir "${profile_data_dir}" \
       --node-url "grpc://127.0.0.1:16110" \
-      --log-level debug
+      --log-level info
 }
 
 start_fake_hyperlane() {
@@ -794,119 +804,6 @@ stop_igra() {
   stop_process "igra-${profile}"
 }
 
-update_bootstrap_from_identities() {
-  local profiles=("signer-1" "signer-2" "signer-3")
-  local ids=()
-  local keyset_json="${KEYSET_JSON}"
-  local keyset_tmp=""
-  if [[ -f "${keyset_json}" ]]; then
-    keyset_tmp="${keyset_json}"
-  else
-    log_warn "Keyset JSON not found at ${keyset_json}; bootstrap update may be incomplete"
-  fi
-  for profile in "${profiles[@]}"; do
-    local id_file="${IGRA_DATA}/${profile}/iroh/identity.json"
-    mkdir -p "$(dirname "${id_file}")"
-    if [[ ! -f "${id_file}" ]]; then
-      if [[ -f "${keyset_tmp}" ]]; then
-        log_info "Seeding missing iroh identity for ${profile} from keyset ${keyset_tmp}"
-        python3 - <<'PY' "${keyset_tmp}" "${profile}" "${id_file}"
-import json, sys, os
-keyset_path, profile, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-data = json.load(open(keyset_path))
-signer = next((s for s in data.get("signers", []) if s.get("profile") == profile), None)
-if not signer:
-    sys.exit(0)
-seed_hex = signer.get("iroh_seed_hex")
-peer_id = signer.get("iroh_peer_id")
-if seed_hex and peer_id:
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump({"peer_id": peer_id, "seed_hex": seed_hex}, f, indent=2)
-PY
-      else
-        log_warn "Missing identity.json for ${profile} and no keyset to derive from; skipping"
-        continue
-      fi
-    fi
-    local pid
-    pid=$(python3 - <<'PY'
-import json, sys
-path = sys.argv[1]
-data = json.load(open(path))
-print(data.get("peer_id","").strip())
-PY
-"${id_file}")
-    if [[ -z "${pid}" ]]; then
-      log_warn "No peer_id in ${id_file}; skipping"
-      continue
-    fi
-    ids+=("${profile}:${pid}")
-  done
-
-  if [[ ${#ids[@]} -lt 2 ]]; then
-    log_warn "Not enough identities to set bootstrap (found ${#ids[@]}); skipping"
-    return
-  fi
-
-  python3 - <<'PY' "${IGRA_CONFIG}" "${IGRA_DATA}" "${ids[@]}"
-import sys
-from pathlib import Path
-
-cfg_path = Path(sys.argv[1])
-profiles_ids = dict(arg.split(":", 1) for arg in sys.argv[3:])
-profiles = list(profiles_ids.keys())
-global_bootstrap = ",".join(profiles_ids.values())
-
-lines = cfg_path.read_text().splitlines()
-out = []
-current = None
-inserted_global = False
-inserted_profiles = {p: False for p in profiles}
-
-def maybe_insert(current_section):
-    global inserted_global, inserted_profiles
-    if current_section == "iroh" and not inserted_global:
-        out.append(f"; generated bootstrap from existing identities")
-        out.append(f"bootstrap = {global_bootstrap}")
-        inserted_global = True
-    if current_section in [f"{p}.iroh" for p in profiles]:
-        p = current_section.split(".")[0]
-        if not inserted_profiles[p]:
-            others = [profiles_ids[o] for o in profiles if o != p]
-            out.append(f"; generated bootstrap from existing identities for {p}")
-            out.append(f"bootstrap = {','.join(others)}")
-            inserted_profiles[p] = True
-
-for line in lines:
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        maybe_insert(current)
-        current = stripped[1:-1]
-        out.append(line)
-        continue
-    key = line.split("=", 1)[0].strip() if "=" in line else ""
-    if key == "bootstrap" and current in (["iroh"] + [f"{p}.iroh" for p in profiles]):
-        continue
-    out.append(line)
-
-maybe_insert(current)
-
-# Ensure sections exist if missing
-if not inserted_global:
-    out.append("[iroh]")
-    maybe_insert("iroh")
-for p in profiles:
-    if not inserted_profiles[p]:
-        out.append(f"[{p}.iroh]")
-        maybe_insert(f"{p}.iroh")
-
-cfg_path.write_text("\n".join(out) + "\n")
-PY
-
-  log_info "Updated bootstrap peers in ${IGRA_CONFIG} from existing identity.json files"
-}
-
 generate_keys() {
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] Would regenerate keys and update configs"
@@ -932,7 +829,7 @@ generate_keys() {
     fi
   fi
 
-  # Force regeneration of igra-config.ini to drop stale bootstrap entries.
+  # Force regeneration of igra-config.toml to drop stale bootstrap entries.
   rm -f "${IGRA_CONFIG}"
 
   local keygen_json

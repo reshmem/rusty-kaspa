@@ -545,76 +545,22 @@ chown <service-user>:<service-group> <data_dir>/iroh/identity.json
 
 ### Configuration Storage
 
-**Initial Format**: INI or TOML file
+**Format**: TOML config file
 
 **Location**:
 - Environment: `KASPA_CONFIG_PATH`
-- Default: `<data_dir>/igra-config.ini` or `igra-config.toml`
+- Default: `<data_dir>/igra-config.toml`
 
-**Persistence**: Configuration migrated to RocksDB on first load
-
-**Migration Flow**:
-```
-igra-config.ini (plaintext mnemonics)
-    ↓ [First Load]
-Encrypt mnemonics with KASPA_IGRA_WALLET_SECRET
-    ↓
-Store in RocksDB (encrypted)
-    ↓
-Remove plaintext mnemonics from INI
-    ↓ [Subsequent Loads]
-Load from RocksDB (decrypt on-demand)
-```
-
-**Implementation** (`igra-core/src/config/persistence.rs:33-68`):
-```rust
-pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, ThresholdError> {
-    let db = open_config_db(&db_path, false)?;
-    let value = db.get(CONFIG_KEY)?;
-
-    match value {
-        Some(bytes) => {
-            let json_value: serde_json::Value = serde_json::from_slice(&bytes)?;
-
-            // Check for legacy plaintext mnemonics
-            let legacy_mnemonics = extract_legacy_mnemonics(&json_value);
-            let mut config: AppConfig = serde_json::from_value(json_value)?;
-
-            // Migrate to encrypted format
-            if let Some(mnemonics) = legacy_mnemonics {
-                if !mnemonics.is_empty() {
-                    let wallet_secret = load_wallet_secret()?;
-                    let payment_secret = config.service.hd
-                        .as_ref()
-                        .and_then(|hd| hd.passphrase.as_deref())
-                        .map(Secret::from);
-
-                    let encrypted = encrypt_mnemonics(
-                        mnemonics,
-                        payment_secret.as_ref(),
-                        &wallet_secret
-                    )?;
-
-                    config.service.hd.as_mut().unwrap().encrypted_mnemonics = Some(encrypted);
-
-                    // Re-save with encrypted version
-                    store_config_in_db(data_dir, &config)?;
-                }
-            }
-
-            Ok(Some(config))
-        }
-        None => Ok(None),
-    }
-}
-```
+Notes:
+- All fields can be overridden via `IGRA_*` env vars (e.g. `IGRA_SERVICE__NODE_RPC_URL`).
+- If `service.hd.mnemonics` is present, the service requires `KASPA_IGRA_WALLET_SECRET` to encrypt/decrypt HD key material.
 
 ### Backup and Recovery
 
 **What to Backup**:
 1. ✅ **Mnemonics**: Write down 12/24-word phrase offline
 2. ✅ **Transport Seed**: Backup `iroh/identity.json` securely
-3. ✅ **Configuration**: Backup `igra-config.ini`
+3. ✅ **Configuration**: Backup `igra-config.toml`
 4. ⚠️ **Database**: Can be reconstructed from blockchain
 
 **Recovery Procedure**:
@@ -623,7 +569,7 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
 systemctl stop igra-coordinator
 
 # 2. Restore configuration
-cp backup/igra-config.ini <data_dir>/igra-config.ini
+cp backup/igra-config.toml <data_dir>/igra-config.toml
 
 # 3. Restore transport identity
 mkdir -p <data_dir>/iroh
@@ -964,13 +910,13 @@ let public_key = child_xpub.public_key();
 kaspa-cli wallet create --generate
 
 # Copy mnemonic to configuration
-# Add to igra-config.ini:
+# Add to igra-config.toml:
 [service.hd]
 mnemonics = ["word1 word2 word3 ..."]
 ```
 
 **Method 2: Import Existing**
-```ini
+```toml
 [service.hd]
 mnemonics = [
     "existing mnemonic phrase from backup..."
@@ -1026,7 +972,7 @@ chmod 600 iroh/identity.json
 **Initial Configuration**:
 ```bash
 # 1. Create configuration
-cat > igra-config.ini <<EOF
+cat > igra-config.toml <<EOF
 [service]
 node_rpc_url = "grpc://localhost:16110"
 data_dir = "/var/lib/igra"
@@ -1043,15 +989,8 @@ export KASPA_IGRA_WALLET_SECRET="your-secure-password-here"
 ./kaspa-threshold-service
 ```
 
-**Post-Encryption**:
-```ini
-# Mnemonics encrypted in RocksDB
-# Remove plaintext from config:
-[service.hd]
-# mnemonics = []  ← Remove this line
-xpubs = ["xpub6F...", "xpub6A..."]
-required_sigs = 2
-```
+**Production Note**:
+- Prefer providing `service.hd.xpubs` and omitting `service.hd.mnemonics` in configuration files.
 
 ### Phase 3: Key Usage
 
@@ -1116,7 +1055,7 @@ let signature = threshold_signer.sign(&keypair, input_hash)?;
 tar czf igra-backup-$(date +%Y%m%d).tar.gz \
     <data_dir>/threshold-signing/ \
     <data_dir>/iroh/ \
-    igra-config.ini
+    igra-config.toml
 
 # Encrypt backup
 gpg --encrypt --recipient your@email.com igra-backup-*.tar.gz
@@ -1174,8 +1113,8 @@ echo "Decommissioned $(date)" >> /var/log/igra/decommission.log
 |----------|---------|----------|---------|---------|
 | `KASPA_IGRA_WALLET_SECRET` | Encrypt HD mnemonics | ✅ Yes (if using mnemonics) | - | `devnet-test-secret-please-change` |
 | `KASPA_DATA_DIR` | Data directory | No | `<cwd>/.igra` | `/var/lib/igra` |
-| `KASPA_CONFIG_PATH` | Config file path | No | `<data_dir>/igra-config.ini` | `/etc/igra/config.ini` |
-| `KASPA_NODE_URL` | Kaspad RPC URL | No | Config file | `grpc://localhost:16110` |
+| `KASPA_CONFIG_PATH` | Config file path | No | `<data_dir>/igra-config.toml` | `/etc/igra/config.toml` |
+| `IGRA_SERVICE__NODE_RPC_URL` | Kaspad RPC URL override | No | Config file | `grpc://localhost:16110` |
 | `KASPA_IGRA_PEER_ID` | Transport peer ID | No | Auto-generated | `coordinator-alice` |
 | `KASPA_IGRA_SIGNER_SEED_HEX` | Transport seed | No | Auto-generated | `0123456789abcdef...` |
 | `KASPA_IGRA_TEST_NOW_NANOS` | Mock time (testing) | No | System time | `1700000000000000000` |
@@ -1215,7 +1154,7 @@ chown igra:igra /etc/igra/secrets.env
 ```bash
 export KASPA_IGRA_WALLET_SECRET="devnet-test-secret-please-change"
 export KASPA_DATA_DIR="./test-data"
-export KASPA_NODE_URL="grpc://localhost:16110"
+export IGRA_SERVICE__NODE_RPC_URL="grpc://localhost:16110"
 ```
 
 **Docker Compose**:
@@ -1297,8 +1236,8 @@ systemctl start igra-coordinator
 **File Permissions**:
 ```bash
 # Configuration files
-chmod 640 igra-config.ini
-chown igra:igra igra-config.ini
+chmod 640 igra-config.toml
+chown igra:igra igra-config.toml
 
 # Data directory
 chmod 700 /var/lib/igra
@@ -1350,14 +1289,14 @@ openssl rand -hex 32
 **Configuration Distribution**:
 ```bash
 # Encrypt configuration for transfer
-gpg --encrypt --recipient coordinator@example.com config.ini.gpg
+gpg --encrypt --recipient coordinator@example.com config.toml.gpg
 
 # Transfer over secure channel
-scp config.ini.gpg coordinator@server:/tmp/
+scp config.toml.gpg coordinator@server:/tmp/
 
 # Decrypt on destination
-gpg --decrypt config.ini.gpg > /etc/igra/config.ini
-shred -vfz config.ini.gpg
+gpg --decrypt config.toml.gpg > /etc/igra/config.toml
+shred -vfz config.toml.gpg
 ```
 
 ### Principle 5: Key Lifecycle Management
@@ -1452,7 +1391,7 @@ kaspa-cli wallet create --generate
 # WRITE DOWN AND STORE SECURELY
 
 # 2. Create configuration file
-cat > /etc/igra/config.ini <<EOF
+cat > /etc/igra/config.toml <<EOF
 [service]
 node_rpc_url = "grpc://localhost:16110"
 data_dir = "/var/lib/igra"
@@ -1469,8 +1408,8 @@ bootstrap = ["peer1:9000", "peer2:9000"]
 EOF
 
 # 3. Set file permissions
-chmod 640 /etc/igra/config.ini
-chown igra:igra /etc/igra/config.ini
+chmod 640 /etc/igra/config.toml
+chown igra:igra /etc/igra/config.toml
 
 # 4. Generate secure wallet secret
 openssl rand -base64 32 > /tmp/wallet_secret.txt
@@ -1479,7 +1418,7 @@ openssl rand -base64 32 > /tmp/wallet_secret.txt
 cat > /etc/igra/secrets.env <<EOF
 KASPA_IGRA_WALLET_SECRET=$(cat /tmp/wallet_secret.txt)
 KASPA_DATA_DIR=/var/lib/igra
-KASPA_CONFIG_PATH=/etc/igra/config.ini
+KASPA_CONFIG_PATH=/etc/igra/config.toml
 EOF
 
 chmod 600 /etc/igra/secrets.env
@@ -2120,4 +2059,3 @@ chown -R igra:igra /var/lib/igra /etc/igra
 **Document Classification**: Security-Sensitive
 **Distribution**: Internal Use Only
 **Next Review**: 2026-03-31
-

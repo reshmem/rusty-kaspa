@@ -30,10 +30,7 @@ fn test_input(amount: u64, redeem_script: &[u8]) -> MultisigInput {
 }
 
 fn test_output(amount: u64) -> MultisigOutput {
-    MultisigOutput {
-        amount,
-        script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]),
-    }
+    MultisigOutput { amount, script_public_key: ScriptPublicKey::from_vec(0, vec![1, 2, 3]) }
 }
 
 #[test]
@@ -44,8 +41,8 @@ fn test_pskt_builder_when_same_inputs_then_serialization_is_deterministic() {
 
     let pskt_a = build_pskt(&inputs, &outputs).expect("pskt a");
     let pskt_b = build_pskt(&inputs, &outputs).expect("pskt b");
-    let bytes_a = serialize_pskt(&pskt_a).expect("serialize a");
-    let bytes_b = serialize_pskt(&pskt_b).expect("serialize b");
+    let bytes_a = serialize_pskt(&pskt_a.pskt).expect("serialize a");
+    let bytes_b = serialize_pskt(&pskt_b.pskt).expect("serialize b");
     assert_eq!(bytes_a, bytes_b);
 
     let signer = deserialize_pskt_signer(&bytes_a).expect("deserialize");

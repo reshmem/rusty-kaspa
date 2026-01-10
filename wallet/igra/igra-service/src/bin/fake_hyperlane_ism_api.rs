@@ -194,10 +194,7 @@ async fn main() -> Result<(), String> {
 
     let client = Client::new();
     loop {
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
         let nonce: u32 = slot.try_into().unwrap_or(u32::MAX);
         let version = 3u8;

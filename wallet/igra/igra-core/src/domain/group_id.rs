@@ -2,7 +2,23 @@ use crate::domain::model::GroupConfig;
 use crate::foundation::{Hash32, ThresholdError};
 use bincode::Options;
 
-pub fn compute_group_id(config: &GroupConfig) -> Result<Hash32, ThresholdError> {
+#[derive(Debug, Clone)]
+pub struct GroupIdComputationResult {
+    pub group_id: Hash32,
+    pub member_count: usize,
+    pub threshold_m: u16,
+    pub threshold_n: u16,
+    pub network_id: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupIdVerificationResult {
+    pub matches: bool,
+    pub computed: Hash32,
+    pub expected: Hash32,
+}
+
+pub fn compute_group_id(config: &GroupConfig) -> Result<GroupIdComputationResult, ThresholdError> {
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(&config.threshold_m.to_le_bytes());
@@ -27,10 +43,16 @@ pub fn compute_group_id(config: &GroupConfig) -> Result<Hash32, ThresholdError> 
     let policy = bincode::DefaultOptions::new().with_fixint_encoding().serialize(&config.policy)?;
     hasher.update(&policy);
 
-    Ok(*hasher.finalize().as_bytes())
+    Ok(GroupIdComputationResult {
+        group_id: *hasher.finalize().as_bytes(),
+        member_count: config.member_pubkeys.len(),
+        threshold_m: config.threshold_m,
+        threshold_n: config.threshold_n,
+        network_id: config.network_id,
+    })
 }
 
-pub fn verify_group_id(config: &GroupConfig, expected: &Hash32) -> Result<bool, ThresholdError> {
-    Ok(&compute_group_id(config)? == expected)
+pub fn verify_group_id(config: &GroupConfig, expected: &Hash32) -> Result<GroupIdVerificationResult, ThresholdError> {
+    let computed = compute_group_id(config)?.group_id;
+    Ok(GroupIdVerificationResult { matches: &computed == expected, computed, expected: *expected })
 }
-
