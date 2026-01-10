@@ -28,7 +28,7 @@ const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000
 
 #[allow(dead_code)]
 fn now_nanos() -> u64 {
-    igra_core::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
+    igra_core::foundation::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
 }
 
 #[allow(dead_code)]

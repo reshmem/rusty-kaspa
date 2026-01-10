@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::hint::black_box;
 use subtle::ConstantTimeEq;
 
 fn mean(values: &[u128]) -> f64 {
@@ -25,31 +26,32 @@ fn test_constant_time_hash_comparison() {
     let mut hash2_differ_late = [0u8; 32];
     hash2_differ_late[31] = 1;
 
-    for _ in 0..1000 {
-        let _ = bool::from(hash1.ct_eq(&hash2_match));
-        let _ = bool::from(hash1.ct_eq(&hash2_differ_early));
-        let _ = bool::from(hash1.ct_eq(&hash2_differ_late));
-    }
+    const SAMPLES: usize = 200;
+    const INNER: usize = 10_000;
 
-    let mut match_times = Vec::with_capacity(5000);
-    let mut differ_early_times = Vec::with_capacity(5000);
-    let mut differ_late_times = Vec::with_capacity(5000);
+    let measure = |b: &[u8; 32]| -> Vec<u128> {
+        let mut times = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let start = Instant::now();
+            let mut acc = 0u8;
+            for _ in 0..INNER {
+                let eq = bool::from(black_box(hash1).ct_eq(black_box(b)));
+                acc ^= eq as u8;
+            }
+            black_box(acc);
+            times.push(start.elapsed().as_nanos());
+        }
+        times
+    };
 
-    for _ in 0..5000 {
-        let start = Instant::now();
-        let _ = bool::from(hash1.ct_eq(&hash2_match));
-        match_times.push(start.elapsed().as_nanos());
-    }
-    for _ in 0..5000 {
-        let start = Instant::now();
-        let _ = bool::from(hash1.ct_eq(&hash2_differ_early));
-        differ_early_times.push(start.elapsed().as_nanos());
-    }
-    for _ in 0..5000 {
-        let start = Instant::now();
-        let _ = bool::from(hash1.ct_eq(&hash2_differ_late));
-        differ_late_times.push(start.elapsed().as_nanos());
-    }
+    // Warmup caches/jit effects.
+    let _ = measure(&hash2_match);
+    let _ = measure(&hash2_differ_early);
+    let _ = measure(&hash2_differ_late);
+
+    let match_times = measure(&hash2_match);
+    let differ_early_times = measure(&hash2_differ_early);
+    let differ_late_times = measure(&hash2_differ_late);
 
     let match_mean = mean(&match_times);
     let early_mean = mean(&differ_early_times);

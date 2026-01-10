@@ -1,14 +1,14 @@
 use blake3::Hash;
-use igra_core::coordination::hashes::event_hash_without_signature;
-use igra_core::event::{SigningEventParams, SigningEventWire};
-use igra_core::model::{EventSource, SigningEvent};
+use igra_core::domain::hashes::event_hash_without_signature;
+use igra_core::infrastructure::event::{SigningEventParams, SigningEventWire};
+use igra_core::domain::{EventSource, SigningEvent};
 use reqwest::Client;
 use secp256k1::{Message, Secp256k1, SecretKey};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::time::sleep;
 
 #[derive(Deserialize)]
@@ -24,10 +24,7 @@ struct HyperlaneValidator {
 }
 
 fn now_nanos() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_nanos() as u64
+    igra_core::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
 }
 
 fn hash_to_hex(hash: Hash) -> String {

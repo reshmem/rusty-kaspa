@@ -19,6 +19,7 @@ configparser = "1.0.0"
 ed25519-dalek = "2.1.1"
 futures-util.workspace = true
 hex.workspace = true
+once_cell.workspace = true
 kaspa-addresses.workspace = true
 kaspa-bip32.workspace = true
 kaspa-consensus-core.workspace = true
@@ -44,6 +45,9 @@ hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo.gi
 secp256k1 = { workspace = true, features = ["recovery"] }
 uuid = { version = "1.11.0", features = ["v4", "serde"], optional = true }
 rand.workspace = true
+iroh = "0.95.1"
+iroh-gossip = "0.95.0"
+iroh-base = "0.95.1"
 
 [dev-dependencies]
 tempfile.workspace = true

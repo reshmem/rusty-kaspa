@@ -1,11 +1,11 @@
-use igra_core::config;
-use igra_core::error::ThresholdError;
-use igra_core::pskt::multisig as pskt_multisig;
-use igra_core::rpc::grpc::GrpcNodeRpc;
-use igra_core::rpc::NodeRpc;
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::RequestId;
+use igra_core::infrastructure::config;
+use igra_core::foundation::ThresholdError;
+use igra_core::domain::pskt::multisig as pskt_multisig;
+use igra_core::infrastructure::rpc::GrpcNodeRpc;
+use igra_core::infrastructure::rpc::NodeRpc;
+use igra_core::infrastructure::storage::rocks::RocksStorage;
+use igra_core::infrastructure::storage::Storage;
+use igra_core::foundation::RequestId;
 use igra_service::service::coordination;
 use serde::Deserialize;
 use std::path::Path;
@@ -44,7 +44,7 @@ pub async fn finalize_from_json(
     let tx = pskt_multisig::extract_tx(finalizer, params)?;
     let rpc = GrpcNodeRpc::connect(app_config.service.node_rpc_url.clone()).await?;
     let tx_id = rpc.submit_transaction(tx).await?;
-    storage.update_request_final_tx(&request_id, igra_core::types::TransactionId::from(tx_id))?;
+    storage.update_request_final_tx(&request_id, igra_core::foundation::TransactionId::from(tx_id))?;
 
     tracing::info!("Transaction submitted: {}", tx_id);
     println!("Transaction ID: {}", tx_id);

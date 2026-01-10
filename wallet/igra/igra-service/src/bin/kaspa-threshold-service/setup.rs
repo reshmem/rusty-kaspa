@@ -1,11 +1,11 @@
 use ed25519_dalek::VerifyingKey;
-use igra_core::config::AppConfig;
-use igra_core::error::ThresholdError;
-use igra_core::group_id::compute_group_id;
-use igra_core::model::Hash32;
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
-use igra_core::types::PeerId;
+use igra_core::infrastructure::config::AppConfig;
+use igra_core::foundation::ThresholdError;
+use igra_core::domain::group_id::compute_group_id;
+use igra_core::foundation::Hash32;
+use igra_core::infrastructure::storage::rocks::RocksStorage;
+use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
+use igra_core::foundation::PeerId;
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -21,12 +21,12 @@ pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(true).with_thread_ids(true).try_init();
-    igra_core::audit::init_audit_logger(Box::new(igra_core::audit::StructuredAuditLogger));
+    igra_core::infrastructure::audit::init_audit_logger(Box::new(igra_core::infrastructure::audit::StructuredAuditLogger));
     Ok(())
 }
 
 pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
-    let app_config = Arc::new(igra_core::config::load_app_config()?);
+    let app_config = Arc::new(igra_core::infrastructure::config::load_app_config()?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
             warn!("config validation error: {}", err);
@@ -36,7 +36,7 @@ pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
 }
 
 pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<Arc<AppConfig>, ThresholdError> {
-    let app_config = Arc::new(igra_core::config::load_app_config_from_profile_path(path, profile)?);
+    let app_config = Arc::new(igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile)?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
             warn!("config validation error: {}", err);

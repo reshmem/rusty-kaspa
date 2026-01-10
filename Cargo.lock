@@ -3107,6 +3107,9 @@ dependencies = [
  "futures-util",
  "hex",
  "hyperlane-core",
+ "iroh",
+ "iroh-base",
+ "iroh-gossip",
  "kaspa-addresses",
  "kaspa-bip32",
  "kaspa-consensus-core",
@@ -3118,6 +3121,8 @@ dependencies = [
  "kaspa-wallet-core",
  "kaspa-wallet-keys",
  "kaspa-wallet-pskt",
+ "once_cell",
+ "parking_lot",
  "rand 0.8.5",
  "rocksdb",
  "secp256k1",
@@ -3174,6 +3179,7 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.11.0",
 ]
 
 [[package]]

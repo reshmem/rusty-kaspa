@@ -1,0 +1,10 @@
+//! Infrastructure layer: I/O and external integrations.
+
+pub mod audit;
+pub mod config;
+pub mod hyperlane;
+// kaspa_integration moved under rpc
+// rate limiter moved under transport
+pub mod rpc;
+pub mod storage;
+pub mod transport;

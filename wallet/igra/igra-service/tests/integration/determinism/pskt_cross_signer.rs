@@ -1,11 +1,9 @@
-use crate::integration_harness::mock_node::MockKaspaNode;
-use crate::integration_harness::test_data::TestDataFactory;
-use crate::integration_harness::test_keys::TestKeyGenerator;
-use igra_core::config::{PsktBuildConfig, PsktOutput};
-use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::model::{EventSource, FeePaymentMode, SigningEvent};
-use igra_core::pskt::builder::build_pskt_with_client;
-use igra_core::pskt::multisig::{input_hashes, serialize_pskt, to_signer, tx_template_hash};
+use crate::harness::{MockKaspaNode, TestDataFactory, TestKeyGenerator};
+use igra_core::infrastructure::config::{PsktBuildConfig, PsktOutput};
+use igra_core::domain::hashes::{event_hash, validation_hash};
+use igra_core::domain::{EventSource, FeePaymentMode, SigningEvent};
+use igra_core::domain::pskt::multisig::{input_hashes, serialize_pskt, to_signer, tx_template_hash};
+use igra_core::infrastructure::rpc::kaspa_integration::build_pskt_with_client;
 use kaspa_addresses::Prefix;
 use std::collections::BTreeMap;
 

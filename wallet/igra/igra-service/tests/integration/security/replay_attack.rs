@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use igra_core::error::ThresholdError;
-use igra_core::event::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
-use igra_core::model::{EventSource, Hash32, SigningEvent};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::types::{PeerId, RequestId, SessionId};
-use igra_core::validation::NoopVerifier;
+use igra_core::application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
+use igra_core::domain::validation::NoopVerifier;
+use igra_core::domain::{EventSource, SigningEvent};
+use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
+use igra_core::infrastructure::config::ServiceConfig;
+use igra_core::infrastructure::storage::RocksStorage;
+use igra_core::ThresholdError;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -15,7 +16,7 @@ struct DummyProcessor;
 impl EventProcessor for DummyProcessor {
     async fn handle_signing_event(
         &self,
-        _config: &igra_core::config::ServiceConfig,
+        _config: &ServiceConfig,
         _session_id: SessionId,
         _request_id: RequestId,
         _signing_event: SigningEvent,
@@ -66,7 +67,7 @@ async fn replay_attack_is_rejected() {
 
     let ctx = EventContext {
         processor: Arc::new(DummyProcessor),
-        config: igra_core::config::ServiceConfig::default(),
+        config: ServiceConfig::default(),
         message_verifier: Arc::new(NoopVerifier),
         storage: storage.clone(),
     };

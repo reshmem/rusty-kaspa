@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
-use igra_core::error::ThresholdError;
-use igra_core::group_id::compute_group_id;
-use igra_core::model::{GroupConfig, GroupMetadata, GroupPolicy};
+use igra_core::foundation::ThresholdError;
+use igra_core::domain::group_id::compute_group_id;
+use igra_core::domain::{GroupConfig, GroupMetadata, GroupPolicy};
 use kaspa_addresses::Prefix;
 use kaspa_bip32::{AddressType, ChildNumber, ExtendedPrivateKey, Language, Mnemonic, WordCount};
 use kaspa_wallet_core::derivation::create_multisig_address;
@@ -124,11 +124,11 @@ fn main() -> Result<(), ThresholdError> {
     };
 
     // Signers
-    let derivation_path = igra_core::hd::derivation_path_from_index(0);
+    let derivation_path = igra_core::foundation::derivation_path_from_index(0);
     let payment_secret = None::<Secret>;
     let mut signers = Vec::new();
     let mut member_pubkeys = Vec::new();
-    let mut source_addresses = Vec::new();
+    let mut source_addresses: Vec<String> = Vec::new();
 
     for (i, profile) in ["signer-1", "signer-2", "signer-3"].iter().enumerate() {
         let mnemonic = mnemonic_phrase()?;
@@ -172,14 +172,14 @@ fn main() -> Result<(), ThresholdError> {
                 .map_err(|e| ThresholdError::Message(format!("prv: {e}")))
         })
         .collect::<Result<_, _>>()?;
-    let pubkeys = igra_core::hd::derive_pubkeys(igra_core::hd::HdInputs {
+    let pubkeys = igra_core::foundation::derive_pubkeys(igra_core::foundation::HdInputs {
         key_data: &prv_keys,
         xpubs: &[],
         derivation_path: &derivation_path,
         payment_secret: payment_secret.as_ref(),
     })
     .expect("derive pubkeys");
-    let redeem_script = igra_core::hd::redeem_script_from_pubkeys(&pubkeys, 2).expect("redeem");
+    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2).expect("redeem");
     let redeem_script_hex = hex::encode(redeem_script);
 
     let multisig_address = {

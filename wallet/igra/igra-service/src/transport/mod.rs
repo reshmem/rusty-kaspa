@@ -1,3 +1,3 @@
-pub use igra_core::transport::*;
+pub use igra_core::infrastructure::transport::*;
 
 pub mod iroh;

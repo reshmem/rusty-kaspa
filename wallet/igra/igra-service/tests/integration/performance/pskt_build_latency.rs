@@ -5,13 +5,10 @@ use kaspa_wallet_core::prelude::Address;
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use std::time::Instant;
 
-use igra_core::config::{PsktBuildConfig, PsktOutput};
-use igra_core::pskt::builder::build_pskt_with_client;
-use igra_core::rpc::UtxoWithOutpoint;
-
-#[path = "../../integration_harness/mock_node.rs"]
-mod mock_node;
-use mock_node::MockKaspaNode;
+use igra_core::infrastructure::config::{PsktBuildConfig, PsktOutput};
+use igra_core::infrastructure::rpc::kaspa_integration::build_pskt_with_client;
+use igra_core::infrastructure::rpc::UtxoWithOutpoint;
+use crate::harness::MockKaspaNode;
 
 fn test_keypair(seed: u8) -> Keypair {
     let secp = Secp256k1::new();
@@ -51,7 +48,7 @@ async fn pskt_build_latency_smoke() {
         redeem_script_hex: redeem_script_hex(),
         sig_op_count: 2,
         outputs: vec![PsktOutput { address: address.to_string(), amount_sompi: 10_000_000 }],
-        fee_payment_mode: igra_core::model::FeePaymentMode::RecipientPays,
+        fee_payment_mode: igra_core::domain::FeePaymentMode::RecipientPays,
         fee_sompi: Some(0),
         change_address: None,
     };

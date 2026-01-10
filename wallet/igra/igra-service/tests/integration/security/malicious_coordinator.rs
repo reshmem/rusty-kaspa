@@ -1,11 +1,11 @@
-use igra_core::coordination::hashes::{event_hash, validation_hash};
-use igra_core::coordination::signer::{ProposalValidationRequestBuilder, Signer};
-use igra_core::model::{EventSource, SigningEvent};
-use igra_core::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::transport::mock::{MockHub, MockTransport};
-use igra_core::types::{PeerId, RequestId, SessionId};
+use igra_core::domain::hashes::{event_hash, validation_hash};
+use igra_core::application::signer::ProposalValidationRequestBuilder;
+use igra_core::application::Signer;
+use igra_core::domain::pskt::multisig::{build_pskt, input_hashes, serialize_pskt, tx_template_hash, MultisigInput, MultisigOutput};
+use igra_core::domain::{EventSource, SigningEvent};
+use igra_core::foundation::{PeerId, RequestId, SessionId};
+use igra_core::infrastructure::storage::{RocksStorage, Storage};
+use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
 use kaspa_consensus_core::tx::{TransactionId as KaspaTransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::pay_to_address_script;
 use kaspa_txscript::standard::multisig_redeem_script;
@@ -87,6 +87,8 @@ async fn malicious_coordinator_tampered_pskt_is_rejected() {
     let ack = signer
         .validate_proposal(
             ProposalValidationRequestBuilder::new(request_id.clone(), SessionId::from([1u8; 32]), event.clone())
+                .expected_group_id([7u8; 32])
+                .proposal_group_id([7u8; 32])
                 .expected_event_hash(expected_event_hash)
                 .kpsbt_blob(&tampered_blob)
                 .tx_template_hash(tx_hash)
@@ -95,6 +97,7 @@ async fn malicious_coordinator_tampered_pskt_is_rejected() {
                 .expires_at_nanos(0)
                 .build()
                 .expect("build request"),
+            &PeerId::from("peer-1"),
         )
         .expect("validate proposal");
 

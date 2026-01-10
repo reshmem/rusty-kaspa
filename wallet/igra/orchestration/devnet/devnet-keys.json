@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-01-07T11:23:00.312995Z",
+  "wallet": {
+    "mnemonic": "shop february result frozen recycle seek empty pilot mercy churn easy close hire gun tool fury budget bone elevator twist time other story truly",
+    "password": "devnet",
+    "name": "devnet",
+    "mining_address": "kaspadev:qqdev6832dse2jzg8dsgr52769argfxav8x36wkh3c5j57wt7vk92gsr3vjwl"
+  },
+  "signers": [
+    {
+      "profile": "signer-1",
+      "mnemonic": "similar spray talent card cradle word have rather invite target version ready unit laugh simple exact hotel blood fault hover country orbit dose accuse",
+      "iroh_seed_hex": "65a408b407328577681a004b5ac2b7df5f987434028bee297c6bd735ac5f5cb2",
+      "pubkey_hex": "02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+      "address": "kaspadev:qzczw26cseqrcrsneqlhlfv4v7a9pvrukvwaw22fst7czc8ef42wyhn89ljng",
+      "derivation_path": "m/45'/111111'/0'/0/0"
+    },
+    {
+      "profile": "signer-2",
+      "mnemonic": "network put there gesture rally language zebra tank elite current course rigid spike upgrade ring mouse admit gossip rate shoe bachelor process rare rally",
+      "iroh_seed_hex": "c34061c079b8fba669434f6cf4bb991dfaa778229cd56cc2ca9e324f65c12a59",
+      "pubkey_hex": "03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+      "address": "kaspadev:qry8ulj79u03v9u2fcfsd2wass7f3qf7uqdw0v26s8350hn0r0zsq46qjpfm6",
+      "derivation_path": "m/45'/111111'/0'/0/0"
+    },
+    {
+      "profile": "signer-3",
+      "mnemonic": "lizard surround smoke begin imitate mercy inmate illness alley airport ramp gap toward focus blouse fee define odor orchard never dilemma mistake buffalo salute",
+      "iroh_seed_hex": "a951310c4bede986d9fb7e72c083d0ba4a3e816327202922bacfe9cad8e31462",
+      "pubkey_hex": "03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54",
+      "address": "kaspadev:qrxtrqa8vq367ly4tgu92f5w53jx65sn4mqu7qdxtjgypfvcwq09g00qshsup",
+      "derivation_path": "m/45'/111111'/0'/0/0"
+    }
+  ],
+  "member_pubkeys": [
+    "02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+    "03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+    "03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
+  ],
+  "redeem_script_hex": "52209601e15ab924f7a5d190470b7492da636f647c7a8aca3af0ec276682edc75a0c205fc5f218b3af774cf90a8653a8b5c2d660fe4c99c88a1cde3456931084ea757220bd41eee6070aeabfbf78dab23ab89ff53e3f018f2b77786dc846dd0a7734cf2d53ae",
+  "source_addresses": [
+    "kaspadev:qzczw26cseqrcrsneqlhlfv4v7a9pvrukvwaw22fst7czc8ef42wyhn89ljng",
+    "kaspadev:qry8ulj79u03v9u2fcfsd2wass7f3qf7uqdw0v26s8350hn0r0zsq46qjpfm6",
+    "kaspadev:qrxtrqa8vq367ly4tgu92f5w53jx65sn4mqu7qdxtjgypfvcwq09g00qshsup"
+  ],
+  "change_address": "kaspadev:qzczw26cseqrcrsneqlhlfv4v7a9pvrukvwaw22fst7czc8ef42wyhn89ljng",
+  "hyperlane_keys": [
+    {
+      "name": "validator-1",
+      "private_key_hex": "3ce2c6ad9be681ebad802ed28421efe2cb8afe81854a56303e1945b408288a6d",
+      "public_key_hex": "039f2a9fc209ba1799fc5357fe5dfca854dde929fd89dd79060a681c34d7aea00a"
+    },
+    {
+      "name": "validator-2",
+      "private_key_hex": "3121152508ebc49a28759172e856f108879990533dd74f233636c7bfb2c363e3",
+      "public_key_hex": "021cfecd890cda594d5c0e14ee6fb4669a93c37e6a502dc847609fcd4f8fc99e34"
+    }
+  ]
+}

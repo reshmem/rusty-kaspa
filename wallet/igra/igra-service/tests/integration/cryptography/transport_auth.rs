@@ -1,8 +1,8 @@
 use bincode::Options;
 use ed25519_dalek::{Signer, SigningKey, Verifier};
-use igra_core::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
-use igra_core::transport::{FinalizeNotice, MessageEnvelope, SignatureSigner, SignatureVerifier, TransportMessage};
-use igra_core::types::{PeerId, RequestId, SessionId};
+use igra_core::foundation::{PeerId, RequestId, SessionId};
+use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
+use igra_core::infrastructure::transport::{FinalizeNotice, MessageEnvelope, SignatureSigner, SignatureVerifier, TransportMessage};
 use std::collections::HashMap;
 
 fn payload_hash(payload: &TransportMessage) -> [u8; 32] {

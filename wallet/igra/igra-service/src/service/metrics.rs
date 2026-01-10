@@ -1,4 +1,4 @@
-use igra_core::error::ThresholdError;
+use igra_core::foundation::ThresholdError;
 use prometheus::{Encoder, IntCounter, IntCounterVec, Registry, TextEncoder};
 
 pub struct Metrics {

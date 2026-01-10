@@ -1,8 +1,7 @@
-use igra_core::coordination::hashes::event_hash;
-use igra_core::model::{EventSource, RequestDecision, SigningEvent, SigningRequest};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::{PeerId, RequestId, SessionId, TransactionId};
+use igra_core::domain::hashes::event_hash;
+use igra_core::domain::{EventSource, RequestDecision, SigningEvent, SigningRequest};
+use igra_core::foundation::{PeerId, RequestId, SessionId, TransactionId};
+use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 

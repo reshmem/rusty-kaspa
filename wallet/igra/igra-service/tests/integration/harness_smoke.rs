@@ -1,8 +1,5 @@
-#[path = "../integration_harness/mod.rs"]
-mod integration_harness;
-
-use integration_harness::mock_node::MockKaspaNode;
-use igra_core::rpc::NodeRpc;
+use crate::harness::MockKaspaNode;
+use igra_core::infrastructure::rpc::NodeRpc;
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, TransactionId, UtxoEntry};
 use kaspa_txscript::pay_to_address_script;
@@ -16,7 +13,7 @@ async fn mock_node_tracks_utxos_and_submissions() {
     let outpoint = TransactionOutpoint::new(TransactionId::from_slice(&[1u8; 32]), 0);
     let entry = UtxoEntry::new(10_000, pay_to_address_script(&address), 0, false);
 
-    node.add_utxo(igra_core::rpc::UtxoWithOutpoint {
+    node.add_utxo(igra_core::infrastructure::rpc::UtxoWithOutpoint {
         address: Some(address.clone()),
         outpoint,
         entry,

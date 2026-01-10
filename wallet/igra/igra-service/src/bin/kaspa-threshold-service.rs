@@ -6,11 +6,11 @@ mod modes;
 mod setup;
 
 use crate::cli::Cli;
-use igra_core::config::{derive_redeem_script_hex, PsktOutput};
-use igra_core::error::ThresholdError;
-use igra_core::event::EventContext;
-use igra_core::hyperlane::ism::ConfiguredIsm;
-use igra_core::validation::{parse_validator_pubkeys, CompositeVerifier};
+use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktOutput};
+use igra_core::foundation::ThresholdError;
+use igra_core::application::EventContext;
+use igra_core::infrastructure::hyperlane::ConfiguredIsm;
+use igra_core::domain::validation::{parse_validator_pubkeys, CompositeVerifier};
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
 use igra_service::service::coordination::run_coordination_loop;
 use igra_service::service::flow::ServiceFlow;
@@ -28,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // If a profile is provided (via KASPA_IGRA_PROFILE), load the profiled section of the INI.
     let app_config = if let Ok(profile) = std::env::var("KASPA_IGRA_PROFILE") {
-        let data_dir = igra_core::config::resolve_data_dir()?;
-        let config_path = igra_core::config::resolve_config_path(&data_dir)?;
+        let data_dir = igra_core::infrastructure::config::resolve_data_dir()?;
+        let config_path = igra_core::infrastructure::config::resolve_config_path(&data_dir)?;
         setup::load_app_config_profile(&config_path, profile.trim())?
     } else {
         setup::load_app_config()?
@@ -41,13 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = setup::init_storage(&app_config.service.data_dir)?;
 
-    let audit_id = args.audit.clone().or_else(igra_core::config::get_audit_request_id);
+    let audit_id = args.audit.clone().or_else(igra_core::infrastructure::config::get_audit_request_id);
     if let Some(request_id) = audit_id {
         modes::audit::dump_audit_trail(&request_id, &storage)?;
         return Ok(());
     }
 
-    let finalize_path = args.finalize.clone().or_else(igra_core::config::get_finalize_pskt_json_path);
+    let finalize_path = args.finalize.clone().or_else(igra_core::infrastructure::config::get_finalize_pskt_json_path);
     if let Some(path) = finalize_path {
         modes::finalize::finalize_from_json(&path, &storage, &app_config).await?;
         return Ok(());
@@ -100,9 +100,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rpc_token: app_config.rpc.token.clone(),
             node_rpc_url: app_config.service.node_rpc_url.clone(),
             metrics,
+            rate_limiter: Arc::new(igra_service::api::RateLimiter::new()),
             hyperlane_ism,
             group_id_hex,
             coordinator_peer_id: peer_id_for_state.to_string(),
+            hyperlane_default_derivation_path: app_config
+                .hyperlane
+                .default_derivation_path
+                .clone()
+                .unwrap_or_else(|| "m/45h/111111h/0h/0/0".to_string()),
+            rate_limit_rps: app_config.rpc.rate_limit_rps.unwrap_or(30),
+            rate_limit_burst: app_config.rpc.rate_limit_burst.unwrap_or(60),
+            session_expiry_seconds: app_config.runtime.session_expiry_seconds.unwrap_or(600),
         });
 
         let rpc_state_for_server = rpc_state.clone();
@@ -128,7 +137,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_test_pskt_mode(app_config: &igra_core::config::AppConfig, _flow: &ServiceFlow) -> Result<(), ThresholdError> {
+async fn run_test_pskt_mode(
+    app_config: &igra_core::infrastructure::config::AppConfig,
+    _flow: &ServiceFlow,
+) -> Result<(), ThresholdError> {
     let runtime = &app_config.runtime;
     let recipient = runtime.test_recipient.clone().unwrap_or_default();
     let amount_sompi = runtime.test_amount_sompi.unwrap_or(0);

@@ -1,18 +1,18 @@
 use crate::service::metrics::Metrics;
 use crate::transport::iroh::{IrohConfig, IrohTransport};
 use async_trait::async_trait;
-use igra_core::config::{derive_redeem_script_hex, PsktBuildConfig, PsktOutput, ServiceConfig};
-use igra_core::coordination::coordinator::Coordinator;
-use igra_core::error::ThresholdError;
-use igra_core::event::EventProcessor;
-use igra_core::lifecycle::{LifecycleObserver, NoopObserver};
-use igra_core::model::{Hash32, SigningEvent};
-use igra_core::rpc::grpc::GrpcNodeRpc;
-use igra_core::rpc::NodeRpc;
-use igra_core::storage::Storage;
-use igra_core::transport::Transport;
-use igra_core::transport::{SignatureSigner, SignatureVerifier};
-use igra_core::types::{PeerId, RequestId, SessionId};
+use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktBuildConfig, PsktOutput, ServiceConfig};
+use igra_core::application::Coordinator;
+use igra_core::foundation::ThresholdError;
+use igra_core::application::EventProcessor;
+use igra_core::application::{LifecycleObserver, NoopObserver};
+use igra_core::domain::SigningEvent;
+use igra_core::foundation::Hash32;
+use igra_core::infrastructure::rpc::GrpcNodeRpc;
+use igra_core::infrastructure::rpc::NodeRpc;
+use igra_core::infrastructure::storage::Storage;
+use igra_core::infrastructure::transport::iroh::traits::{SignatureSigner, SignatureVerifier, Transport};
+use igra_core::foundation::{PeerId, RequestId, SessionId};
 use std::sync::Arc;
 
 pub struct ServiceFlow {

@@ -1,8 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use igra_core::config::{PsktBuildConfig, PsktOutput};
-use igra_core::model::FeePaymentMode;
-use igra_core::pskt::builder::build_pskt_with_client;
-use igra_core::rpc::{UnimplementedRpc, UtxoWithOutpoint};
+use igra_core::infrastructure::config::{PsktBuildConfig, PsktOutput};
+use igra_core::domain::FeePaymentMode;
+use igra_core::infrastructure::rpc::{build_pskt_with_client, UnimplementedRpc, UtxoWithOutpoint};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::tx::{TransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::pay_to_address_script;

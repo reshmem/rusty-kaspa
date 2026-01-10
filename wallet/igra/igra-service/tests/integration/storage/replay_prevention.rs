@@ -1,6 +1,5 @@
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::{PeerId, SessionId};
+use igra_core::foundation::{PeerId, SessionId};
+use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use tempfile::TempDir;
 
 #[tokio::test]

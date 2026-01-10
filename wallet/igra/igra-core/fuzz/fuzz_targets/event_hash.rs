@@ -1,8 +1,8 @@
 #![no_main]
 
 use arbitrary::Unstructured;
-use igra_core::coordination::hashes::{event_hash, event_hash_without_signature};
-use igra_core::model::{EventSource, SigningEvent};
+use igra_core::domain::hashes::{event_hash, event_hash_without_signature};
+use igra_core::domain::{EventSource, SigningEvent};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 

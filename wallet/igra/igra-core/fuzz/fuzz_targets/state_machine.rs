@@ -1,7 +1,7 @@
 #![no_main]
 
-use igra_core::model::RequestDecision;
-use igra_core::state_machine::{is_terminal, validate_transition};
+use igra_core::domain::RequestDecision;
+use igra_core::domain::request::state_machine::{is_terminal, validate_transition};
 use libfuzzer_sys::fuzz_target;
 
 fn decision_from(byte: u8, reason: &str) -> RequestDecision {

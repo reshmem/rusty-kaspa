@@ -37,23 +37,23 @@ impl Cli {
 
     pub fn apply_to_env(&self) {
         if let Some(config_path) = &self.config {
-            std::env::set_var(igra_core::config::CONFIG_PATH_ENV, config_path);
+            std::env::set_var(igra_core::infrastructure::config::CONFIG_PATH_ENV, config_path);
         }
 
         if let Some(data_dir) = &self.data_dir {
-            std::env::set_var(igra_core::config::DATA_DIR_ENV, data_dir);
+            std::env::set_var(igra_core::infrastructure::config::DATA_DIR_ENV, data_dir);
         }
 
         if let Some(node_url) = &self.node_url {
-            std::env::set_var(igra_core::config::NODE_URL_ENV, node_url);
+            std::env::set_var(igra_core::infrastructure::config::NODE_URL_ENV, node_url);
         }
 
         if let Some(finalize_path) = &self.finalize {
-            std::env::set_var(igra_core::config::FINALIZE_PSKT_JSON_ENV, finalize_path);
+            std::env::set_var(igra_core::infrastructure::config::FINALIZE_PSKT_JSON_ENV, finalize_path);
         }
 
         if let Some(audit_id) = &self.audit {
-            std::env::set_var(igra_core::config::AUDIT_REQUEST_ID_ENV, audit_id);
+            std::env::set_var(igra_core::infrastructure::config::AUDIT_REQUEST_ID_ENV, audit_id);
         }
     }
 }

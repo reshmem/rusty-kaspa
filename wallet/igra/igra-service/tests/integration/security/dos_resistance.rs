@@ -1,20 +1,18 @@
 use async_trait::async_trait;
-use igra_core::coordination::hashes::event_hash;
-use igra_core::error::ThresholdError;
-use igra_core::event::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
-use igra_core::model::{EventSource, Hash32, SigningEvent};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::{PeerId, RequestId, SessionId};
-use igra_core::validation::CompositeVerifier;
+use igra_core::domain::hashes::event_hash;
+use igra_core::application::{submit_signing_event, EventContext, EventProcessor, SigningEventParams, SigningEventWire};
+use igra_core::domain::validation::CompositeVerifier;
+use igra_core::domain::{EventSource, SigningEvent};
+use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
+use igra_core::infrastructure::config::ServiceConfig;
+use igra_core::infrastructure::storage::{RocksStorage, Storage};
+use igra_core::ThresholdError;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tempfile::TempDir;
 
-#[path = "../../integration_harness/mock_hyperlane.rs"]
-mod mock_hyperlane;
-use mock_hyperlane::MockHyperlaneValidator;
+use crate::harness::MockHyperlaneValidator;
 
 struct DummyProcessor;
 
@@ -22,7 +20,7 @@ struct DummyProcessor;
 impl EventProcessor for DummyProcessor {
     async fn handle_signing_event(
         &self,
-        _config: &igra_core::config::ServiceConfig,
+        _config: &ServiceConfig,
         _session_id: SessionId,
         _request_id: RequestId,
         _signing_event: SigningEvent,
@@ -62,7 +60,7 @@ async fn dos_resistance_invalid_hyperlane_signatures() {
 
     let ctx = EventContext {
         processor: Arc::new(DummyProcessor),
-        config: igra_core::config::ServiceConfig::default(),
+        config: ServiceConfig::default(),
         message_verifier: Arc::new(CompositeVerifier::new(validators, Vec::new())),
         storage: storage.clone(),
     };

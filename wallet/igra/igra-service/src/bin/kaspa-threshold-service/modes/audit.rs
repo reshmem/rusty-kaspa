@@ -1,8 +1,8 @@
-use igra_core::error::ThresholdError;
-use igra_core::model::{PartialSigRecord, RequestInput, SignerAckRecord, SigningEvent, SigningRequest};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::RequestId;
+use igra_core::foundation::ThresholdError;
+use igra_core::domain::{PartialSigRecord, RequestInput, SignerAckRecord, SigningEvent, SigningRequest};
+use igra_core::infrastructure::storage::rocks::RocksStorage;
+use igra_core::infrastructure::storage::Storage;
+use igra_core::foundation::RequestId;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -120,7 +120,7 @@ fn audit_partial_sig(sig: PartialSigRecord) -> AuditPartialSig {
     }
 }
 
-fn audit_proposal(proposal: igra_core::model::StoredProposal) -> AuditProposal {
+fn audit_proposal(proposal: igra_core::domain::StoredProposal) -> AuditProposal {
     AuditProposal {
         request_id: proposal.request_id.to_string(),
         session_id_hex: hex::encode(proposal.session_id.as_hash()),

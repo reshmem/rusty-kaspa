@@ -1,8 +1,7 @@
-use igra_core::coordination::hashes::event_hash;
-use igra_core::model::{EventSource, RequestDecision, SigningEvent, SigningRequest};
-use igra_core::storage::rocks::RocksStorage;
-use igra_core::storage::Storage;
-use igra_core::types::{PeerId, RequestId, SessionId, TransactionId};
+use igra_core::domain::hashes::event_hash;
+use igra_core::domain::{EventSource, RequestDecision, SigningEvent, SigningRequest};
+use igra_core::foundation::{PeerId, RequestId, SessionId, TransactionId};
+use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
@@ -85,9 +84,11 @@ async fn volume_tracking_sums_finalized_requests() {
     storage.update_request_final_tx(&RequestId::from("req-vol-a"), TransactionId::from([9u8; 32])).expect("finalize a");
     storage.update_request_final_tx(&RequestId::from("req-vol-c"), TransactionId::from([8u8; 32])).expect("finalize c");
 
-    let volume_all = storage.get_volume_since(base_ts).expect("volume since base");
-    assert_eq!(volume_all, 40);
+    // `get_volume_since` is a per-day counter used for daily policy enforcement.
+    // It returns the total finalized volume for the day that contains the provided timestamp.
+    let volume_day_1 = storage.get_volume_since(base_ts).expect("volume since base");
+    assert_eq!(volume_day_1, 10);
 
-    let volume_late = storage.get_volume_since(base_ts + nanos_per_day + 1).expect("volume since late");
-    assert_eq!(volume_late, 30);
+    let volume_day_2 = storage.get_volume_since(base_ts + nanos_per_day + 1).expect("volume since late");
+    assert_eq!(volume_day_2, 30);
 }

@@ -38,6 +38,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo.git", branch = "main" }
+uuid = { version = "1.11.0", features = ["v4"] }
 
 [features]
 default = []
