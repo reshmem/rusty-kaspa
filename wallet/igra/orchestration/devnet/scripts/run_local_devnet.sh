@@ -297,11 +297,18 @@ clone_repo() {
 build_rusty_repo() {
   require_cmd cargo
   local repo_path="$1"
+  local igra_repo_path="${repo_path}"
+  # In clone mode the remote ref may lag local config refactors (e.g. TOML profiles).
+  # Always prefer building Igra crates from the current checkout when available.
+  if [[ "${repo_path}" != "${REPO_ROOT}" && -f "${REPO_ROOT}/wallet/igra/Cargo.toml" ]]; then
+    igra_repo_path="${REPO_ROOT}"
+    log_warn "Building Igra binaries from local checkout (${igra_repo_path}) instead of ${repo_path}"
+  fi
   log_info "Building kaspa binaries from ${repo_path}..."
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p kaspa-cli -p kaspa-wallet"
-    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-core --bin devnet-balance"
-    log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
+    log_info "[DRY-RUN] cd ${igra_repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-core --bin devnet-balance"
+    log_info "[DRY-RUN] cd ${igra_repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
   else
     # Clear RUSTC_WRAPPER to avoid sccache/wrappers interfering with target dir
     if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
@@ -314,17 +321,17 @@ build_rusty_repo() {
       exit 1
     fi
 
-    if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
+    if ! (cd "${igra_repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
       cargo build --release --locked \
         -p igra-core --bin devnet-balance); then
-      log_error "Failed to build devnet-balance from ${repo_path}"
+      log_error "Failed to build devnet-balance from ${igra_repo_path}"
       exit 1
     fi
 
-    if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
+    if ! (cd "${igra_repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
       cargo build --release --locked \
         -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api); then
-      log_error "Failed to build igra-service binaries from ${repo_path}"
+      log_error "Failed to build igra-service binaries from ${igra_repo_path}"
       exit 1
     fi
 
@@ -336,11 +343,7 @@ build_rusty_repo() {
     done
   fi
   # Build devnet-keygen separately to avoid cargo target filtering issues across packages.
-  local keygen_repo="${repo_path}"
-  if [[ ! -f "${repo_path}/wallet/igra/igra-core/src/bin/devnet-keygen.rs" && -f "${REPO_ROOT}/wallet/igra/igra-core/src/bin/devnet-keygen.rs" ]]; then
-    # Fallback to local checkout if the cloned repo doesn't yet have the helper.
-    keygen_repo="${REPO_ROOT}"
-  fi
+  local keygen_repo="${igra_repo_path}"
   if [[ -f "${keygen_repo}/wallet/igra/igra-core/src/bin/devnet-keygen.rs" ]]; then
     if [[ "${DRY_RUN}" == "true" ]]; then
       log_info "[DRY-RUN] cd ${keygen_repo} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-core --bin devnet-keygen"
@@ -439,25 +442,35 @@ prepare_sources() {
 }
 
 setup_config_source() {
-  local config_source
+  # Always prefer the local repo's orchestration templates.
+  # In clone mode, the cloned repo may be on a different ref and not include (or include stale)
+  # TOML templates, which breaks config generation.
+  local config_source="${DEVNET_DIR}"
+  local clone_source="${RUSTY_SRC}/wallet/igra/orchestration/devnet"
   if [[ "${BUILD_MODE}" == "clone" ]]; then
-    config_source="${RUSTY_SRC}/wallet/igra/orchestration/devnet"
-  else
-    config_source="${DEVNET_DIR}"
+    if [[ -d "${clone_source}" ]]; then
+      log_info "Build mode is clone; using local devnet templates from ${DEVNET_DIR} (ignoring ${clone_source})"
+    else
+      log_info "Build mode is clone; cloned sources not present yet; using local devnet templates from ${DEVNET_DIR}"
+    fi
   fi
 
   IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet-template.toml"
   HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
   KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
 
-  # In clone mode, the cloned repo may not match the local branch's orchestration templates.
-  # Prefer local templates when the cloned repo doesn't include the expected TOML files.
+  # Fallback for unusual setups where local templates are missing.
   if [[ ! -f "${IGRA_CONFIG_TEMPLATE}" || ! -f "${HYPERLANE_KEYS_SRC}" || ! -f "${KEYSET_JSON_TEMPLATE}" ]]; then
-    log_warn "Devnet templates missing under ${config_source}; falling back to local templates under ${DEVNET_DIR}"
-    config_source="${DEVNET_DIR}"
-    IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet-template.toml"
-    HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
-    KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
+    if [[ -f "${clone_source}/igra-devnet-template.toml" && -f "${clone_source}/hyperlane-keys.json" && -f "${clone_source}/devnet-keys.json" ]]; then
+      log_warn "Local devnet templates missing under ${config_source}; falling back to cloned templates under ${clone_source}"
+      config_source="${clone_source}"
+      IGRA_CONFIG_TEMPLATE="${config_source}/igra-devnet-template.toml"
+      HYPERLANE_KEYS_SRC="${config_source}/hyperlane-keys.json"
+      KEYSET_JSON_TEMPLATE="${config_source}/devnet-keys.json"
+    else
+      log_error "Devnet templates missing under ${config_source} (and not found under ${clone_source})"
+      exit 1
+    fi
   fi
 
   log_info "Using config templates from: ${config_source}"
@@ -705,6 +718,24 @@ start_fake_hyperlane() {
   local rpc_port="$2"
   local rpc_url="http://127.0.0.1:${rpc_port}/rpc"
   local log_path="${LOG_DIR}/fake-hyperlane-${profile}.log"
+  local destination="${FAKE_HYPERLANE_DEST}"
+
+  if [[ -z "${HYPERLANE_DESTINATION:-}" && -f "${KEYSET_JSON}" ]]; then
+    local mined_addr
+    mined_addr=$(
+      KEYSET_JSON="${KEYSET_JSON}" python3 - <<'PY'
+import json
+import os
+path = os.environ.get("KEYSET_JSON")
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+print(data.get("wallet", {}).get("mining_address", ""))
+PY
+    )
+    if [[ -n "${mined_addr}" ]]; then
+      destination="${mined_addr}"
+    fi
+  fi
 
   start_process "fake-hyperlane-${profile}" \
     env \
@@ -713,7 +744,7 @@ start_fake_hyperlane() {
       HYPERLANE_INTERVAL_SECS="${FAKE_HYPERLANE_INTERVAL}" \
       HYPERLANE_START_EPOCH_SECS="${FAKE_HYPERLANE_START}" \
       HYPERLANE_AMOUNT_SOMPI="${FAKE_HYPERLANE_AMOUNT}" \
-      HYPERLANE_DESTINATION="${FAKE_HYPERLANE_DEST}" \
+      HYPERLANE_DESTINATION="${destination}" \
       HYPERLANE_DOMAIN="${FAKE_HYPERLANE_DOMAIN}" \
       HYPERLANE_SENDER="${FAKE_HYPERLANE_SENDER}" \
       HYPERLANE_COORDINATOR_PEER_ID="${FAKE_HYPERLANE_COORDINATOR}" \

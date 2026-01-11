@@ -4,8 +4,8 @@ use axum::extract::ConnectInfo;
 use axum::http::Request;
 use axum::middleware::Next;
 use axum::response::Response;
+use log::{debug, error, trace, warn};
 use std::time::Instant;
-use tracing::debug;
 
 fn sanitize_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     const REDACT: &[&str] = &["authorization", "x-api-key", "cookie"];
@@ -36,6 +36,7 @@ fn sanitize_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
 pub async fn logging_middleware(req: Request<Body>, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
+    let path = uri.path().to_string();
     let client_ip =
         req.extensions().get::<ConnectInfo<std::net::SocketAddr>>().map(|ConnectInfo(addr)| addr.ip().to_string()).unwrap_or_default();
     let correlation_id = req.extensions().get::<CorrelationId>().map(|id| id.0.clone());
@@ -62,35 +63,75 @@ pub async fn logging_middleware(req: Request<Body>, next: Next) -> Response {
 
     debug!(
         target: "http",
-        correlation_id = correlation_id.as_deref().unwrap_or(""),
-        client_ip = %client_ip,
-        method = %method,
-        uri = %uri,
-        request_headers = ?request_headers,
-        request_body_size,
-        "request headers"
+        "request headers correlation_id={} client_ip={} method={} uri={} request_headers={:?} request_body_size={}",
+        correlation_id.as_deref().unwrap_or(""),
+        client_ip,
+        method,
+        uri,
+        request_headers,
+        request_body_size
     );
 
-    tracing::info!(
-        target: "http",
-        correlation_id = correlation_id.as_deref().unwrap_or(""),
-        client_ip = %client_ip,
-        method = %method,
-        uri = %uri,
-        status = status.as_u16(),
-        duration_ms = duration.as_millis(),
-        request_body_size,
-        response_body_size,
-        "request"
-    );
+    let is_health_like =
+        matches!(path.as_str(), "/health" | "/ready" | "/metrics") || (path == "/rpc" && method.as_str().eq_ignore_ascii_case("GET"));
+
+    if is_health_like {
+        trace!(
+            target: "http",
+            "health check correlation_id={} client_ip={} method={} path={} status={} duration_ms={}",
+            correlation_id.as_deref().unwrap_or(""),
+            client_ip,
+            method,
+            path,
+            status.as_u16(),
+            duration.as_millis()
+        );
+    } else if status.is_server_error() {
+        error!(
+            target: "http",
+            "request failed correlation_id={} client_ip={} method={} path={} status={} duration_ms={} request_body_size={} response_body_size={}",
+            correlation_id.as_deref().unwrap_or(""),
+            client_ip,
+            method,
+            path,
+            status.as_u16(),
+            duration.as_millis(),
+            request_body_size,
+            response_body_size
+        );
+    } else if status.is_client_error() {
+        warn!(
+            target: "http",
+            "request rejected correlation_id={} client_ip={} method={} path={} status={} duration_ms={} request_body_size={} response_body_size={}",
+            correlation_id.as_deref().unwrap_or(""),
+            client_ip,
+            method,
+            path,
+            status.as_u16(),
+            duration.as_millis(),
+            request_body_size,
+            response_body_size
+        );
+    } else {
+        debug!(
+            target: "http",
+            "request correlation_id={} client_ip={} method={} path={} status={} duration_ms={}",
+            correlation_id.as_deref().unwrap_or(""),
+            client_ip,
+            method,
+            path,
+            status.as_u16(),
+            duration.as_millis()
+        );
+    }
 
     debug!(
         target: "http",
-        correlation_id = correlation_id.as_deref().unwrap_or(""),
-        status = status.as_u16(),
-        response_headers = ?response_headers,
-        response_body_size,
-        "response headers"
+        "response headers correlation_id={} status={} response_headers={:?} response_body_size={}",
+        correlation_id.as_deref().unwrap_or(""),
+        status.as_u16(),
+        response_headers,
+        response_body_size
     );
 
     response

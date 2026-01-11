@@ -4,7 +4,7 @@ use crate::foundation::{PeerId, RequestId, TransactionId};
 use crate::infrastructure::audit::{audit, now_nanos, AuditEvent};
 use crate::infrastructure::storage::Storage;
 use std::sync::Arc;
-use tracing::{debug, info, trace, warn};
+use log::{debug, info, trace, warn};
 
 pub trait LifecycleObserver: Send + Sync {
     fn on_event_received(&self, _event: &SigningEvent, _event_hash: &Hash32) {}
@@ -42,27 +42,33 @@ impl Default for CompositeObserver {
 
 impl LifecycleObserver for CompositeObserver {
     fn on_event_received(&self, event: &SigningEvent, event_hash: &Hash32) {
-        trace!(observer_count = self.observers.len(), event_hash = %hex::encode(event_hash), "on_event_received dispatch");
+        trace!(
+            "on_event_received dispatch observer_count={} event_hash={}",
+            self.observers.len(),
+            hex::encode(event_hash)
+        );
         for (idx, observer) in self.observers.iter().enumerate() {
-            trace!(observer_index = idx, "on_event_received calling observer");
+            trace!("on_event_received calling observer observer_index={}", idx);
             observer.on_event_received(event, event_hash);
         }
     }
 
     fn on_request_created(&self, request: &SigningRequest) {
-        trace!(observer_count = self.observers.len(), request_id = %request.request_id, "on_request_created dispatch");
+        trace!(
+            "on_request_created dispatch observer_count={} request_id={}",
+            self.observers.len(),
+            request.request_id
+        );
         for (idx, observer) in self.observers.iter().enumerate() {
-            trace!(observer_index = idx, "on_request_created calling observer");
+            trace!("on_request_created calling observer observer_index={}", idx);
             observer.on_request_created(request);
         }
     }
 
     fn on_status_changed(&self, request_id: &RequestId, old_status: &RequestDecision, new_status: &RequestDecision) {
         info!(
-            request_id = %request_id,
-            old_status = ?old_status,
-            new_status = ?new_status,
-            "request status changed"
+            "request status changed request_id={} old_status={:?} new_status={:?}",
+            request_id, old_status, new_status
         );
         for observer in &self.observers {
             observer.on_status_changed(request_id, old_status, new_status);
@@ -71,10 +77,8 @@ impl LifecycleObserver for CompositeObserver {
 
     fn on_signature_added(&self, request_id: &RequestId, signer_peer_id: &PeerId, input_index: u32) {
         debug!(
-            request_id = %request_id,
-            signer_peer_id = %signer_peer_id,
-            input_index,
-            "signature added"
+            "signature added request_id={} signer_peer_id={} input_index={}",
+            request_id, signer_peer_id, input_index
         );
         for observer in &self.observers {
             observer.on_signature_added(request_id, signer_peer_id, input_index);
@@ -83,10 +87,8 @@ impl LifecycleObserver for CompositeObserver {
 
     fn on_threshold_met(&self, request_id: &RequestId, signature_count: usize, threshold: usize) {
         info!(
-            request_id = %request_id,
-            signature_count,
-            threshold,
-            "signature threshold met"
+            "signature threshold met request_id={} signature_count={} threshold={}",
+            request_id, signature_count, threshold
         );
         for observer in &self.observers {
             observer.on_threshold_met(request_id, signature_count, threshold);
@@ -95,9 +97,9 @@ impl LifecycleObserver for CompositeObserver {
 
     fn on_finalized(&self, request_id: &RequestId, tx_id: &TransactionId) {
         info!(
-            request_id = %request_id,
-            tx_id = %hex::encode(tx_id.as_hash()),
-            "request finalized"
+            "request finalized request_id={} tx_id={}",
+            request_id,
+            hex::encode(tx_id.as_hash())
         );
         for observer in &self.observers {
             observer.on_finalized(request_id, tx_id);
@@ -105,7 +107,7 @@ impl LifecycleObserver for CompositeObserver {
     }
 
     fn on_failed(&self, request_id: &RequestId, reason: &str) {
-        warn!(request_id = %request_id, reason = %reason, "request failed");
+        warn!("request failed request_id={} reason={}", request_id, reason);
         for observer in &self.observers {
             observer.on_failed(request_id, reason);
         }
@@ -125,7 +127,11 @@ impl AuditLoggingObserver {
 
 impl LifecycleObserver for AuditLoggingObserver {
     fn on_event_received(&self, event: &SigningEvent, event_hash: &Hash32) {
-        trace!(event_hash = %hex::encode(event_hash), event_id = %event.event_id, "audit: event received");
+        trace!(
+            "audit: event received event_hash={} event_id={}",
+            hex::encode(event_hash),
+            event.event_id
+        );
         crate::audit_event_received!(event_hash, event);
     }
 
@@ -139,11 +145,11 @@ impl LifecycleObserver for AuditLoggingObserver {
         let signature_count = storage.list_partial_sigs(request_id).map(|entries| entries.len()).unwrap_or(0);
         let threshold_required = self.threshold_required.unwrap_or(0);
         info!(
-            request_id = %request_id,
-            tx_id = %hex::encode(tx_id.as_hash()),
+            "audit: finalized transaction request_id={} tx_id={} signature_count={} threshold_required={}",
+            request_id,
+            hex::encode(tx_id.as_hash()),
             signature_count,
-            threshold_required,
-            "audit: finalized transaction"
+            threshold_required
         );
         audit(AuditEvent::TransactionFinalized {
             request_id: request_id.to_string(),

@@ -3,7 +3,7 @@ use axum::http::HeaderValue;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
-use tracing::debug;
+use log::debug;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -13,10 +13,10 @@ pub async fn correlation_middleware(mut req: Request<Body>, next: Next) -> Respo
     let header = req.headers().get("x-request-id").and_then(|v| v.to_str().ok());
     let request_id = header.map(|s| s.to_string()).unwrap_or_else(|| Uuid::new_v4().to_string());
     debug!(
-        has_x_request_id = header.is_some(),
-        x_request_id_len = header.map(|s| s.len()).unwrap_or(0),
-        correlation_id_len = request_id.len(),
-        "correlation id assigned"
+        "correlation id assigned has_x_request_id={} x_request_id_len={} correlation_id_len={}",
+        header.is_some(),
+        header.map(|s| s.len()).unwrap_or(0),
+        request_id.len()
     );
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {

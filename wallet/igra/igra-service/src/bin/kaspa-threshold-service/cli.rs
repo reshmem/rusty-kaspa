@@ -9,6 +9,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
+    /// Profile name to load from `[profiles.<name>]` in the TOML config
+    #[arg(long)]
+    pub profile: Option<String>,
+
     /// Override data directory
     #[arg(short, long)]
     pub data_dir: Option<PathBuf>,
@@ -38,6 +42,13 @@ impl Cli {
     pub fn apply_to_env(&self) {
         if let Some(config_path) = &self.config {
             std::env::set_var(igra_core::infrastructure::config::CONFIG_PATH_ENV, config_path);
+        }
+
+        if let Some(profile) = &self.profile {
+            let trimmed = profile.trim();
+            if !trimmed.is_empty() {
+                std::env::set_var("KASPA_IGRA_PROFILE", trimmed);
+            }
         }
 
         if let Some(data_dir) = &self.data_dir {

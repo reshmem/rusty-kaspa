@@ -27,6 +27,7 @@ kaspa-wallet-pskt.workspace = true
 kaspa-wallet-core.workspace = true
 kaspa-consensus-core.workspace = true
 kaspa-addresses.workspace = true
+log = "0.4"
 prometheus = "0.13.3"
 rand.workspace = true
 secp256k1.workspace = true
@@ -34,8 +35,6 @@ serde.workspace = true
 serde_json.workspace = true
 subtle = "2.5"
 tokio = { workspace = true, features = ["fs"] }
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo.git", branch = "main" }
 uuid = { version = "1.11.0", features = ["v4"] }

@@ -2,7 +2,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, trace};
+use log::{debug, trace};
 
 /// Token bucket rate limiter implementation
 /// Allows burst traffic up to capacity, then enforces a steady rate
@@ -34,13 +34,17 @@ impl TokenBucket {
     /// Try to consume a token. Returns true if allowed, false if rate limited
     pub fn try_consume(&mut self) -> bool {
         self.refill();
-        trace!(tokens = self.tokens, capacity = self.capacity, "rate limiter try_consume");
+        trace!(
+            "rate limiter try_consume tokens={} capacity={}",
+            self.tokens,
+            self.capacity
+        );
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
-            trace!(tokens_remaining = self.tokens, "rate limiter token consumed");
+            trace!("rate limiter token consumed tokens_remaining={}", self.tokens);
             true
         } else {
-            trace!(tokens_remaining = self.tokens, "rate limited: no tokens");
+            trace!("rate limited: no tokens tokens_remaining={}", self.tokens);
             false
         }
     }
@@ -102,7 +106,7 @@ impl RateLimiter {
         guard.maybe_cleanup();
         let bucket = match guard.limiters.entry(peer_id.to_string()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                debug!(peer_id = %peer_id, "rate limiter: new peer bucket");
+                debug!("rate limiter: new peer bucket peer_id={}", peer_id);
                 entry.insert(TokenBucket::new(self.capacity, self.refill_rate))
             }
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -128,7 +132,12 @@ impl RateLimiter {
         guard.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
         let after = guard.limiters.len();
         guard.last_cleanup = Instant::now();
-        debug!(before, after, removed = before.saturating_sub(after), "rate limiter cleanup_old_entries");
+        debug!(
+            "rate limiter cleanup_old_entries before={} after={} removed={}",
+            before,
+            after,
+            before.saturating_sub(after)
+        );
     }
 
     /// Get the number of tracked peers (for monitoring)
@@ -151,7 +160,12 @@ impl RateLimiterState {
         let before = self.limiters.len();
         self.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
         let after = self.limiters.len();
-        debug!(before, after, removed = before.saturating_sub(after), "rate limiter periodic cleanup");
+        debug!(
+            "rate limiter periodic cleanup before={} after={} removed={}",
+            before,
+            after,
+            before.saturating_sub(after)
+        );
     }
 }
 

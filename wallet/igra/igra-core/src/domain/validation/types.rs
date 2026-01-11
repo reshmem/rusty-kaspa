@@ -15,6 +15,8 @@ pub struct HyperlaneVerificationResult {
 pub enum HyperlaneVerificationFailure {
     NoValidatorsConfigured,
     NoSignatureProvided,
+    MissingMetadataField { field: &'static str },
+    MessageIdMismatch,
     TooManySignatureChunks { chunks: usize, max: usize },
     InsufficientValidSignatures { valid: usize, required: usize },
     InvalidSignatureFormat { chunk_index: usize },

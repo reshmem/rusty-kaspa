@@ -10,11 +10,11 @@ use crate::infrastructure::rpc::NodeRpc;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::iroh::traits::{ProposedSigningSession, SignerAck, Transport};
 use kaspa_wallet_pskt::prelude::Combiner;
+use log::{debug, error, info, trace, warn};
 use secp256k1::PublicKey;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace, warn};
 
 pub struct Coordinator {
     transport: Arc<dyn Transport>,
@@ -52,40 +52,36 @@ impl Coordinator {
         let request_id_str = request_id.to_string();
         let coordinator_peer_id_str = coordinator_peer_id.to_string();
         let event_id = signing_event.event_id.clone();
-        let span = tracing::info_span!(
-            "propose_session",
-            session_id = %session_id_hex,
-            request_id = %request_id_str,
-            event_id = %event_id,
-            expires_at_nanos,
-            coordinator_peer_id = %coordinator_peer_id_str,
+        info!(
+            "propose_session session_id={} request_id={} event_id={} expires_at_nanos={} coordinator_peer_id={}",
+            session_id_hex, request_id_str, event_id, expires_at_nanos, coordinator_peer_id_str
         );
-        let _entered = span.enter();
 
         if let Err(err) = validate_signing_event(&signing_event) {
             warn!(
-                event_id = %signing_event.event_id,
-                destination_address = %signing_event.destination_address,
-                amount_sompi = signing_event.amount_sompi,
-                derivation_path = %signing_event.derivation_path,
-                error = %err,
-                "invalid signing event"
+                "invalid signing event event_id={} destination_address={} amount_sompi={} derivation_path={} error={}",
+                signing_event.event_id, signing_event.destination_address, signing_event.amount_sompi, signing_event.derivation_path, err
             );
             return Err(err);
         }
         let ev_hash = event_hash(&signing_event)?;
         let val_hash = validation_hash(&ev_hash, &tx_template_hash, per_input_hashes);
         info!(
-            event_hash = %hex::encode(ev_hash),
-            validation_hash = %hex::encode(val_hash),
-            kpsbt_len = kpsbt_blob.len(),
-            input_count = per_input_hashes.len(),
-            "storing proposal"
+            "storing proposal event_hash={} validation_hash={} kpsbt_len={} input_count={}",
+            hex::encode(ev_hash),
+            hex::encode(val_hash),
+            kpsbt_blob.len(),
+            per_input_hashes.len()
         );
 
         self.lifecycle.on_event_received(&signing_event, &ev_hash);
-        self.storage.insert_event(ev_hash, signing_event.clone())?;
-        debug!(event_hash = %hex::encode(ev_hash), "event stored");
+        match self.storage.insert_event(ev_hash, signing_event.clone()) {
+            Ok(()) => debug!("event stored event_hash={}", hex::encode(ev_hash)),
+            Err(ThresholdError::EventReplayed(_)) => {
+                debug!("event already stored event_hash={}", hex::encode(ev_hash));
+            }
+            Err(err) => return Err(err),
+        }
         let request = SigningRequest {
             request_id: request_id.clone(),
             session_id,
@@ -99,7 +95,7 @@ impl Coordinator {
             final_tx_accepted_blue_score: None,
         };
         self.storage.insert_request(request.clone())?;
-        debug!(request_id = %request.request_id, "request stored");
+        debug!("request stored request_id={}", request.request_id);
         self.lifecycle.on_request_created(&request);
         self.storage.insert_proposal(
             &request_id,
@@ -124,15 +120,15 @@ impl Coordinator {
             kpsbt_blob,
         };
         trace!(
-            session_id = %hex::encode(proposal.session_id.as_hash()),
-            request_id = %proposal.request_id,
-            event_hash = %hex::encode(proposal.event_hash),
-            validation_hash = %hex::encode(proposal.validation_hash),
-            kpsbt_len = proposal.kpsbt_blob.len(),
-            "publishing proposal"
+            "publishing proposal session_id={} request_id={} event_hash={} validation_hash={} kpsbt_len={}",
+            hex::encode(proposal.session_id.as_hash()),
+            proposal.request_id,
+            hex::encode(proposal.event_hash),
+            hex::encode(proposal.validation_hash),
+            proposal.kpsbt_blob.len()
         );
         if let Err(err) = self.transport.publish_proposal(proposal).await {
-            error!(error = %err, "failed to publish proposal");
+            error!("failed to publish proposal error={}", err);
             return Err(err);
         }
         debug!("proposal published");
@@ -153,35 +149,33 @@ impl Coordinator {
         let request_id_str = request_id.to_string();
         let event_id = signing_event.event_id.clone();
         info!(
-            session_id = %session_id_hex,
-            request_id = %request_id_str,
-            event_id = %event_id,
-            "building PSKT via rpc for proposal"
+            "building PSKT via rpc for proposal session_id={} request_id={} event_id={}",
+            session_id_hex, request_id_str, event_id
         );
         let (selection, build) = build_pskt_from_rpc(rpc, config).await?;
         debug!(
-            selected_utxos = selection.selected_utxos,
-            total_input = selection.total_input_amount,
-            total_output = selection.total_output_amount,
-            fee = selection.fee_amount,
-            change = selection.change_amount,
-            has_change = selection.has_change_output,
-            "utxo selection completed"
+            "utxo selection completed selected_utxos={:?} total_input={:?} total_output={:?} fee={:?} change={:?} has_change={:?}",
+            selection.selected_utxos,
+            selection.total_input_amount,
+            selection.total_output_amount,
+            selection.fee_amount,
+            selection.change_amount,
+            selection.has_change_output
         );
         let output_count = build.output_count;
         let pskt = pskt_multisig::to_signer(build.pskt);
         let per_input_hashes = pskt_multisig::input_hashes(&pskt)?;
         let tx_template_hash = pskt_multisig::tx_template_hash(&pskt)?;
         debug!(
-            session_id = %session_id_hex,
-            request_id = %request_id_str,
-            input_count = per_input_hashes.len(),
+            "PSKT built session_id={} request_id={} input_count={} output_count={} tx_template_hash={} sig_op_count={} outputs={} source_addresses={}",
+            session_id_hex,
+            request_id_str,
+            per_input_hashes.len(),
             output_count,
-            tx_template_hash = %hex::encode(tx_template_hash),
-            sig_op_count = config.sig_op_count,
-            outputs = config.outputs.len(),
-            source_addresses = config.source_addresses.len(),
-            "PSKT built"
+            hex::encode(tx_template_hash),
+            config.sig_op_count,
+            config.outputs.len(),
+            config.source_addresses.len()
         );
         let kpsbt_blob = pskt_multisig::serialize_pskt(&pskt)?;
         self.propose_session(
@@ -207,25 +201,23 @@ impl Coordinator {
         params: &kaspa_consensus_core::config::params::Params,
     ) -> Result<kaspa_consensus_core::tx::TransactionId, ThresholdError> {
         info!(
-            request_id = %request_id,
+            "finalizing PSKT and submitting transaction request_id={} required_signatures={} pubkey_count={}",
+            request_id,
             required_signatures,
-            pubkey_count = ordered_pubkeys.len(),
-            "finalizing PSKT and submitting transaction"
+            ordered_pubkeys.len()
         );
         let finalize_result = aggregation::finalize_pskt(pskt, required_signatures, ordered_pubkeys)?;
         debug!(
-            input_count = finalize_result.input_count,
-            required = finalize_result.required_signatures,
-            signatures_per_input = ?finalize_result.signatures_per_input,
-            "PSKT finalized"
+            "PSKT finalized input_count={} required={} signatures_per_input={:?}",
+            finalize_result.input_count, finalize_result.required_signatures, finalize_result.signatures_per_input
         );
         let tx_result = pskt_multisig::extract_tx(finalize_result.pskt, params)?;
         info!(
-            tx_id = %hex::encode(tx_result.tx_id),
-            input_count = tx_result.input_count,
-            output_count = tx_result.output_count,
-            mass = tx_result.mass,
-            "transaction extracted"
+            "transaction extracted tx_id={} input_count={} output_count={} mass={}",
+            hex::encode(tx_result.tx_id),
+            tx_result.input_count,
+            tx_result.output_count,
+            tx_result.mass
         );
         let final_tx = tx_result.tx.clone();
 
@@ -241,25 +233,31 @@ impl Coordinator {
                 Ok(id) => break id,
                 Err(err) if attempt < 4 => {
                     let backoff_ms = 100u64.saturating_mul(2u64.saturating_pow(attempt - 1));
-                    tracing::warn!(request_id = %request_id, attempt, backoff_ms, error = %err, "submit_transaction failed; retrying");
+                    warn!(
+                        "submit_transaction failed; retrying request_id={} attempt={} backoff_ms={} error={}",
+                        request_id, attempt, backoff_ms, err
+                    );
                     sleep(Duration::from_millis(backoff_ms)).await;
                     continue;
                 }
                 Err(err) => {
-                    error!(request_id = %request_id, attempt, error = %err, "submit_transaction failed after retries");
+                    error!(
+                        "submit_transaction failed after retries request_id={} attempt={} error={}",
+                        request_id, attempt, err
+                    );
                     return Err(err);
                 }
             }
         };
         let tx_id = TransactionId::from(tx_id);
         info!(
-            request_id = %request_id,
-            tx_id = %hex::encode(tx_id.as_hash()),
-            attempts = attempt,
-            "transaction submitted"
+            "transaction submitted request_id={} tx_id={} attempts={}",
+            request_id,
+            hex::encode(tx_id.as_hash()),
+            attempt
         );
         self.storage.update_request_final_tx(request_id, tx_id)?;
-        info!(request_id = %request_id, tx_id = %hex::encode(tx_id.as_hash()), "stored finalized tx_id");
+        info!("stored finalized tx_id request_id={} tx_id={}", request_id, hex::encode(tx_id.as_hash()));
         self.lifecycle.on_finalized(request_id, &tx_id);
         self.transport.publish_finalize(request.session_id, request_id, *tx_id.as_hash()).await?;
         Ok(kaspa_consensus_core::tx::TransactionId::from_bytes(*tx_id.as_hash()))
@@ -274,11 +272,11 @@ impl Coordinator {
     ) -> Result<Vec<SignerAck>, ThresholdError> {
         let session_id_hex = hex::encode(session_id.as_hash());
         debug!(
-            session_id = %session_id_hex,
-            request_id = %request_id,
+            "collecting signer acks session_id={} request_id={} threshold={} timeout_ms={}",
+            session_id_hex,
+            request_id,
             threshold,
-            timeout_ms = timeout.as_millis(),
-            "collecting signer acks"
+            timeout.as_millis()
         );
         let mut subscription = self.transport.subscribe_session(session_id).await?;
         let mut acks = Vec::new();
@@ -294,9 +292,9 @@ impl Coordinator {
                     if let crate::infrastructure::transport::messages::TransportMessage::SignerAck(ack) = envelope.payload {
                         if &ack.request_id == request_id {
                             acks.push(ack);
-                            debug!(session_id = %session_id_hex, ack_count = acks.len(), "ack collected");
+                            debug!("ack collected session_id={} ack_count={}", session_id_hex, acks.len());
                             if threshold > 0 && acks.len() >= threshold {
-                                debug!(session_id = %session_id_hex, ack_count = acks.len(), "ack threshold reached");
+                                debug!("ack threshold reached session_id={} ack_count={}", session_id_hex, acks.len());
                                 break;
                             }
                         }
@@ -306,22 +304,27 @@ impl Coordinator {
                 Ok(None) | Err(_) => break,
             }
         }
-        info!(session_id = %session_id_hex, request_id = %request_id, ack_count = acks.len(), "ack collection complete");
+        info!(
+            "ack collection complete session_id={} request_id={} ack_count={}",
+            session_id_hex,
+            request_id,
+            acks.len()
+        );
         Ok(acks)
     }
 }
 
 fn validate_signing_event(event: &SigningEvent) -> Result<(), ThresholdError> {
     if event.destination_address.trim().is_empty() {
-        warn!(event_id = %event.event_id, "validation failed: destination_address required");
+        warn!("validation failed: destination_address required event_id={}", event.event_id);
         return Err(ThresholdError::Message("destination_address required".to_string()));
     }
     if event.amount_sompi == 0 {
-        warn!(event_id = %event.event_id, "validation failed: amount_sompi must be > 0");
+        warn!("validation failed: amount_sompi must be > 0 event_id={}", event.event_id);
         return Err(ThresholdError::Message("amount_sompi must be > 0".to_string()));
     }
     if event.derivation_path.trim().is_empty() {
-        warn!(event_id = %event.event_id, "validation failed: missing derivation_path");
+        warn!("validation failed: missing derivation_path event_id={}", event.event_id);
         return Err(ThresholdError::InvalidDerivationPath("missing derivation_path".to_string()));
     }
     Ok(())

@@ -1,5 +1,5 @@
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use log::{debug, info, warn};
 
 /// Simple circuit breaker for RPC calls.
 pub struct CircuitBreaker {
@@ -25,11 +25,11 @@ impl CircuitBreaker {
 
         match guard.open_until {
             Some(until) if now < until => {
-                debug!(failures = guard.failures, "circuit breaker open; denying request");
+                debug!("circuit breaker open; denying request failures={}", guard.failures);
                 false
             }
             Some(_) => {
-                info!(failures = guard.failures, "circuit breaker cooldown elapsed; closing");
+                info!("circuit breaker cooldown elapsed; closing failures={}", guard.failures);
                 guard.failures = 0;
                 guard.open_until = None;
                 true
@@ -41,7 +41,7 @@ impl CircuitBreaker {
     pub fn record_success(&self) {
         let mut guard = self.state.lock();
         if guard.failures > 0 || guard.open_until.is_some() {
-            debug!(failures = guard.failures, "circuit breaker success; resetting");
+            debug!("circuit breaker success; resetting failures={}", guard.failures);
         }
         guard.failures = 0;
         guard.open_until = None;
@@ -53,13 +53,16 @@ impl CircuitBreaker {
         if guard.failures >= self.threshold && guard.open_until.is_none() {
             guard.open_until = Some(Instant::now() + self.cooldown);
             warn!(
-                failures = guard.failures,
-                threshold = self.threshold,
-                cooldown_ms = self.cooldown.as_millis(),
-                "circuit breaker opened"
+                "circuit breaker opened failures={} threshold={} cooldown_ms={}",
+                guard.failures,
+                self.threshold,
+                self.cooldown.as_millis()
             );
         } else {
-            debug!(failures = guard.failures, threshold = self.threshold, "circuit breaker recorded failure");
+            debug!(
+                "circuit breaker recorded failure failures={} threshold={}",
+                guard.failures, self.threshold
+            );
         }
     }
 }

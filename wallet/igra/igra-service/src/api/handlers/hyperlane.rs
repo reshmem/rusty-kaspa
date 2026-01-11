@@ -8,12 +8,12 @@ use igra_core::domain::EventSource;
 use igra_core::infrastructure::audit;
 use igra_core::infrastructure::hyperlane::{IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
 use kaspa_addresses::Address;
+use log::{debug, info, warn};
 use secp256k1::PublicKey;
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
-use tracing::{debug, info};
 
 #[derive(Debug, Deserialize)]
 struct ValidatorsAndThresholdParams {
@@ -263,8 +263,13 @@ fn metadata_to_map(meta: &ProofMetadata, mode: &IsmMode) -> BTreeMap<String, Str
     let mut map = BTreeMap::new();
     map.insert("hyperlane.mode".to_string(), ism_mode_str(mode).to_string());
     map.insert("hyperlane.mailbox_domain".to_string(), meta.checkpoint.checkpoint.mailbox_domain.to_string());
+    map.insert(
+        "hyperlane.merkle_tree_hook_address".to_string(),
+        format_h256(meta.checkpoint.checkpoint.merkle_tree_hook_address),
+    );
     map.insert("hyperlane.root".to_string(), format_h256(meta.checkpoint.checkpoint.root));
     map.insert("hyperlane.index".to_string(), meta.checkpoint.checkpoint.index.to_string());
+    map.insert("hyperlane.message_id".to_string(), format_h256(meta.checkpoint.message_id));
     map
 }
 
@@ -303,6 +308,30 @@ async fn submit_signing_from_hyperlane(
     let event_id = format_h256(message.id());
     let mut meta = metadata_to_map(metadata, &set.mode);
     meta.insert("hyperlane.quorum".to_string(), set.threshold.to_string());
+    // Persist the canonical Hyperlane message fields so the core verifier can recompute `message_id`
+    // (like a destination chain Mailbox would) and ensure it matches the signed checkpoint.
+    meta.insert("hyperlane.msg.version".to_string(), message.version.to_string());
+    meta.insert("hyperlane.msg.nonce".to_string(), message.nonce.to_string());
+    meta.insert("hyperlane.msg.origin".to_string(), message.origin.to_string());
+    meta.insert("hyperlane.msg.sender".to_string(), format_h256(message.sender));
+    meta.insert("hyperlane.msg.destination".to_string(), message.destination.to_string());
+    meta.insert("hyperlane.msg.recipient".to_string(), format_h256(message.recipient));
+    meta.insert("hyperlane.msg.body_hex".to_string(), hex::encode(&message.body));
+
+    // Forward Hyperlane ISM signatures to the core verifier. We strip the recovery id byte and
+    // pass compact (r||s) signatures, concatenated, so the core verifier can validate them
+    // against the checkpoint signing_hash.
+    let signature = if metadata.signatures.is_empty() {
+        None
+    } else {
+        let mut bytes = Vec::with_capacity(metadata.signatures.len().saturating_mul(64));
+        for sig in &metadata.signatures {
+            let sig_bytes: [u8; 65] = sig.clone().into();
+            bytes.extend_from_slice(&sig_bytes[0..64]);
+        }
+        Some(bytes)
+    };
+
     let signing_event = SigningEventWire {
         event_id: event_id.clone(),
         event_source: EventSource::Hyperlane { domain: message.destination.to_string(), sender: format_h256(message.sender) },
@@ -313,7 +342,7 @@ async fn submit_signing_from_hyperlane(
         metadata: meta,
         timestamp_nanos: audit::now_nanos(),
         signature_hex: None,
-        signature: None,
+        signature,
     };
     let params = SigningEventParams {
         session_id_hex: session_id_hex.to_string(),
@@ -351,7 +380,7 @@ pub async fn handle_validators_and_threshold(
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
-            debug!(error = %err, "invalid params");
+            debug!("invalid params error={}", err);
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
@@ -361,16 +390,16 @@ pub async fn handle_validators_and_threshold(
         Some(set) => set,
         None => {
             state.metrics.inc_rpc_request("hyperlane.validators_and_threshold", "error");
-            debug!(domain, "unknown destination domain");
+            debug!("unknown destination domain domain={}", domain);
             return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
         }
     };
     info!(
+        "resolved validators and threshold domain={} threshold={} validator_count={} mode={:?}",
         domain,
-        threshold = set.threshold,
-        validator_count = set.validators.len(),
-        mode = ?set.mode,
-        "resolved validators and threshold"
+        set.threshold,
+        set.validators.len(),
+        set.mode
     );
 
     let result = ValidatorsAndThresholdResult {
@@ -405,42 +434,47 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-            debug!(error = %err, "invalid params");
+            debug!("invalid params error={}", err);
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
 
     let message: HyperlaneMessage = params.message.into();
     debug!(
-        origin_domain = message.origin,
-        destination_domain = message.destination,
-        message_id = %format_h256(message.id()),
-        "parsed mailbox process message"
+        "parsed mailbox process message origin_domain={} destination_domain={} message_id={}",
+        message.origin,
+        message.destination,
+        format_h256(message.id())
     );
     let Some(set) = ism.validators_and_threshold(message.origin, message.id()) else {
         state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-        debug!(origin_domain = message.origin, "unknown destination domain");
+        debug!("unknown destination domain origin_domain={}", message.origin);
         return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
     };
     let mode = params.mode.unwrap_or(set.mode.clone());
-    debug!(mode = ?mode, threshold = set.threshold, validator_count = set.validators.len(), "selected ism mode");
+    debug!(
+        "selected ism mode mode={:?} threshold={} validator_count={}",
+        mode,
+        set.threshold,
+        set.validators.len()
+    );
     let metadata = match params.metadata.into_core(message.id(), mode.clone()) {
         Ok(meta) => meta,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-            debug!(error = %err, "invalid mailbox metadata");
+            debug!("invalid mailbox metadata error={}", err);
             return json_err(id, RpcErrorCode::InvalidParams, err);
         }
     };
 
     match ism.verify_proof(&message, &metadata, mode.clone()) {
         Ok(report) => {
-            info!(
-                message_id = %format_h256(report.message_id),
-                root = %format_h256(report.root),
-                quorum = report.quorum,
-                validators_used = report.validators_used.len(),
-                "hyperlane proof verified"
+            debug!(
+                "hyperlane proof verified message_id={} root={} quorum={} validators_used={}",
+                format_h256(report.message_id),
+                format_h256(report.root),
+                report.quorum,
+                report.validators_used.len()
             );
             let session_id = derive_session_id_hex(state.group_id_hex.as_deref(), report.message_id);
             if session_id.is_empty() {
@@ -463,11 +497,30 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
                 Ok(flag) => flag,
                 Err(err) => {
                     state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-                    debug!(error = %err, "failed to submit signing event");
+                    // Log validation errors at debug to avoid spam from repeated requests
+                    // Real errors (RPC failures, storage errors) stay at warn
+                    let is_validation_error = err.contains("invalid recipient")
+                        || err.contains("destination_address")
+                        || err.contains("amount_sompi")
+                        || err.contains("body too short")
+                        || err.contains("event already processed");
+                    if is_validation_error {
+                        debug!("hyperlane signing event rejected message_id={} error={}", format_h256(message.id()), err);
+                    } else {
+                        warn!(
+                            "failed to submit signing event from hyperlane message_id={} session_id={} error={}",
+                            format_h256(message.id()),
+                            session_id,
+                            err
+                        );
+                    }
                     return json_err(id, RpcErrorCode::SigningFailed, err);
                 }
             };
-            info!(session_id = %session_id, signing_submitted, "hyperlane mailbox processed");
+            info!(
+                "hyperlane signing event submitted session_id={} signing_submitted={}",
+                session_id, signing_submitted
+            );
 
             let result = MailboxProcessResult {
                 status: "proven",
@@ -486,6 +539,13 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
         }
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            warn!(
+                "hyperlane proof verification failed message_id={} origin_domain={} destination_domain={} error={}",
+                format_h256(message.id()),
+                message.origin,
+                message.destination,
+                err
+            );
             json_err(id, RpcErrorCode::InternalError, err)
         }
     }

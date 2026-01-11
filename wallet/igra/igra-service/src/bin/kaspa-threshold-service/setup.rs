@@ -12,17 +12,15 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{info, warn};
+use log::{info, warn};
 
 use iroh_base::{EndpointAddr, EndpointId, SecretKey as IrohSecretKey, TransportAddr};
 
 pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
-    let filter = tracing_subscriber::EnvFilter::try_new(level)
-        .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(true).with_thread_ids(true).try_init();
+    let log_dir = std::env::var("KASPA_IGRA_LOG_DIR").ok().filter(|s| !s.trim().is_empty());
+    igra_core::infrastructure::logging::init_logger(log_dir.as_deref(), level);
     igra_core::infrastructure::audit::init_audit_logger(Box::new(igra_core::infrastructure::audit::StructuredAuditLogger));
-    info!(level = %level, "logging initialized");
+    info!("logging initialized level={}", level);
     Ok(())
 }
 
@@ -38,7 +36,11 @@ pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
 }
 
 pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<Arc<AppConfig>, ThresholdError> {
-    info!(path = %path.display(), profile = %profile, "loading application config profile");
+    info!(
+        "loading application config profile path={} profile={}",
+        path.display(),
+        profile
+    );
     let app_config = Arc::new(igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile)?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
@@ -53,7 +55,10 @@ pub fn validate_startup_config(app_config: &AppConfig) -> bool {
     let missing_redeem_script = app_config.service.pskt.redeem_script_hex.trim().is_empty();
     let missing_hd = app_config.service.hd.is_none();
     if missing_source_addresses || (missing_redeem_script && missing_hd) {
-        warn!(missing_source_addresses, missing_redeem_script, missing_hd, "startup config missing required PSKT fields");
+        warn!(
+            "startup config missing required PSKT fields missing_source_addresses={} missing_redeem_script={} missing_hd={}",
+            missing_source_addresses, missing_redeem_script, missing_hd
+        );
         return false;
     }
     true
@@ -69,7 +74,7 @@ pub fn warn_test_mode(app_config: &AppConfig) {
 }
 
 pub fn init_storage(data_dir: &str) -> Result<Arc<RocksStorage>, ThresholdError> {
-    info!(data_dir = %data_dir, "initializing storage");
+    info!("initializing storage data_dir={}", data_dir);
     RocksStorage::open_in_dir(data_dir).map(Arc::new).map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
 }
 
@@ -83,7 +88,7 @@ pub fn init_signer_identity(app_config: &AppConfig) -> Result<SignerIdentity, Th
     let peer_id_env = app_config.iroh.peer_id.clone().unwrap_or_default();
     let seed_hex_env = app_config.iroh.signer_seed_hex.clone().unwrap_or_default();
     let (peer_id, seed_hex) = if !peer_id_env.is_empty() && !seed_hex_env.is_empty() {
-        info!(peer_id = %peer_id_env, "using iroh identity from config");
+        info!("using iroh identity from config peer_id={}", peer_id_env);
         (PeerId::from(peer_id_env), seed_hex_env)
     } else {
         info!("loading or creating iroh identity");
@@ -115,11 +120,31 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
                 group_id_hex
             )));
         }
-        info!(group_id = %group_id_hex, "group_id validated against group config");
+        info!("group_id validated against group config group_id={}", group_id_hex);
     } else {
-        info!(group_id = %group_id_hex, "group_id loaded");
+        info!("group_id loaded group_id={}", group_id_hex);
     }
     Ok(group_id)
+}
+
+pub fn log_startup_banner(app_config: &AppConfig, peer_id: &PeerId, group_id: &Hash32) {
+    let (threshold_m, threshold_n, finality_blue_score) = match app_config.group.as_ref() {
+        Some(group) => (group.threshold_m, group.threshold_n, group.finality_blue_score_threshold),
+        None => (0, 0, 0),
+    };
+    let rpc_enabled = app_config.rpc.enabled;
+    let rpc_addr = app_config.rpc.addr.as_str();
+
+    info!("╔════════════════════════════════════════════════════════════╗");
+    info!("║              IGRA Threshold Signing Service                ║");
+    info!("╠════════════════════════════════════════════════════════════╣");
+    info!("║ Peer ID:    {:<45} ║", peer_id.to_string());
+    info!("║ Group ID:   {:<45} ║", hex::encode(group_id));
+    info!("║ Threshold:  {:<45} ║", format!("{}/{} signers", threshold_m, threshold_n));
+    info!("║ Network ID: {:<45} ║", app_config.iroh.network_id);
+    info!("║ RPC:        {:<45} ║", if rpc_enabled { rpc_addr } else { "disabled" });
+    info!("║ Finality:   {:<45} ║", format!("blue_score +{}", finality_blue_score));
+    info!("╚════════════════════════════════════════════════════════════╝");
 }
 
 pub async fn init_iroh_gossip(
@@ -127,7 +152,11 @@ pub async fn init_iroh_gossip(
     static_addrs: Vec<EndpointAddr>,
     secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    info!(bind_port = bind_port, static_addr_count = static_addrs.len(), "initializing iroh gossip");
+    info!(
+        "initializing iroh gossip bind_port={:?} static_addr_count={}",
+        bind_port,
+        static_addrs.len()
+    );
     let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
     let static_provider = iroh::discovery::static_provider::StaticProvider::new();
     if !static_addrs.is_empty() {

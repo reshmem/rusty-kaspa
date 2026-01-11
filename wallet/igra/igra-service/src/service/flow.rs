@@ -13,8 +13,8 @@ use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::NodeRpc;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{SignatureSigner, SignatureVerifier, Transport};
+use log::{debug, info};
 use std::sync::Arc;
-use tracing::{debug, info};
 
 pub struct ServiceFlow {
     coordinator: Coordinator,
@@ -31,7 +31,7 @@ impl ServiceFlow {
         storage: Arc<dyn Storage>,
         transport: Arc<dyn Transport>,
     ) -> Result<Self, ThresholdError> {
-        info!(rpc_url = %redact_url(&config.node_rpc_url), "initializing service flow");
+        info!("initializing service flow rpc_url={}", redact_url(&config.node_rpc_url));
         let rpc = Arc::new(GrpcNodeRpc::connect(config.node_rpc_url.clone()).await?);
         debug!("grpc rpc connected");
         let metrics = Arc::new(Metrics::new()?);
@@ -74,10 +74,10 @@ impl ServiceFlow {
         iroh_config: IrohConfig,
     ) -> Result<Self, ThresholdError> {
         info!(
-            network_id = iroh_config.network_id,
-            group_id = %hex::encode(iroh_config.group_id),
-            bootstrap_nodes = iroh_config.bootstrap_nodes.len(),
-            "initializing iroh transport"
+            "initializing iroh transport network_id={} group_id={} bootstrap_nodes={}",
+            iroh_config.network_id,
+            hex::encode(iroh_config.group_id),
+            iroh_config.bootstrap_nodes.len()
         );
         let transport = Arc::new(IrohTransport::new(gossip, signer, verifier, storage.clone(), iroh_config)?);
         Self::new(config, storage, transport).await
@@ -92,22 +92,21 @@ impl ServiceFlow {
         expires_at_nanos: u64,
         coordinator_peer_id: PeerId,
     ) -> Result<Hash32, ThresholdError> {
-        let span = tracing::info_span!(
-            "propose_from_rpc",
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
-            event_id = %signing_event.event_id,
+        info!(
+            "propose_from_rpc session_id={} request_id={} event_id={} expires_at_nanos={} coordinator_peer_id={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
+            signing_event.event_id,
             expires_at_nanos,
-            coordinator_peer_id = %coordinator_peer_id,
+            coordinator_peer_id
         );
-        let _entered = span.enter();
         let pskt_config = resolve_pskt_config(config, &signing_event)?;
         debug!(
-            sig_op_count = pskt_config.sig_op_count,
-            source_addresses = pskt_config.source_addresses.len(),
-            outputs = pskt_config.outputs.len(),
-            has_redeem_script = !pskt_config.redeem_script_hex.trim().is_empty(),
-            "resolved pskt config"
+            "resolved pskt config sig_op_count={} source_addresses={} outputs={} has_redeem_script={}",
+            pskt_config.sig_op_count,
+            pskt_config.source_addresses.len(),
+            pskt_config.outputs.len(),
+            !pskt_config.redeem_script_hex.trim().is_empty()
         );
         self.coordinator
             .propose_session_from_rpc(
@@ -131,10 +130,10 @@ impl ServiceFlow {
         params: &kaspa_consensus_core::config::params::Params,
     ) -> Result<kaspa_consensus_core::tx::TransactionId, ThresholdError> {
         info!(
-            request_id = %request_id,
+            "finalizing and submitting transaction request_id={} required_signatures={} pubkey_count={}",
+            request_id,
             required_signatures,
-            pubkey_count = ordered_pubkeys.len(),
-            "finalizing and submitting transaction"
+            ordered_pubkeys.len()
         );
         self.coordinator
             .finalize_and_submit_multisig(self.rpc.as_ref(), request_id, pskt, required_signatures, ordered_pubkeys, params)

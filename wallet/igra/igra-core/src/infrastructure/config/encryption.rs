@@ -5,7 +5,7 @@ use kaspa_bip32::{Language, Mnemonic};
 use kaspa_wallet_core::encryption::{Encryptable, EncryptionKind};
 use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
-use tracing::{debug, info, warn};
+use log::{debug, info, warn};
 use zeroize::Zeroize;
 
 pub fn load_wallet_secret() -> Result<Secret, ThresholdError> {
@@ -22,7 +22,11 @@ pub fn encrypt_mnemonics(
     payment_secret: Option<&Secret>,
     wallet_secret: &Secret,
 ) -> Result<Encryptable<Vec<PrvKeyData>>, ThresholdError> {
-    info!(mnemonic_count = mnemonics.len(), has_payment_secret = payment_secret.is_some(), "encrypting mnemonics");
+    info!(
+        "encrypting mnemonics mnemonic_count={} has_payment_secret={}",
+        mnemonics.len(),
+        payment_secret.is_some()
+    );
     let mut key_data = Vec::with_capacity(mnemonics.len());
     for mut phrase in mnemonics.drain(..) {
         let mnemonic = Mnemonic::new(phrase.trim(), Language::English)

@@ -1,7 +1,9 @@
 use blake3::Hash;
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneProof;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
+use kaspa_addresses::Address;
 use reqwest::Client;
+use reqwest::StatusCode;
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{Secp256k1, SecretKey};
 use serde::Deserialize;
@@ -9,6 +11,56 @@ use std::env;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+#[derive(Deserialize)]
+struct JsonRpcErrorBody {
+    code: i64,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct JsonRpcEnvelope {
+    #[allow(dead_code)]
+    jsonrpc: Option<String>,
+    #[allow(dead_code)]
+    id: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
+    error: Option<JsonRpcErrorBody>,
+}
+
+#[derive(Debug, Clone)]
+enum RpcFailure {
+    Transport(String),
+    Http { status: StatusCode, body: String },
+    InvalidJson { error: String, body: String },
+    JsonRpc { code: i64, message: String },
+}
+
+impl RpcFailure {
+    fn summary(&self) -> String {
+        match self {
+            RpcFailure::Transport(message) => format!("transport_error={message}"),
+            RpcFailure::Http { status, body } => format!("http_status={status} body={body}"),
+            RpcFailure::InvalidJson { error, body } => format!("invalid_json_error={error} body={body}"),
+            RpcFailure::JsonRpc { code, message } => format!("json_rpc_error code={code} message={message}"),
+        }
+    }
+
+    fn is_event_already_processed(&self) -> bool {
+        match self {
+            RpcFailure::JsonRpc { code, message } => {
+                *code == -32006
+                    || message.contains("event already processed")
+                    || message.contains("event replayed")
+                    || message.contains("EventReplayed")
+            }
+            RpcFailure::Http { body, .. } | RpcFailure::InvalidJson { body, .. } => {
+                body.contains("event already processed") || body.contains("event replayed") || body.contains("EventReplayed")
+            }
+            RpcFailure::Transport(msg) => msg.contains("event already processed") || msg.contains("event replayed") || msg.contains("EventReplayed"),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct HyperlaneKeysFile {
@@ -25,6 +77,7 @@ struct HyperlaneValidator {
 const DEFAULT_ORIGIN_DOMAIN: u32 = 5;
 const DEFAULT_DESTINATION_DOMAIN: u32 = 7;
 const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000000000000000000000000dead"; // burn-like payload
+const DEFAULT_DESTINATION_ADDRESS: &str = "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw";
 
 #[allow(dead_code)]
 fn now_nanos() -> u64 {
@@ -59,16 +112,12 @@ fn build_hyperlane_message(
     destination: u32,
     recipient_payload: [u8; 32],
     amount_sompi: u64,
+    destination_address: &str,
 ) -> HyperlaneMessage {
-    HyperlaneMessage {
-        version,
-        nonce,
-        origin,
-        sender,
-        destination,
-        recipient: H256::from(recipient_payload),
-        body: amount_sompi.to_be_bytes().to_vec(),
-    }
+    let mut body = Vec::with_capacity(8 + destination_address.len());
+    body.extend_from_slice(&amount_sompi.to_le_bytes());
+    body.extend_from_slice(destination_address.as_bytes());
+    HyperlaneMessage { version, nonce, origin, sender, destination, recipient: H256::from(recipient_payload), body }
 }
 
 fn signing_hash(checkpoint: &CheckpointWithMessageId) -> H256 {
@@ -80,6 +129,9 @@ fn make_signatures(
     validators: &[HyperlaneValidator],
     threshold: usize,
 ) -> Result<Vec<String>, String> {
+    if validators.len() < threshold {
+        return Err(format!("not enough validators to satisfy threshold (have {}, need {})", validators.len(), threshold));
+    }
     let secp = Secp256k1::new();
     let msg = secp256k1::Message::from_digest_slice(signing_hash(checkpoint).as_ref()).map_err(|e| format!("signing hash: {e}"))?;
     let mut sigs = Vec::new();
@@ -105,7 +157,7 @@ async fn submit_mailbox_process(
     checkpoint: &CheckpointWithMessageId,
     proof: Option<HyperlaneProof>,
     signatures: &[String],
-) -> Result<(), String> {
+) -> Result<serde_json::Value, RpcFailure> {
     let mode = if proof.is_some() { "merkle_root_multisig" } else { "message_id_multisig" };
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -142,15 +194,26 @@ async fn submit_mailbox_process(
         }
     });
 
-    let response = client.post(rpc_url).json(&payload).send().await.map_err(|err| err.to_string())?;
+    let response = client
+        .post(rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| RpcFailure::Transport(err.to_string()))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("rpc error {}: {}", status, body));
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(RpcFailure::Http { status, body });
     }
 
-    Ok(())
+    let envelope: JsonRpcEnvelope =
+        serde_json::from_str(&body).map_err(|err| RpcFailure::InvalidJson { error: err.to_string(), body })?;
+    if let Some(err) = envelope.error {
+        return Err(RpcFailure::JsonRpc { code: err.code, message: err.message });
+    }
+    Ok(envelope.result.unwrap_or(serde_json::Value::Null))
 }
 
 #[tokio::main]
@@ -158,8 +221,15 @@ async fn main() -> Result<(), String> {
     let rpc_url = env::var("IGRA_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8088/rpc".to_string());
     let keys_path = env::var("HYPERLANE_KEYS_PATH").unwrap_or_else(|_| "/data/igra/hyperlane-keys.json".to_string());
     let interval_secs = parse_env_u64("HYPERLANE_INTERVAL_SECS", 10);
+    let retry_delay_secs = parse_env_u64("HYPERLANE_RETRY_DELAY_SECS", 1);
     let start_epoch_secs = parse_env_u64("HYPERLANE_START_EPOCH_SECS", 0);
     let amount_sompi = parse_env_u64("HYPERLANE_AMOUNT_SOMPI", 10_000_000); // 0.1 KAS
+    let destination_address =
+        env::var("HYPERLANE_DESTINATION").unwrap_or_else(|_| DEFAULT_DESTINATION_ADDRESS.to_string()).trim().to_string();
+    if destination_address.is_empty() {
+        return Err("HYPERLANE_DESTINATION must be set".to_string());
+    }
+    let _ = Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
     let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD").unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
     let recipient_bytes: [u8; 32] = hex::decode(recipient_payload.trim_start_matches("0x"))
         .map_err(|e| format!("invalid recipient payload: {e}"))?
@@ -174,12 +244,13 @@ async fn main() -> Result<(), String> {
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;
     eprintln!(
-        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} origin_domain={} dest_domain={} sender={}",
+        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} destination_address={} origin_domain={} dest_domain={} sender={}",
         rpc_url,
         keys.validators.len(),
         interval_secs,
         start_epoch_secs,
         amount_sompi,
+        destination_address,
         domain,
         destination_domain,
         hex::encode(sender)
@@ -193,23 +264,29 @@ async fn main() -> Result<(), String> {
     }
 
     let client = Client::new();
+
+    // IMPORTANT: Do not advance to the next event until the previous one is accepted by RPC.
+    // Use a sequential nonce (seeded from the current slot for convenience), and only increment
+    // after a successful JSON-RPC response.
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let initial_slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
+    let mut nonce: u32 = initial_slot.try_into().unwrap_or(0);
+
     loop {
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
-        let nonce: u32 = slot.try_into().unwrap_or(u32::MAX);
         let version = 3u8;
         let origin = domain.parse::<u32>().unwrap_or(5);
         let destination = destination_domain;
         eprintln!(
-            "[fake-hyperlane] tick slot={} nonce={} origin={} dest={} amount={} validators={}",
-            slot,
+            "[fake-hyperlane] tick nonce={} origin={} dest_domain={} amount={} destination_address={} validators={}",
             nonce,
             origin,
             destination,
             amount_sompi,
+            destination_address,
             keys.validators.len()
         );
-        let msg = build_hyperlane_message(version, nonce, origin, sender, destination, recipient_bytes, amount_sompi);
+        let msg =
+            build_hyperlane_message(version, nonce, origin, sender, destination, recipient_bytes, amount_sompi, &destination_address);
         let checkpoint = CheckpointWithMessageId {
             checkpoint: Checkpoint {
                 merkle_tree_hook_address: H256::zero(),
@@ -233,12 +310,39 @@ async fn main() -> Result<(), String> {
             2
         );
 
-        if let Err(err) = submit_mailbox_process(&client, &rpc_url, &msg, &checkpoint, None, &signatures).await {
-            eprintln!("[fake-hyperlane] submit failed rpc={} nonce={} mode={} err={}", rpc_url, nonce, mode, err);
-        } else {
-            eprintln!("[fake-hyperlane] submit ok rpc={} nonce={} mode={}", rpc_url, nonce, mode);
+        match submit_mailbox_process(&client, &rpc_url, &msg, &checkpoint, None, &signatures).await {
+            Ok(result) => {
+                let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("ok");
+                let signing_submitted = result.get("signing_submitted").and_then(|v| v.as_bool());
+                eprintln!(
+                    "[fake-hyperlane] submit ok rpc={} nonce={} mode={} status={} signing_submitted={:?}",
+                    rpc_url, nonce, mode, status, signing_submitted
+                );
+                nonce = nonce.saturating_add(1);
+                sleep(Duration::from_secs(interval_secs)).await;
+            }
+            Err(err) => {
+                if err.is_event_already_processed() {
+                    eprintln!(
+                        "[fake-hyperlane] submit skipped (already processed) rpc={} nonce={} mode={} {}",
+                        rpc_url,
+                        nonce,
+                        mode,
+                        err.summary()
+                    );
+                    nonce = nonce.saturating_add(1);
+                    sleep(Duration::from_secs(interval_secs)).await;
+                } else {
+                    eprintln!(
+                        "[fake-hyperlane] submit failed rpc={} nonce={} mode={} {}",
+                        rpc_url,
+                        nonce,
+                        mode,
+                        err.summary()
+                    );
+                    sleep(Duration::from_secs(retry_delay_secs.max(1))).await;
+                }
+            }
         }
-
-        sleep(Duration::from_secs(interval_secs)).await;
     }
 }

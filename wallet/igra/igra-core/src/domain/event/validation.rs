@@ -75,7 +75,8 @@ pub fn into_signing_event(wire: SigningEventWire) -> Result<EventParsingResult, 
 
 fn decode_hash32(value: &str) -> Result<[u8; 32], ThresholdError> {
     let trimmed = value.trim();
-    let bytes = hex::decode(trimmed).map_err(|e| ThresholdError::Message(format!("invalid hex '{trimmed}': {e}")))?;
+    let stripped = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")).unwrap_or(trimmed);
+    let bytes = hex::decode(stripped).map_err(|e| ThresholdError::Message(format!("invalid hex '{trimmed}': {e}")))?;
     let array: [u8; 32] =
         bytes.as_slice().try_into().map_err(|_| ThresholdError::Message(format!("expected 32 bytes, got {}", bytes.len())))?;
     Ok(array)
@@ -88,7 +89,8 @@ fn resolve_derivation_path(path: &str, index: Option<u32>) -> Result<(Derivation
         if trimmed.is_empty() {
             return Ok((DerivationPathSource::DerivedFromIndex { index }, expected));
         }
-        if trimmed != expected {
+        let normalized = normalize_derivation_path(trimmed)?;
+        if normalized != expected {
             return Err(ThresholdError::InvalidDerivationPath(format!(
                 "derivation_path '{}' does not match derivation_index {} (expected '{}')",
                 trimmed, index, expected
@@ -99,8 +101,7 @@ fn resolve_derivation_path(path: &str, index: Option<u32>) -> Result<(Derivation
     if trimmed.is_empty() {
         return Err(ThresholdError::Message("missing derivation_path (or derivation_index)".to_string()));
     }
-    validate_derivation_path(trimmed)?;
-    Ok((DerivationPathSource::ExplicitPath, trimmed.to_string()))
+    Ok((DerivationPathSource::ExplicitPath, normalize_derivation_path(trimmed)?))
 }
 
 fn validate_id(label: &str, value: &str) -> Result<RequestId, ThresholdError> {
@@ -119,22 +120,50 @@ fn validate_peer_id(label: &str, value: &str) -> Result<PeerId, ThresholdError> 
     Ok(PeerId::from(value))
 }
 
-fn validate_derivation_path(path: &str) -> Result<(), ThresholdError> {
+fn normalize_derivation_path(path: &str) -> Result<String, ThresholdError> {
     let trimmed = path.trim();
-    if !trimmed.starts_with('m') {
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut parts = trimmed.split('/').map(str::trim);
+    let root = parts.next().unwrap_or_default();
+    if root != "m" {
         return Err(ThresholdError::InvalidDerivationPath(format!("invalid derivation path: '{trimmed}'")));
     }
-    if trimmed == "m" {
-        return Err(ThresholdError::InvalidDerivationPath("derivation path must include at least one segment".to_string()));
-    }
-    for part in trimmed.split('/').skip(1) {
+
+    let mut normalized_parts = Vec::new();
+    normalized_parts.push("m".to_string());
+
+    for part in parts {
         if part.is_empty() {
             return Err(ThresholdError::InvalidDerivationPath(format!("invalid derivation path: '{trimmed}'")));
         }
-        let part = part.strip_suffix('\'').unwrap_or(part);
-        if part.parse::<u32>().is_err() {
+
+        let (value, hardened) = if let Some(value) = part.strip_suffix('\'') {
+            (value, true)
+        } else if let Some(value) = part.strip_suffix('h') {
+            (value, true)
+        } else if let Some(value) = part.strip_suffix('H') {
+            (value, true)
+        } else {
+            (part, false)
+        };
+
+        if value.parse::<u32>().is_err() {
             return Err(ThresholdError::InvalidDerivationPath(format!("invalid derivation path: '{trimmed}'")));
         }
+
+        if hardened {
+            normalized_parts.push(format!("{value}'"));
+        } else {
+            normalized_parts.push(value.to_string());
+        }
     }
-    Ok(())
+
+    if normalized_parts.len() == 1 {
+        return Err(ThresholdError::InvalidDerivationPath("derivation path must include at least one segment".to_string()));
+    }
+
+    Ok(normalized_parts.join("/"))
 }

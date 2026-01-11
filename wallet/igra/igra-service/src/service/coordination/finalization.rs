@@ -13,10 +13,10 @@ use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{Transport, TransportMessage};
 use kaspa_consensus_core::config::params::{DEVNET_PARAMS, MAINNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
 use kaspa_wallet_core::prelude::Secret;
+use log::{debug, info, trace, warn};
 use secp256k1::PublicKey;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn};
 
 pub async fn collect_and_finalize(
     app_config: Arc<igra_core::infrastructure::config::AppConfig>,
@@ -27,9 +27,10 @@ pub async fn collect_and_finalize(
     request_id: RequestId,
     signing_event: SigningEvent,
 ) -> Result<(), ThresholdError> {
+    let started_at = Instant::now();
     if let Some(request) = storage.get_request(&request_id)? {
         if matches!(request.decision, RequestDecision::Finalized) {
-            debug!(request_id = %request_id, "ignoring finalize for already finalized request");
+            debug!("ignoring finalize for already finalized request request_id={}", request_id);
             return Ok(());
         }
     }
@@ -41,27 +42,33 @@ pub async fn collect_and_finalize(
 
     let proposal = storage.get_proposal(&request_id)?.ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
     debug!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        kpsbt_len = proposal.kpsbt_blob.len(),
-        "loaded stored proposal"
+        "loaded stored proposal session_id={} request_id={} kpsbt_len={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        proposal.kpsbt_blob.len()
     );
     let pskt = pskt_multisig::deserialize_pskt_signer(&proposal.kpsbt_blob)?;
     let input_count = pskt.inputs.len();
+    let timeout_seconds = app_config.runtime.session_timeout_seconds;
     info!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        required_signatures = required,
+        "starting signature collection session_id={} request_id={} required_signatures={} input_count={} timeout_seconds={} recipient={} amount_sompi={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        required,
         input_count,
-        "collecting partial signatures"
+        timeout_seconds,
+        signing_event.destination_address,
+        signing_event.amount_sompi
     );
 
     let mut last_partial_len = 0usize;
+    let mut last_sender_peer_id: Option<igra_core::foundation::PeerId> = None;
     if has_threshold(&storage.list_partial_sigs(&request_id)?, input_count, required) {
         info!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
-            "threshold already met from stored partial sigs"
+            "signature threshold already met from stored partial sigs session_id={} request_id={} elapsed_ms={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
+            started_at.elapsed().as_millis()
         );
         return finalize_with_partials(
             &app_config,
@@ -72,6 +79,7 @@ pub async fn collect_and_finalize(
             &request_id,
             &signing_event,
             required,
+            started_at,
         )
         .await;
     }
@@ -94,13 +102,13 @@ pub async fn collect_and_finalize(
                         continue;
                     }
                     trace!(
-                        session_id = %hex::encode(session_id.as_hash()),
-                        request_id = %request_id,
-                        signer_peer_id = %envelope.sender_peer_id,
-                        input_index = sig.input_index,
-                        pubkey = %hex::encode(&sig.pubkey),
-                        sig_len = sig.signature.len(),
-                        "partial signature received"
+                        "partial signature received session_id={} request_id={} signer_peer_id={} input_index={} pubkey={} sig_len={}",
+                        hex::encode(session_id.as_hash()),
+                        request_id,
+                        envelope.sender_peer_id,
+                        sig.input_index,
+                        hex::encode(&sig.pubkey),
+                        sig.signature.len()
                     );
                     storage.insert_partial_sig(
                         &request_id,
@@ -112,23 +120,24 @@ pub async fn collect_and_finalize(
                             timestamp_nanos: envelope.timestamp_nanos,
                         },
                     )?;
+                    last_sender_peer_id = Some(envelope.sender_peer_id.clone());
                 }
             }
             Ok(Some(Err(err))) => {
                 warn!(
-                    session_id = %hex::encode(session_id.as_hash()),
-                    request_id = %request_id,
-                    error = %err,
-                    "session stream error"
+                    "session stream error session_id={} request_id={} error={}",
+                    hex::encode(session_id.as_hash()),
+                    request_id,
+                    err
                 );
             }
             Ok(None) => break,
             Err(_) => {
                 warn!(
-                    session_id = %hex::encode(session_id.as_hash()),
-                    request_id = %request_id,
-                    remaining_ms = remaining.as_millis(),
-                    "session receive timeout"
+                    "signature collection timed out session_id={} request_id={} remaining_ms={}",
+                    hex::encode(session_id.as_hash()),
+                    request_id,
+                    remaining.as_millis()
                 );
                 break;
             }
@@ -136,18 +145,45 @@ pub async fn collect_and_finalize(
 
         let partials = storage.list_partial_sigs(&request_id)?;
         if partials.len() != last_partial_len {
-            info!(
-                session_id = %hex::encode(session_id.as_hash()),
-                request_id = %request_id,
-                collected = partials.len(),
-                required = required,
-                "partial signatures updated"
-            );
+            if let Some(peer) = last_sender_peer_id.take() {
+                let required_total = required.saturating_mul(input_count);
+                let progress_pct = if required_total == 0 { 0 } else { (partials.len().saturating_mul(100)) / required_total };
+                info!(
+                    "signature received session_id={} request_id={} collected={} required={} progress_pct={} remaining={} from_peer={}",
+                    hex::encode(session_id.as_hash()),
+                    request_id,
+                    partials.len(),
+                    required.saturating_mul(input_count),
+                    progress_pct,
+                    required_total.saturating_sub(partials.len()),
+                    peer
+                );
+            } else {
+                let required_total = required.saturating_mul(input_count);
+                let progress_pct = if required_total == 0 { 0 } else { (partials.len().saturating_mul(100)) / required_total };
+                info!(
+                    "signature progress session_id={} request_id={} collected={} required={} progress_pct={} remaining={}",
+                    hex::encode(session_id.as_hash()),
+                    request_id,
+                    partials.len(),
+                    required.saturating_mul(input_count),
+                    progress_pct,
+                    required_total.saturating_sub(partials.len())
+                );
+            }
             last_partial_len = partials.len();
         } else {
             continue;
         }
         if has_threshold(&partials, input_count, required) {
+            info!(
+                "signature threshold reached session_id={} request_id={} collected={} required={} collection_time_ms={}",
+                hex::encode(session_id.as_hash()),
+                request_id,
+                partials.len(),
+                required,
+                started_at.elapsed().as_millis()
+            );
             return finalize_with_partials(
                 &app_config,
                 &flow,
@@ -157,6 +193,7 @@ pub async fn collect_and_finalize(
                 &request_id,
                 &signing_event,
                 required,
+                started_at,
             )
             .await;
         }
@@ -165,7 +202,10 @@ pub async fn collect_and_finalize(
     let event_hash_hex = match event_hash(&signing_event) {
         Ok(hash) => hex::encode(hash),
         Err(err) => {
-            warn!(request_id = %request_id, error = %err, "failed to compute event hash for timeout audit");
+            warn!(
+                "failed to compute event hash for timeout audit request_id={} error={}",
+                request_id, err
+            );
             "unknown".to_string()
         }
     };
@@ -178,12 +218,22 @@ pub async fn collect_and_finalize(
         timestamp_ns: now_nanos(),
     });
     warn!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        collected = last_partial_len,
-        required = required,
-        timeout_secs = app_config.runtime.session_timeout_seconds,
-        "session timed out without threshold"
+        "session timed out without threshold session_id={} request_id={} collected={} required={} timeout_secs={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        last_partial_len,
+        required,
+        app_config.runtime.session_timeout_seconds
+    );
+    warn!(
+        "=== SESSION FAILED === session_id={} request_id={} recipient={} amount_sompi={} signatures_collected={} signatures_required={} duration_ms={} outcome=TIMEOUT",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        signing_event.destination_address,
+        signing_event.amount_sompi,
+        last_partial_len,
+        required,
+        started_at.elapsed().as_millis()
     );
     flow.lifecycle().on_failed(&request_id, "session_timeout");
 
@@ -199,33 +249,65 @@ async fn finalize_with_partials(
     request_id: &RequestId,
     signing_event: &SigningEvent,
     required: usize,
+    started_at: Instant,
 ) -> Result<(), ThresholdError> {
     let proposal = storage.get_proposal(request_id)?.ok_or_else(|| ThresholdError::Message("missing stored proposal".to_string()))?;
     let partials = storage.list_partial_sigs(request_id)?;
     flow.lifecycle().on_threshold_met(request_id, partials.len(), required);
-    debug!(request_id = %request_id, partial_sig_count = partials.len(), "applying partial signatures");
+    debug!(
+        "applying partial signatures request_id={} partial_sig_count={}",
+        request_id,
+        partials.len()
+    );
     let pskt = pskt_multisig::apply_partial_sigs(&proposal.kpsbt_blob, &partials)?;
+    info!(
+        "starting transaction finalization session_id={} request_id={} signatures_collected={} required={} input_count={} output_count={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        partials.len(),
+        required,
+        pskt.inputs.len(),
+        pskt.outputs.len()
+    );
     let ordered_pubkeys = derive_ordered_pubkeys(&app_config.service, signing_event)?;
-    debug!(request_id = %request_id, pubkey_count = ordered_pubkeys.len(), "derived ordered pubkeys");
+    debug!(
+        "derived ordered pubkeys request_id={} pubkey_count={}",
+        request_id,
+        ordered_pubkeys.len()
+    );
     let params = params_for_network_id(app_config.iroh.network_id);
     info!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        signatures = partials.len(),
-        required = required,
-        "finalizing and submitting transaction"
+        "finalizing and submitting transaction session_id={} request_id={} signatures={} required={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        partials.len(),
+        required
     );
-    let tx_id = flow.finalize_and_submit(request_id, pskt, required, &ordered_pubkeys, params).await?;
+    let tx_id = match flow.finalize_and_submit(request_id, pskt, required, &ordered_pubkeys, params).await {
+        Ok(tx_id) => tx_id,
+        Err(err) => {
+            warn!(
+                "=== SESSION FAILED === session_id={} request_id={} recipient={} amount_sompi={} duration_ms={} outcome=FINALIZE_ERROR error={}",
+                hex::encode(session_id.as_hash()),
+                request_id,
+                signing_event.destination_address,
+                signing_event.amount_sompi,
+                started_at.elapsed().as_millis(),
+                err
+            );
+            return Err(err);
+        }
+    };
     let final_tx_id = TransactionId::from(tx_id);
     flow.lifecycle().on_finalized(request_id, &final_tx_id);
     flow.metrics().inc_session_stage("finalized");
     info!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        signatures = partials.len(),
-        required = required,
-        tx_id = %tx_id,
-        "finalized transaction with threshold signatures"
+        "finalized transaction with threshold signatures session_id={} request_id={} signatures={} required={} tx_id={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        partials.len(),
+        required,
+        tx_id
     );
     let event_hash = event_hash(signing_event)?;
     audit(AuditEvent::TransactionFinalized {
@@ -243,6 +325,17 @@ async fn finalize_with_partials(
         blue_score: accepted_blue_score,
         timestamp_ns: now_nanos(),
     });
+    info!(
+        "=== SESSION COMPLETE === session_id={} request_id={} tx_id={} recipient={} amount_kas={} signers_participated={} blue_score={} duration_ms={} outcome=SUCCESS",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        tx_id,
+        signing_event.destination_address,
+        signing_event.amount_sompi as f64 / 100_000_000.0,
+        partials.len(),
+        accepted_blue_score,
+        started_at.elapsed().as_millis()
+    );
     storage.update_request_final_tx_score(request_id, accepted_blue_score)?;
     transport.publish_finalize(session_id, request_id, *final_tx_id.as_hash()).await?;
 
@@ -250,10 +343,8 @@ async fn finalize_with_partials(
         let confirmations = group.finality_blue_score_threshold;
         if confirmations > 0 {
             debug!(
-                request_id = %request_id,
-                confirmations = confirmations,
-                accepted_blue_score = accepted_blue_score,
-                "spawning transaction confirmation monitor"
+                "spawning transaction confirmation monitor request_id={} confirmations={} accepted_blue_score={}",
+                request_id, confirmations, accepted_blue_score
             );
             let node_url = app_config.service.node_rpc_url.clone();
             let request_id = request_id.clone();
@@ -265,23 +356,21 @@ async fn finalize_with_partials(
                         match monitor.monitor_until_confirmed(accepted_blue_score).await {
                             Ok(score) => {
                                 if let Err(err) = storage.update_request_final_tx_score(&request_id, score) {
-                                    warn!(request_id = %request_id, error = %err, "failed to update final tx score");
+                                    warn!("failed to update final tx score request_id={} error={}", request_id, err);
                                 } else {
                                     info!(
-                                        request_id = %request_id,
-                                        confirmations = confirmations,
-                                        blue_score = score,
-                                        "transaction reached confirmation threshold"
+                                        "transaction reached confirmation threshold request_id={} confirmations={} blue_score={}",
+                                        request_id, confirmations, score
                                     );
                                 }
                             }
                             Err(err) => {
-                                warn!(request_id = %request_id, error = %err, "transaction monitor failed");
+                                warn!("transaction monitor failed request_id={} error={}", request_id, err);
                             }
                         }
                     }
                     Err(err) => {
-                        warn!(error = %err, "monitor rpc connect failed");
+                        warn!("monitor rpc connect failed error={}", err);
                     }
                 }
             });

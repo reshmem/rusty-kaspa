@@ -4,6 +4,7 @@ use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
 use crate::foundation::{PeerId, RequestId, SessionId, TransactionId};
 use std::marker::PhantomData;
+use log::{info, warn};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum DecisionState {
@@ -158,8 +159,26 @@ fn transition<TargetState>(
     mut inner: SigningRequest,
     next: RequestDecision,
 ) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
-    ensure_valid_transition(&inner.decision, &next)?;
+    let from = inner.decision.clone();
+    if let Err(err) = ensure_valid_transition(&from, &next) {
+        warn!(
+            "invalid request state transition request_id={} session_id={} from_state={:?} to_state={:?} error={}",
+            inner.request_id,
+            hex::encode(inner.session_id.as_hash()),
+            from,
+            next,
+            err
+        );
+        return Err(err);
+    }
     inner.decision = next;
+    info!(
+        "request state transition request_id={} session_id={} from_state={:?} to_state={:?}",
+        inner.request_id,
+        hex::encode(inner.session_id.as_hash()),
+        from,
+        inner.decision
+    );
     Ok(TypedSigningRequest { inner, _state: PhantomData })
 }
 
@@ -169,10 +188,30 @@ fn transition_with_tx<TargetState>(
     tx_id: Option<TransactionId>,
     accepted_blue_score: Option<u64>,
 ) -> Result<TypedSigningRequest<TargetState>, ThresholdError> {
-    ensure_valid_transition(&inner.decision, &next)?;
+    let from = inner.decision.clone();
+    if let Err(err) = ensure_valid_transition(&from, &next) {
+        warn!(
+            "invalid request state transition request_id={} session_id={} from_state={:?} to_state={:?} error={}",
+            inner.request_id,
+            hex::encode(inner.session_id.as_hash()),
+            from,
+            next,
+            err
+        );
+        return Err(err);
+    }
     inner.decision = next;
     inner.final_tx_id = tx_id;
     inner.final_tx_accepted_blue_score = accepted_blue_score;
+    info!(
+        "request state transition request_id={} session_id={} from_state={:?} to_state={:?} tx_id={:?} accepted_blue_score={:?}",
+        inner.request_id,
+        hex::encode(inner.session_id.as_hash()),
+        from,
+        inner.decision,
+        inner.final_tx_id,
+        inner.final_tx_accepted_blue_score
+    );
     Ok(TypedSigningRequest { inner, _state: PhantomData })
 }
 

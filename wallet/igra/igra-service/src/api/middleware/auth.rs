@@ -1,18 +1,26 @@
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
+use log::{debug, info, warn};
+use std::sync::OnceLock;
 use subtle::ConstantTimeEq;
-use tracing::{debug, info, warn};
+
+static AUTH_DISABLED_LOGGED: OnceLock<()> = OnceLock::new();
+static AUTH_ENABLED_LOGGED: OnceLock<()> = OnceLock::new();
 
 pub fn authorize_rpc(headers: &HeaderMap, expected: Option<&str>) -> Result<(), String> {
     let expected = match expected {
         Some(value) if !value.trim().is_empty() => value.trim(),
         _ => {
-            info!("rpc auth disabled (no token configured)");
+            if AUTH_DISABLED_LOGGED.set(()).is_ok() {
+                info!("rpc auth disabled (no token configured)");
+            }
             return Ok(());
         }
     };
 
-    info!("rpc auth enabled");
+    if AUTH_ENABLED_LOGGED.set(()).is_ok() {
+        info!("rpc auth enabled");
+    }
     if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
         if constant_time_eq(value, expected) {
             debug!("rpc auth succeeded via x-api-key");

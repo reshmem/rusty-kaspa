@@ -14,22 +14,24 @@ use igra_core::infrastructure::hyperlane::ConfiguredIsm;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
 use igra_service::service::coordination::run_coordination_loop;
 use igra_service::service::flow::ServiceFlow;
+use igra_service::service::metrics::Metrics;
 use igra_service::transport::iroh::IrohConfig;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use std::time::Duration;
+use log::{debug, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse_args();
     setup::init_logging(&args.log_level)?;
     args.apply_to_env();
-    info!(log_level = %args.log_level, "kaspa-threshold-service starting");
+    info!("kaspa-threshold-service starting log_level={}", args.log_level);
 
     // If a profile is provided (via KASPA_IGRA_PROFILE), load `[profiles.<name>]` overrides from the TOML.
     let app_config = if let Ok(profile) = std::env::var("KASPA_IGRA_PROFILE") {
-        info!(profile = %profile.trim(), "loading config profile");
+        info!("loading config profile profile={}", profile.trim());
         let data_dir = igra_core::infrastructure::config::resolve_data_dir()?;
         let config_path = igra_core::infrastructure::config::resolve_config_path(&data_dir)?;
         setup::load_app_config_profile(&config_path, profile.trim())?
@@ -37,10 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup::load_app_config()?
     };
     info!(
-        rpc_enabled = app_config.rpc.enabled,
-        network_id = app_config.iroh.network_id,
-        has_group_config = app_config.group.is_some(),
-        "config loaded"
+        "config loaded rpc_enabled={} network_id={} has_group_config={}",
+        app_config.rpc.enabled,
+        app_config.iroh.network_id,
+        app_config.group.is_some()
     );
     if !setup::validate_startup_config(&app_config) {
         return Ok(());
@@ -48,18 +50,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup::warn_test_mode(&app_config);
 
     let storage = setup::init_storage(&app_config.service.data_dir)?;
-    info!(data_dir = %app_config.service.data_dir, "storage initialized");
+    info!("storage initialized data_dir={}", app_config.service.data_dir);
 
     let audit_id = args.audit.clone().or_else(igra_core::infrastructure::config::get_audit_request_id);
     if let Some(request_id) = audit_id {
-        info!(request_id = %request_id, "audit mode requested");
+        info!("audit mode requested request_id={}", request_id);
         modes::audit::dump_audit_trail(&request_id, &storage)?;
         return Ok(());
     }
 
     let finalize_path = args.finalize.clone().or_else(igra_core::infrastructure::config::get_finalize_pskt_json_path);
     if let Some(path) = finalize_path {
-        info!(path = %path.display(), "finalize mode requested");
+        info!("finalize mode requested path={}", path.display());
         modes::finalize::finalize_from_json(&path, &storage, &app_config).await?;
         return Ok(());
     }
@@ -67,14 +69,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("initializing iroh identity");
     let identity = setup::init_signer_identity(&app_config)?;
     let group_id = setup::resolve_group_id(&app_config)?;
+    setup::log_startup_banner(&app_config, &identity.peer_id, &group_id);
     let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
     let iroh_secret = setup::derive_iroh_secret(&app_config.iroh.signer_seed_hex.clone().unwrap_or_else(|| "".to_string()))?;
 
     info!(
-        peer_id = %identity.peer_id,
-        group_id = %hex::encode(group_id),
-        bootstrap_addrs = static_addrs.len(),
-        "iroh identity ready"
+        "iroh identity ready peer_id={} group_id={} bootstrap_addrs={}",
+        identity.peer_id,
+        hex::encode(group_id),
+        static_addrs.len()
     );
     let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
 
@@ -84,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ServiceFlow::new_with_iroh(&app_config.service, storage.clone(), gossip, identity.signer, identity.verifier, iroh_config)
             .await?;
     let flow = Arc::new(flow);
+    spawn_status_reporter(flow.metrics());
     let transport = flow.transport();
     let peer_id = identity.peer_id;
     let peer_id_for_state = peer_id.clone();
@@ -95,11 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage_for_loop = storage.clone();
     let group_id_for_loop = group_id;
     tokio::spawn(async move {
-        info!(
-            peer_id = %peer_id,
-            group_id = %hex::encode(group_id_for_loop),
-            "starting coordination loop"
-        );
+        info!("starting coordination loop peer_id={} group_id={}", peer_id, hex::encode(group_id_for_loop));
         if let Err(err) =
             run_coordination_loop(app_config_for_loop, flow_for_loop, transport_for_loop, storage_for_loop, peer_id, group_id_for_loop)
                 .await
@@ -111,10 +111,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if app_config.rpc.enabled {
         let rpc_addr: SocketAddr = app_config.rpc.addr.parse().map_err(|err| format!("invalid KASPA_IGRA_RPC_ADDR: {}", err))?;
         info!(
-            rpc_addr = %rpc_addr,
-            rate_limit_rps = app_config.rpc.rate_limit_rps.unwrap_or(30),
-            rate_limit_burst = app_config.rpc.rate_limit_burst.unwrap_or(60),
-            "starting json-rpc server"
+            "starting json-rpc server rpc_addr={} rate_limit_rps={} rate_limit_burst={}",
+            rpc_addr,
+            app_config.rpc.rate_limit_rps.unwrap_or(30),
+            app_config.rpc.rate_limit_burst.unwrap_or(60)
         );
         let hyperlane_ism =
             if app_config.hyperlane.domains.is_empty() { None } else { Some(ConfiguredIsm::from_config(&app_config.hyperlane)?) };
@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let poll_secs = app_config.hyperlane.poll_secs;
             let state = rpc_state.clone();
             tokio::spawn(async move {
-                info!(dir = %dir, poll_secs, "starting hyperlane watcher");
+                info!("starting hyperlane watcher dir={} poll_secs={}", dir, poll_secs);
                 if let Err(err) = run_hyperlane_watcher(state, PathBuf::from(dir), std::time::Duration::from_secs(poll_secs)).await {
                     warn!("hyperlane watcher error: {}", err);
                 }
@@ -167,6 +167,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_test_pskt_mode(&app_config, flow.as_ref()).await?;
 
     Ok(())
+}
+
+fn spawn_status_reporter(metrics: Arc<Metrics>) {
+    tokio::spawn(async move {
+        let interval_seconds = 300u64;
+        info!("status reporter started interval_seconds={}", interval_seconds);
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_seconds));
+        loop {
+            interval.tick().await;
+            let snapshot = metrics.snapshot();
+            info!(
+                "periodic status report uptime_minutes={} sessions_total={} sessions_finalized={} sessions_timed_out={} signer_acks_accepted={} signer_acks_rejected={} partial_sigs_total={} rpc_ok={} rpc_error={}",
+                snapshot.uptime.as_secs() / 60,
+                snapshot.sessions_proposal_received,
+                snapshot.sessions_finalized,
+                snapshot.sessions_timed_out,
+                snapshot.signer_acks_accepted,
+                snapshot.signer_acks_rejected,
+                snapshot.partial_sigs_total,
+                snapshot.rpc_ok,
+                snapshot.rpc_error
+            );
+        }
+    });
 }
 
 async fn run_test_pskt_mode(
@@ -188,13 +212,14 @@ async fn run_test_pskt_mode(
         if !is_test_mode {
             info!("test mode disabled; waiting for ctrl-c");
             tokio::signal::ctrl_c().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+            info!("shutdown signal received");
             return Ok(());
         }
         warn!("no outputs configured; nothing to build");
         return Ok(());
     }
 
-    info!(output_count = test_outputs.len(), "building test PSKT");
+    info!("building test PSKT output_count={}", test_outputs.len());
     let mut test_pskt_config = app_config.service.pskt.clone();
     if test_pskt_config.redeem_script_hex.trim().is_empty() {
         if let (Some(hd), Some(path)) = (app_config.service.hd.as_ref(), runtime.hd_test_derivation_path.as_deref()) {

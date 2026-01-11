@@ -6,14 +6,12 @@ use crate::infrastructure::transport::RateLimiter;
 use futures_util::StreamExt;
 use iroh_gossip::api::Event as GossipEvent;
 use std::sync::Arc;
-use std::time::Duration;
-use tracing::warn;
+use log::warn;
 
 // Maximum message size: 10 MB (must match limit in mod.rs)
 use crate::foundation::constants::MAX_MESSAGE_SIZE_BYTES;
 
 const MAX_MESSAGE_SIZE: usize = MAX_MESSAGE_SIZE_BYTES;
-const RECEIVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn subscribe_stream<E>(
     verifier: Arc<dyn SignatureVerifier>,
@@ -27,21 +25,14 @@ where
 {
     let mapped = async_stream::stream! {
         loop {
-            let item: Option<Result<GossipEvent, E>> = match tokio::time::timeout(RECEIVE_TIMEOUT, stream.next()).await {
-                Ok(item) => item,
-                Err(_) => {
-                    warn!("iroh gossip receive timeout");
-                    yield Err(ThresholdError::Message("iroh gossip receive timeout".to_string()));
-                    continue;
-                }
-            };
+            let item: Option<Result<GossipEvent, E>> = stream.next().await;
             let Some(item) = item else {
                 break;
             };
             let item = match item {
                 Ok(item) => item,
                 Err(err) => {
-                    warn!(error = %err, "iroh gossip stream error");
+                    warn!("iroh gossip stream error error={}", err);
                     yield Err(ThresholdError::Message(err.to_string()));
                     continue;
                 }
@@ -50,7 +41,11 @@ where
                 GossipEvent::Received(message) => {
                     // Reject oversized messages to prevent memory exhaustion
                     if message.content.len() > MAX_MESSAGE_SIZE {
-                        warn!(size = message.content.len(), max = MAX_MESSAGE_SIZE, "iroh gossip oversized message");
+                        warn!(
+                            "iroh gossip oversized message size={} max={}",
+                            message.content.len(),
+                            MAX_MESSAGE_SIZE
+                        );
                         yield Err(ThresholdError::Message(format!(
                             "received message size {} exceeds maximum {}",
                             message.content.len(),
@@ -62,7 +57,7 @@ where
                     let envelope = match encoding::decode_envelope(message.content.as_ref()) {
                         Ok(envelope) => envelope,
                         Err(err) => {
-                            warn!(error = %err, "iroh gossip decode error");
+                            warn!("iroh gossip decode error error={}", err);
                             yield Err(err);
                             continue;
                         }

@@ -14,9 +14,9 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use figment::value::{Dict, Map, Value};
 use figment::{Figment, Profile};
 use kaspa_wallet_core::prelude::Secret;
+use log::{debug, info};
 use serde::Deserialize;
 use std::path::Path;
-use tracing::{debug, info};
 
 const DEFAULT_NODE_RPC_URL: &str = "grpc://127.0.0.1:16110";
 const DEFAULT_RPC_ADDR: &str = "127.0.0.1:8088";
@@ -92,16 +92,21 @@ pub fn load_config_with_profile(data_dir: &Path, profile: &str) -> Result<AppCon
 
 /// Load configuration from a specific file path.
 pub fn load_config_from_file(path: &Path, data_dir: &Path) -> Result<AppConfig, ThresholdError> {
-    info!(path = %path.display(), data_dir = %data_dir.display(), "loading configuration");
+    info!("loading configuration path={} data_dir={}", path.display(), data_dir.display());
     let figment = figment_base(path, data_dir).merge(Env::prefixed(ENV_PREFIX).split("__"));
     let raw: AppConfigRaw = figment.extract().map_err(|e| ThresholdError::ConfigError(format!("config extraction failed: {e}")))?;
     let mut config = convert_raw(raw)?;
     postprocess(&mut config, data_dir)?;
     debug!(
-        node_rpc_url = %redact_url(&config.service.node_rpc_url),
-        rpc_addr = %config.rpc.addr,
-        rpc_enabled = config.rpc.enabled,
-        "configuration loaded"
+        "configuration loaded node_rpc_url={} rpc_addr={} rpc_enabled={} sig_op_count={} hd_configured={} group_configured={} hyperlane_validators={} layerzero_validators={}",
+        redact_url(&config.service.node_rpc_url),
+        config.rpc.addr,
+        config.rpc.enabled,
+        config.service.pskt.sig_op_count,
+        config.service.hd.is_some(),
+        config.group.is_some(),
+        config.hyperlane.validators.len(),
+        config.layerzero.endpoint_pubkeys.len()
     );
     Ok(config)
 }
@@ -109,10 +114,10 @@ pub fn load_config_from_file(path: &Path, data_dir: &Path) -> Result<AppConfig, 
 /// Load configuration from a specific file path with profile overrides.
 pub fn load_config_from_file_with_profile(path: &Path, data_dir: &Path, profile: &str) -> Result<AppConfig, ThresholdError> {
     info!(
-        path = %path.display(),
-        data_dir = %data_dir.display(),
-        profile = %profile,
-        "loading configuration with profile"
+        "loading configuration with profile path={} data_dir={} profile={}",
+        path.display(),
+        data_dir.display(),
+        profile
     );
 
     // Extract once to access `profiles.<name>` overrides from the file.
@@ -133,10 +138,16 @@ pub fn load_config_from_file_with_profile(path: &Path, data_dir: &Path, profile:
     postprocess(&mut config, data_dir)?;
 
     debug!(
-        profile = %profile,
-        node_rpc_url = %redact_url(&config.service.node_rpc_url),
-        rpc_addr = %config.rpc.addr,
-        "configuration loaded with profile"
+        "configuration loaded with profile profile={} node_rpc_url={} rpc_addr={} rpc_enabled={} sig_op_count={} hd_configured={} group_configured={} hyperlane_validators={} layerzero_validators={}",
+        profile,
+        redact_url(&config.service.node_rpc_url),
+        config.rpc.addr,
+        config.rpc.enabled,
+        config.service.pskt.sig_op_count,
+        config.service.hd.is_some(),
+        config.group.is_some(),
+        config.hyperlane.validators.len(),
+        config.layerzero.endpoint_pubkeys.len()
     );
 
     Ok(config)
@@ -147,7 +158,7 @@ fn figment_base(path: &Path, data_dir: &Path) -> Figment {
     if path.exists() {
         figment = figment.merge(Toml::file(path));
     } else {
-        debug!(path = %path.display(), "configuration file missing; using defaults and env only");
+        debug!("configuration file missing; using defaults and env only path={}", path.display());
     }
     // Always seed data_dir into service.data_dir if the config doesn't set it.
     // (Done post-extraction to keep the figment pipeline simple.)

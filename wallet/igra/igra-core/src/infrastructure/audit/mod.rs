@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::{info, trace, warn};
+use log::{debug, info, trace, warn};
 
 pub use crate::domain::audit::types::{AuditEvent, PolicyDecision};
 
@@ -12,7 +12,8 @@ pub struct StructuredAuditLogger;
 impl AuditLogger for StructuredAuditLogger {
     fn log(&self, event: AuditEvent) {
         let json = serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"serialize_failed\"}".to_string());
-        info!(target: "audit", "{}", json);
+        debug!(target: "igra::audit::json", "audit event audit_event={}", json);
+        info!(target: "igra::audit::human", "audit summary={}", human_summary(&event));
     }
 }
 
@@ -78,12 +79,86 @@ pub fn init_audit_logger(logger: Box<dyn AuditLogger>) {
 pub fn audit(event: AuditEvent) {
     match AUDIT_LOGGER.get() {
         Some(logger) => logger.log(event),
-        None => trace!(event = ?event, "audit event dropped: no logger configured"),
+        None => trace!("audit event dropped: no logger configured event={:?}", event),
     }
 }
 
 pub fn now_nanos() -> u64 {
     current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
+}
+
+fn short_id(value: &str) -> String {
+    let trimmed = value.trim_start_matches("0x");
+    if trimmed.len() <= 16 {
+        trimmed.to_string()
+    } else {
+        format!("{}…", &trimmed[..16])
+    }
+}
+
+fn human_summary(event: &AuditEvent) -> String {
+    match event {
+        AuditEvent::EventReceived { event_hash, source, recipient, amount_sompi, .. } => format!(
+            "AUDIT: signing event received - {} KAS to {} (hash: {}, source: {})",
+            *amount_sompi as f64 / 100_000_000.0,
+            recipient,
+            short_id(event_hash),
+            source
+        ),
+        AuditEvent::EventSignatureValidated { event_hash, validator_count, valid, reason, .. } => format!(
+            "AUDIT: event signature validated - valid={} validators={} (hash: {}, reason: {})",
+            valid,
+            validator_count,
+            short_id(event_hash),
+            reason.clone().unwrap_or_else(|| "-".to_string())
+        ),
+        AuditEvent::PolicyEnforced { request_id, event_hash, policy_type, decision, reason, .. } => format!(
+            "AUDIT: policy enforced - decision={:?} policy={} reason={} (request: {}, hash: {})",
+            decision,
+            policy_type,
+            reason,
+            short_id(request_id),
+            short_id(event_hash)
+        ),
+        AuditEvent::ProposalValidated { request_id, signer_peer_id, accepted, reason, validation_hash, .. } => format!(
+            "AUDIT: proposal validated - accepted={} signer={} (request: {}, validation: {}, reason: {})",
+            accepted,
+            signer_peer_id,
+            short_id(request_id),
+            short_id(validation_hash),
+            reason.clone().unwrap_or_else(|| "-".to_string())
+        ),
+        AuditEvent::PartialSignatureCreated { request_id, signer_peer_id, input_count, .. } => format!(
+            "AUDIT: partial signatures created - signer={} inputs={} (request: {})",
+            signer_peer_id,
+            input_count,
+            short_id(request_id)
+        ),
+        AuditEvent::TransactionFinalized { request_id, tx_id, signature_count, threshold_required, .. } => format!(
+            "AUDIT: transaction finalized - tx={} sigs={}/{} (request: {})",
+            tx_id,
+            signature_count,
+            threshold_required,
+            short_id(request_id)
+        ),
+        AuditEvent::TransactionSubmitted { request_id, tx_id, blue_score, .. } => {
+            format!("AUDIT: transaction submitted - tx={} blue_score={} (request: {})", tx_id, blue_score, short_id(request_id))
+        }
+        AuditEvent::SessionTimedOut { request_id, signature_count, threshold_required, duration_seconds, .. } => format!(
+            "AUDIT: session timed out - sigs={}/{} duration_s={} (request: {})",
+            signature_count,
+            threshold_required,
+            duration_seconds,
+            short_id(request_id)
+        ),
+        AuditEvent::ConfigurationChanged { change_type, changed_by, .. } => {
+            format!("AUDIT: configuration changed - type={} by={}", change_type, changed_by)
+        }
+        AuditEvent::StorageMutated { operation, key_prefix, record_count, .. } => {
+            format!("AUDIT: storage mutated - op={} key_prefix={} count={}", operation, key_prefix, record_count)
+        }
+        AuditEvent::RateLimitExceeded { peer_id, .. } => format!("AUDIT: rate limit exceeded - peer={}", peer_id),
+    }
 }
 
 #[macro_export]

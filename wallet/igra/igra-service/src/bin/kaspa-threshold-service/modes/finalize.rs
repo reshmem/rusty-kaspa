@@ -7,6 +7,7 @@ use igra_core::infrastructure::rpc::NodeRpc;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_service::service::coordination;
+use log::info;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -22,7 +23,7 @@ pub async fn finalize_from_json(
     storage: &RocksStorage,
     app_config: &config::AppConfig,
 ) -> Result<(), ThresholdError> {
-    tracing::info!("Finalize mode: loading PSKT from {}", json_path.display());
+    info!("Finalize mode: loading PSKT from {}", json_path.display());
 
     let json = std::fs::read_to_string(json_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let payload: FinalizePayload = serde_json::from_str(&json)?;
@@ -47,7 +48,7 @@ pub async fn finalize_from_json(
     let tx_id = rpc.submit_transaction(tx).await?;
     storage.update_request_final_tx(&request_id, igra_core::foundation::TransactionId::from(tx_id))?;
 
-    tracing::info!("Transaction submitted: {}", tx_id);
+    info!("Transaction submitted: {}", tx_id);
     println!("Transaction ID: {}", tx_id);
 
     Ok(())

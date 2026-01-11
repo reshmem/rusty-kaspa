@@ -3,6 +3,7 @@
 pub mod audit;
 pub mod config;
 pub mod hyperlane;
+pub mod logging;
 // kaspa_integration moved under rpc
 // rate limiter moved under transport
 pub mod rpc;

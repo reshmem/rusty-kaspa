@@ -9,8 +9,8 @@ use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::config::ServiceConfig;
 use crate::infrastructure::storage::Storage;
 use async_trait::async_trait;
+use log::{debug, info, trace, warn};
 use std::sync::Arc;
-use tracing::{debug, info, trace, warn};
 
 pub use crate::domain::event::{SigningEventParams, SigningEventResult, SigningEventWire};
 
@@ -38,37 +38,28 @@ pub struct EventContext {
 pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams) -> Result<SigningEventResult, ThresholdError> {
     let (session_id, request_id, coordinator_peer_id) = decode_session_and_request_ids(&params)?;
     debug!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        coordinator_peer_id = %coordinator_peer_id,
-        "decoded signing event ids"
+        "decoded signing event ids session_id={} request_id={} coordinator_peer_id={}",
+        hex::encode(session_id.as_hash()),
+        request_id,
+        coordinator_peer_id
     );
     let parsed = params.signing_event.into_signing_event()?;
     debug!(
-        event_id = %parsed.event.event_id,
-        derivation_source = ?parsed.derivation_path_source,
-        signature_source = ?parsed.signature_source,
-        "signing event parsed"
+        "signing event parsed event_id={} derivation_source={:?} signature_source={:?}",
+        parsed.event.event_id, parsed.derivation_path_source, parsed.signature_source
     );
     let signing_event = parsed.event;
-    trace!(signing_event = ?signing_event, "signing event details");
+    trace!("signing event details signing_event={:?}", signing_event);
     let event_hash = event_hash(&signing_event)?;
-    debug!(event_hash = %hex::encode(event_hash), "computed signing event hash");
+    debug!("computed signing event hash event_hash={}", hex::encode(event_hash));
     crate::audit_event_received!(event_hash, signing_event);
-    info!(
-        request_id = %params.request_id,
-        event_id = %signing_event.event_id,
-        "signing event received"
-    );
+    info!("signing event received request_id={} event_id={}", params.request_id, signing_event.event_id);
 
     let report = ctx.message_verifier.verify(&signing_event)?;
     if report.valid {
         info!(
-            source = ?report.source,
-            validator_count = report.validator_count,
-            valid_signatures = report.valid_signatures,
-            threshold = report.threshold_required,
-            "message verification passed"
+            "message verification passed source={:?} validator_count={} valid_signatures={} threshold={}",
+            report.source, report.validator_count, report.valid_signatures, report.threshold_required
         );
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) {
             audit(AuditEvent::EventSignatureValidated {
@@ -81,12 +72,8 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         }
     } else {
         warn!(
-            source = ?report.source,
-            validator_count = report.validator_count,
-            valid_signatures = report.valid_signatures,
-            threshold = report.threshold_required,
-            failure = ?report.failure_reason,
-            "message verification failed"
+            "message verification failed source={:?} validator_count={} valid_signatures={} threshold={} failure={:?}",
+            report.source, report.validator_count, report.valid_signatures, report.threshold_required, report.failure_reason
         );
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) {
             audit(AuditEvent::EventSignatureValidated {
@@ -108,21 +95,21 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         return Err(ThresholdError::EventSignatureInvalid);
     }
     if ctx.storage.get_event(&event_hash)?.is_some() {
-        warn!(event_hash = %hex::encode(event_hash), "event replayed");
+        warn!("event replayed event_hash={}", hex::encode(event_hash));
         return Err(ThresholdError::EventReplayed(hex::encode(event_hash)));
     }
     ctx.storage.insert_event(event_hash, signing_event.clone())?;
-    debug!(event_hash = %hex::encode(event_hash), "signing event stored");
+    debug!("signing event stored event_hash={}", hex::encode(event_hash));
     debug!(
-        session_id = %hex::encode(session_id.as_hash()),
-        request_id = %request_id,
-        "dispatching to event processor"
+        "dispatching to event processor session_id={} request_id={}",
+        hex::encode(session_id.as_hash()),
+        request_id
     );
     let validation_hash = ctx
         .processor
         .handle_signing_event(&ctx.config, session_id, request_id, signing_event, params.expires_at_nanos, coordinator_peer_id)
         .await?;
-    info!(validation_hash = %hex::encode(validation_hash), "signing event processed");
+    info!("signing event processed validation_hash={}", hex::encode(validation_hash));
 
     Ok(SigningEventResult {
         session_id_hex: params.session_id_hex,

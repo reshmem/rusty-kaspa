@@ -3144,6 +3144,8 @@ dependencies = [
  "kaspa-wallet-core",
  "kaspa-wallet-keys",
  "kaspa-wallet-pskt",
+ "log",
+ "log4rs",
  "once_cell",
  "parking_lot",
  "rand 0.8.5",
@@ -3157,7 +3159,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.8.19",
- "tracing",
  "uuid 1.11.0",
  "zeroize",
 ]
@@ -3188,6 +3189,7 @@ dependencies = [
  "kaspa-txscript",
  "kaspa-wallet-core",
  "kaspa-wallet-pskt",
+ "log",
  "prometheus",
  "rand 0.8.5",
  "reqwest",
@@ -3200,8 +3202,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower 0.4.13",
- "tracing",
- "tracing-subscriber",
  "uuid 1.11.0",
 ]
 

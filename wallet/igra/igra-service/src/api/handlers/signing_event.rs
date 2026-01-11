@@ -2,7 +2,7 @@ use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
 use igra_core::application::{submit_signing_event, SigningEventParams};
 use igra_core::foundation::ThresholdError;
-use tracing::{debug, info, warn};
+use log::{debug, info, warn};
 
 pub async fn handle_signing_event_submit(
     state: &RpcState,
@@ -23,27 +23,22 @@ pub async fn handle_signing_event_submit(
         Ok(params) => params,
         Err(err) => {
             state.metrics.inc_rpc_request("signing_event.submit", "error");
-            warn!(error = %err, "rpc signing_event.submit invalid params");
+            warn!("rpc signing_event.submit invalid params error={}", err);
             return json_err(id, RpcErrorCode::InvalidParams, err.to_string());
         }
     };
 
     debug!(
-        request_id = %params.request_id,
-        session_id = %params.session_id_hex,
-        event_id = %params.signing_event.event_id,
-        expires_at_nanos = params.expires_at_nanos,
-        "rpc signing_event.submit parsed"
+        "rpc signing_event.submit parsed request_id={} session_id={} event_id={} expires_at_nanos={}",
+        params.request_id, params.session_id_hex, params.signing_event.event_id, params.expires_at_nanos
     );
 
     match submit_signing_event(&state.event_ctx, params).await {
         Ok(result) => {
             state.metrics.inc_rpc_request("signing_event.submit", "ok");
             info!(
-                session_id = %result.session_id_hex,
-                event_hash = %result.event_hash_hex,
-                validation_hash = %result.validation_hash_hex,
-                "rpc signing_event.submit ok"
+                "rpc signing_event.submit ok session_id={} event_hash={} validation_hash={}",
+                result.session_id_hex, result.event_hash_hex, result.validation_hash_hex
             );
             json_ok(id, result)
         }
@@ -51,6 +46,7 @@ pub async fn handle_signing_event_submit(
             state.metrics.inc_rpc_request("signing_event.submit", "error");
             let code = match err {
                 ThresholdError::EventReplayed(_) => RpcErrorCode::EventReplayed,
+                ThresholdError::InsufficientUTXOs => RpcErrorCode::InsufficientFunds,
                 ThresholdError::AmountTooLow { .. }
                 | ThresholdError::AmountTooHigh { .. }
                 | ThresholdError::VelocityLimitExceeded { .. }
@@ -58,7 +54,7 @@ pub async fn handle_signing_event_submit(
                 | ThresholdError::MemoRequired => RpcErrorCode::PolicyViolation,
                 _ => RpcErrorCode::SigningFailed,
             };
-            warn!(code = code as i64, error = %err, "rpc signing_event.submit failed");
+            warn!("rpc signing_event.submit failed code={} error={}", code as i64, err);
             json_err(id, code, err.to_string())
         }
     }

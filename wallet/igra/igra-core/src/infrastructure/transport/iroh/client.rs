@@ -15,7 +15,7 @@ use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use log::{debug, info, trace, warn};
 
 // Maximum message size: 10 MB (allows for PSKT with many inputs)
 // PSKT blob size: ~1KB base + ~200 bytes per input × 100 inputs = ~21KB
@@ -45,10 +45,10 @@ impl IrohTransport {
         config: IrohConfig,
     ) -> Result<Self, ThresholdError> {
         info!(
-            network_id = config.network_id,
-            group_id = %hex::encode(config.group_id),
-            bootstrap_nodes = config.bootstrap_nodes.len(),
-            "creating iroh transport"
+            "creating iroh transport network_id={} group_id={} bootstrap_nodes={}",
+            config.network_id,
+            hex::encode(config.group_id),
+            config.bootstrap_nodes.len()
         );
         let bootstrap = config
             .bootstrap_nodes
@@ -56,7 +56,7 @@ impl IrohTransport {
             .filter_map(|node_id| match EndpointId::from_str(node_id) {
                 Ok(id) => Some(id),
                 Err(err) => {
-                    tracing::warn!(node_id = node_id.as_str(), error = %err, "invalid bootstrap node, skipping");
+                    warn!("invalid bootstrap node, skipping node_id={} error={}", node_id.as_str(), err);
                     None
                 }
             })
@@ -100,17 +100,17 @@ impl IrohTransport {
         let topic_id = TopicId::from(topic);
         let mut last_err: Option<String> = None;
         debug!(
-            topic = %hex::encode(topic_id.as_bytes()),
-            byte_len = bytes.len(),
-            bootstrap_peers = self.bootstrap.len(),
-            "publishing gossip message"
+            "publishing gossip message topic={} byte_len={} bootstrap_peers={}",
+            hex::encode(topic_id.as_bytes()),
+            bytes.len(),
+            self.bootstrap.len()
         );
         for attempt in 0..PUBLISH_RETRY_ATTEMPTS {
-            tracing::trace!(
-                attempt = attempt + 1,
-                topic = %hex::encode(topic_id.as_bytes()),
-                byte_len = bytes.len(),
-                "publish attempt"
+            trace!(
+                "publish attempt attempt={} topic={} byte_len={}",
+                attempt + 1,
+                hex::encode(topic_id.as_bytes()),
+                bytes.len()
             );
             let mut topic = match self.gossip.subscribe(topic_id, self.bootstrap.clone()).await {
                 Ok(topic) => topic,
@@ -118,13 +118,13 @@ impl IrohTransport {
                     let err_str = err.to_string();
                     last_err = Some(err_str.clone());
                     warn!(
-                        attempt = attempt + 1,
-                        topic = %hex::encode(topic_id.as_bytes()),
-                        error = %err_str,
-                        "failed to subscribe for publish"
+                        "failed to subscribe for publish attempt={} topic={} error={}",
+                        attempt + 1,
+                        hex::encode(topic_id.as_bytes()),
+                        err_str
                     );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
-                        tracing::trace!(sleep_ms = PUBLISH_RETRY_DELAY.as_millis(), "publish retry sleep");
+                        trace!("publish retry sleep sleep_ms={}", PUBLISH_RETRY_DELAY.as_millis());
                         tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
                     }
                     continue;
@@ -133,10 +133,10 @@ impl IrohTransport {
             match topic.broadcast(bytes.clone().into()).await {
                 Ok(()) => {
                     info!(
-                        attempt = attempt + 1,
-                        topic = %hex::encode(topic_id.as_bytes()),
-                        byte_len = bytes.len(),
-                        "published gossip message"
+                        "published gossip message attempt={} topic={} byte_len={}",
+                        attempt + 1,
+                        hex::encode(topic_id.as_bytes()),
+                        bytes.len()
                     );
                     return Ok(());
                 }
@@ -144,13 +144,13 @@ impl IrohTransport {
                     let err_str = err.to_string();
                     last_err = Some(err_str.clone());
                     warn!(
-                        attempt = attempt + 1,
-                        topic = %hex::encode(topic_id.as_bytes()),
-                        error = %err_str,
-                        "failed to broadcast gossip message"
+                        "failed to broadcast gossip message attempt={} topic={} error={}",
+                        attempt + 1,
+                        hex::encode(topic_id.as_bytes()),
+                        err_str
                     );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
-                        tracing::trace!(sleep_ms = PUBLISH_RETRY_DELAY.as_millis(), "publish retry sleep");
+                        trace!("publish retry sleep sleep_ms={}", PUBLISH_RETRY_DELAY.as_millis());
                         tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
                     }
                 }
@@ -164,17 +164,17 @@ impl IrohTransport {
 impl Transport for IrohTransport {
     async fn publish_proposal(&self, proposal: ProposedSigningSession) -> Result<(), ThresholdError> {
         let event_id = proposal.signing_event.event_id.clone();
-        tracing::debug!(
-            session_id = %hex::encode(proposal.session_id.as_hash()),
-            request_id = %proposal.request_id,
-            "publishing proposal"
+        debug!(
+            "publishing proposal session_id={} request_id={}",
+            hex::encode(proposal.session_id.as_hash()),
+            proposal.request_id
         );
-        tracing::trace!(
-            session_id = %hex::encode(proposal.session_id.as_hash()),
-            request_id = %proposal.request_id,
-            event_id = %event_id,
-            kpsbt_len = proposal.kpsbt_blob.len(),
-            "publish_proposal details"
+        trace!(
+            "publish_proposal details session_id={} request_id={} event_id={} kpsbt_len={}",
+            hex::encode(proposal.session_id.as_hash()),
+            proposal.request_id,
+            event_id,
+            proposal.kpsbt_blob.len()
         );
         let payload = TransportMessage::SigningEventPropose(SigningEventPropose {
             request_id: proposal.request_id,
@@ -205,18 +205,18 @@ impl Transport for IrohTransport {
     }
 
     async fn publish_ack(&self, session_id: SessionId, ack: SignerAck) -> Result<(), ThresholdError> {
-        tracing::debug!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %ack.request_id,
-            accepted = ack.accept,
-            "publishing signer ack"
+        debug!(
+            "publishing signer ack session_id={} request_id={} accepted={}",
+            hex::encode(session_id.as_hash()),
+            ack.request_id,
+            ack.accept
         );
-        tracing::trace!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %ack.request_id,
-            accepted = ack.accept,
-            reason = ?ack.reason,
-            "publish_ack details"
+        trace!(
+            "publish_ack details session_id={} request_id={} accepted={} reason={:?}",
+            hex::encode(session_id.as_hash()),
+            ack.request_id,
+            ack.accept,
+            ack.reason
         );
         let payload = TransportMessage::SignerAck(ack);
         let payload_hash = encoding::payload_hash(&payload)?;
@@ -244,19 +244,19 @@ impl Transport for IrohTransport {
         pubkey: Vec<u8>,
         signature: Vec<u8>,
     ) -> Result<(), ThresholdError> {
-        tracing::debug!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
-            input_index,
-            "publishing partial signature"
+        debug!(
+            "publishing partial signature session_id={} request_id={} input_index={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
+            input_index
         );
-        tracing::trace!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
+        trace!(
+            "publish_partial_sig details session_id={} request_id={} input_index={} pubkey_len={} signature_len={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
             input_index,
-            pubkey_len = pubkey.len(),
-            signature_len = signature.len(),
-            "publish_partial_sig details"
+            pubkey.len(),
+            signature.len()
         );
         let payload =
             TransportMessage::PartialSigSubmit(PartialSigSubmit { request_id: request_id.clone(), input_index, pubkey, signature });
@@ -283,17 +283,17 @@ impl Transport for IrohTransport {
         request_id: &RequestId,
         final_tx_id: Hash32,
     ) -> Result<(), ThresholdError> {
-        tracing::debug!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
-            final_tx_id = %hex::encode(final_tx_id),
-            "publishing finalize notice"
+        debug!(
+            "publishing finalize notice session_id={} request_id={} final_tx_id={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
+            hex::encode(final_tx_id)
         );
-        tracing::trace!(
-            session_id = %hex::encode(session_id.as_hash()),
-            request_id = %request_id,
-            final_tx_id = %hex::encode(final_tx_id),
-            "publish_finalize details"
+        trace!(
+            "publish_finalize details session_id={} request_id={} final_tx_id={}",
+            hex::encode(session_id.as_hash()),
+            request_id,
+            hex::encode(final_tx_id)
         );
         let payload = TransportMessage::FinalizeNotice(FinalizeNotice { request_id: request_id.clone(), final_tx_id });
         let payload_hash = encoding::payload_hash(&payload)?;
@@ -317,9 +317,9 @@ impl Transport for IrohTransport {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
         info!(
-            topic = %hex::encode(topic),
-            bootstrap_peers = self.bootstrap.len(),
-            "subscribing to group gossip"
+            "subscribing to group gossip topic={} bootstrap_peers={}",
+            hex::encode(topic),
+            self.bootstrap.len()
         );
         let topic =
             self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
@@ -332,10 +332,10 @@ impl Transport for IrohTransport {
         let topic = Self::session_topic_id(&session_id);
         let topic_id = TopicId::from(topic);
         info!(
-            topic = %hex::encode(topic),
-            bootstrap_peers = self.bootstrap.len(),
-            session_id = %hex::encode(session_id.as_hash()),
-            "subscribing to session gossip"
+            "subscribing to session gossip topic={} bootstrap_peers={} session_id={}",
+            hex::encode(topic),
+            self.bootstrap.len(),
+            hex::encode(session_id.as_hash())
         );
         let topic =
             self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;

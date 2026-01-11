@@ -2,7 +2,7 @@ use crate::foundation::ThresholdError;
 use crate::infrastructure::rpc::NodeRpc;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, trace};
+use log::{debug, info, trace};
 
 pub struct TransactionMonitor {
     rpc: Arc<dyn NodeRpc>,
@@ -19,22 +19,30 @@ impl TransactionMonitor {
         loop {
             let current = self.rpc.get_virtual_selected_parent_blue_score().await?;
             debug!(
-                current_blue_score = current,
+                "checked blue score current_blue_score={} accepted_blue_score={} min_confirmations={}",
+                current,
                 accepted_blue_score,
-                min_confirmations = self.min_confirmations,
-                "checked blue score"
+                self.min_confirmations
             );
-            trace!(current_blue_score = current, accepted_blue_score, min_confirmations = self.min_confirmations, "monitor loop tick");
+            trace!(
+                "monitor loop tick current_blue_score={} accepted_blue_score={} min_confirmations={}",
+                current,
+                accepted_blue_score,
+                self.min_confirmations
+            );
             if current.saturating_sub(accepted_blue_score) >= self.min_confirmations {
                 info!(
-                    current_blue_score = current,
+                    "confirmation threshold reached current_blue_score={} accepted_blue_score={} min_confirmations={}",
+                    current,
                     accepted_blue_score,
-                    min_confirmations = self.min_confirmations,
-                    "confirmation threshold reached"
+                    self.min_confirmations
                 );
                 return Ok(current);
             }
-            trace!(sleep_ms = self.poll_interval.as_millis(), "sleeping before next blue score poll");
+            trace!(
+                "sleeping before next blue score poll sleep_ms={}",
+                self.poll_interval.as_millis()
+            );
             tokio::time::sleep(self.poll_interval).await;
         }
     }

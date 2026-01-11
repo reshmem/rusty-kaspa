@@ -8,19 +8,20 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use igra_core::foundation::ThresholdError;
+use log::{error, info};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{debug, info};
 
 pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Result<(), ThresholdError> {
-    info!(addr = %addr, "binding json-rpc server");
+    info!("binding json-rpc server addr={}", addr);
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;
-    debug!(addr = %addr, "json-rpc server listening");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+    info!("HTTP server ready and accepting connections addr={}", addr);
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.map_err(|err| {
+        error!("HTTP server terminated unexpectedly addr={} error={}", addr, err);
+        ThresholdError::Message(err.to_string())
+    })
 }
 
 pub fn build_router(state: Arc<RpcState>) -> Router {

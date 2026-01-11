@@ -3,6 +3,7 @@ use crate::domain::pskt::params::{PsktParams, UtxoInput};
 use crate::domain::pskt::results::{PsktBuildResult, UtxoSelectionResult};
 use crate::domain::FeePaymentMode;
 use crate::foundation::ThresholdError;
+use crate::foundation::constants::MAX_PSKT_INPUTS;
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
 
@@ -10,7 +11,7 @@ pub fn build_pskt_from_utxos(
     params: &PsktParams,
     mut utxos: Vec<UtxoInput>,
 ) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
-    let mut outputs = params
+    let base_outputs = params
         .outputs
         .iter()
         .map(|out| {
@@ -19,16 +20,51 @@ pub fn build_pskt_from_utxos(
         })
         .collect::<Vec<_>>();
 
-    // Deterministic ordering across nodes.
+    // Prefer fewer inputs: sort by amount (desc), then outpoint (asc) for determinism.
     utxos.sort_by(|a, b| {
-        a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()).then(a.outpoint.index.cmp(&b.outpoint.index))
+        b.entry
+            .amount
+            .cmp(&a.entry.amount)
+            .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
+            .then(a.outpoint.index.cmp(&b.outpoint.index))
     });
 
-    let selected_utxos = utxos.len();
-    let total_input = utxos.iter().map(|utxo| utxo.entry.amount).sum::<u64>();
-    apply_fee_policy(params, total_input, &mut outputs)?;
+    // Deterministically select the smallest set of UTXOs that satisfies the configured outputs+fee policy.
+    let mut selected = Vec::new();
+    let mut total_input = 0u64;
+    let mut outputs: Option<Vec<MultisigOutput>> = None;
 
-    let inputs = utxos
+    for utxo in utxos.into_iter() {
+        if selected.len() >= MAX_PSKT_INPUTS {
+            return Err(ThresholdError::PsktValidationFailed(format!(
+                "too many inputs selected for PSKT: {} (max {})",
+                selected.len(),
+                MAX_PSKT_INPUTS
+            )));
+        }
+
+        total_input = total_input.saturating_add(utxo.entry.amount);
+        selected.push(utxo);
+
+        let mut candidate_outputs = base_outputs.clone();
+        match apply_fee_policy(params, total_input, &mut candidate_outputs) {
+            Ok(()) => {
+                outputs = Some(candidate_outputs);
+                break;
+            }
+            Err(ThresholdError::InsufficientUTXOs) => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    let outputs = match outputs {
+        Some(outputs) => outputs,
+        None => return Err(ThresholdError::InsufficientUTXOs),
+    };
+
+    let selected_utxos = selected.len();
+
+    let inputs = selected
         .into_iter()
         .map(|utxo| MultisigInput {
             utxo_entry: utxo.entry,
@@ -41,7 +77,7 @@ pub fn build_pskt_from_utxos(
     let total_output_amount = outputs.iter().map(|out| out.amount).sum::<u64>();
     let has_change_output = outputs.len() > params.outputs.len();
     let change_amount = if has_change_output { outputs.last().map(|out| out.amount).unwrap_or(0) } else { 0 };
-    let fee_amount = params.fee_sompi.unwrap_or(0);
+    let fee_amount = total_input.saturating_sub(total_output_amount);
 
     let selection = UtxoSelectionResult {
         selected_utxos,
@@ -85,9 +121,6 @@ impl FeeConfig {
 
 fn apply_fee_policy(params: &PsktParams, total_input: u64, outputs: &mut Vec<MultisigOutput>) -> Result<(), ThresholdError> {
     let fee = params.fee_sompi.unwrap_or(0);
-    if fee == 0 {
-        return Ok(());
-    }
     if outputs.is_empty() {
         return Err(ThresholdError::PsktValidationFailed("missing outputs for fee calculation".to_string()));
     }
@@ -110,12 +143,13 @@ fn apply_fee_policy(params: &PsktParams, total_input: u64, outputs: &mut Vec<Mul
 
     let change = total_input - required;
     if change > 0 {
-        let address = params
-            .change_address
-            .as_ref()
-            .ok_or_else(|| ThresholdError::PsktValidationFailed("missing change_address".to_string()))?;
-        let addr = Address::constructor(address);
-        outputs.push(MultisigOutput { amount: change, script_public_key: pay_to_address_script(&addr) });
+        if let Some(address) = params.change_address.as_ref() {
+            let addr = Address::constructor(address);
+            outputs.push(MultisigOutput { amount: change, script_public_key: pay_to_address_script(&addr) });
+        } else if fee > 0 {
+            // If the caller specified a fee, require a change address so we can avoid implicitly overpaying.
+            return Err(ThresholdError::PsktValidationFailed("missing change_address".to_string()));
+        }
     }
     Ok(())
 }

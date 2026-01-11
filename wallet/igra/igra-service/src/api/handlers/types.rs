@@ -15,6 +15,7 @@ pub enum RpcErrorCode {
     SigningFailed = -32005,
     EventReplayed = -32006,
     PolicyViolation = -32007,
+    InsufficientFunds = -32008,
 }
 
 #[derive(Debug, Deserialize)]

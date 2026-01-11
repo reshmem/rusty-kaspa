@@ -16,6 +16,7 @@ Args:
 
 import datetime
 import json
+import os
 import pathlib
 import sys
 from typing import Any
@@ -270,12 +271,24 @@ def dump_tables(out_lines: list[str], table_path: str, table: dict) -> None:
     for k, v in table.items():
         if isinstance(v, dict):
             continue
+        if isinstance(v, list) and v and all(isinstance(item, dict) for item in v):
+            # Handled separately (array-of-tables)
+            continue
         out_lines.append(f"{k} = {toml_value(v)}")
     out_lines.append("")
 
     for k, v in table.items():
         if isinstance(v, dict):
             dump_tables(out_lines, f"{table_path}.{k}", v)
+
+def dump_array_of_tables(out_lines: list[str], table_path: str, items: list[dict]) -> None:
+    for item in items:
+        out_lines.append(f"[[{table_path}]]")
+        for k, v in item.items():
+            if isinstance(v, dict):
+                raise ValueError(f"nested tables inside [[{table_path}]] are not supported")
+            out_lines.append(f"{k} = {toml_value(v)}")
+        out_lines.append("")
 
 
 def write_toml_config(toml_out: pathlib.Path, config: dict) -> None:
@@ -287,6 +300,11 @@ def write_toml_config(toml_out: pathlib.Path, config: dict) -> None:
     for section in ["service", "runtime", "signing", "rpc", "policy", "group", "hyperlane", "layerzero", "iroh"]:
         if section in config and isinstance(config[section], dict):
             dump_tables(lines, section, config[section])
+            # Arrays-of-tables (currently only used for hyperlane.domains).
+            if section == "hyperlane":
+                domains = config[section].get("domains")
+                if isinstance(domains, list) and domains and all(isinstance(item, dict) for item in domains):
+                    dump_array_of_tables(lines, "hyperlane.domains", domains)
 
     profiles = config.get("profiles", {})
     if isinstance(profiles, dict) and profiles:
@@ -354,6 +372,24 @@ def rewrite_toml(
 
     # Update hyperlane section
     config["hyperlane"]["validators"] = [k.get("public_key_hex", "") for k in data.get("hyperlane_keys", []) if k.get("public_key_hex")]
+    config["hyperlane"]["threshold"] = 2
+
+    # Enable ISM-style mailbox processing for devnet by generating `hyperlane.domains`.
+    # NOTE: the mailbox_process handler selects the set by `message.origin`.
+    origin_domain = int(os.environ.get("HYPERLANE_DOMAIN", "5") or "5")
+    validators = list(config["hyperlane"]["validators"])
+    threshold = 2 if len(validators) >= 2 else len(validators)
+    if validators and threshold > 0:
+        config["hyperlane"]["domains"] = [
+            {
+                "domain": origin_domain,
+                "validators": validators,
+                "threshold": threshold,
+                "mode": "message_id_multisig",
+            }
+        ]
+    else:
+        config["hyperlane"]["domains"] = []
 
     # Iroh section
     group_id = data.get("group_id", "")

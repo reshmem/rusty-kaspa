@@ -8,7 +8,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::notify::mode::NotificationMode;
 use kaspa_rpc_core::RpcTransaction;
 use std::time::Instant;
-use tracing::{debug, error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 pub struct GrpcNodeRpc {
     client: GrpcClient,
@@ -16,12 +16,13 @@ pub struct GrpcNodeRpc {
 
 impl GrpcNodeRpc {
     pub async fn connect(url: String) -> Result<Self, ThresholdError> {
-        info!(url = %redact_url(&url), "connecting grpc rpc");
+        let redacted_url = redact_url(&url);
+        info!("connecting grpc rpc url={}", redacted_url);
         let client =
             GrpcClient::connect_with_args(NotificationMode::Direct, url, None, false, None, false, Some(500_000), Default::default())
                 .await
                 .map_err(|err| {
-                    error!(error = %err, "grpc rpc connect failed");
+                    error!("grpc rpc connect failed error={}", err);
                     ThresholdError::Message(err.to_string())
                 })?;
         info!("grpc rpc connected");
@@ -49,19 +50,23 @@ impl GrpcNodeRpc {
 impl NodeRpc for GrpcNodeRpc {
     async fn get_utxos_by_addresses(&self, addresses: &[Address]) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
         let started = Instant::now();
-        trace!(addresses = ?addresses, "grpc get_utxos_by_addresses request");
+        trace!("grpc get_utxos_by_addresses request addresses={:?}", addresses);
         let entries = match self.client.get_utxos_by_addresses(addresses.to_vec()).await {
             Ok(entries) => entries,
             Err(err) => {
-                warn!(address_count = addresses.len(), error = %err, "grpc get_utxos_by_addresses failed");
+                warn!(
+                    "grpc get_utxos_by_addresses failed address_count={} error={}",
+                    addresses.len(),
+                    err
+                );
                 return Err(ThresholdError::Message(err.to_string()));
             }
         };
         debug!(
-            address_count = addresses.len(),
-            utxo_count = entries.len(),
-            elapsed_ms = started.elapsed().as_millis(),
-            "grpc get_utxos_by_addresses"
+            "grpc get_utxos_by_addresses address_count={} utxo_count={} elapsed_ms={}",
+            addresses.len(),
+            entries.len(),
+            started.elapsed().as_millis()
         );
 
         Ok(entries
@@ -77,13 +82,17 @@ impl NodeRpc for GrpcNodeRpc {
     async fn submit_transaction(&self, tx: Transaction) -> Result<TransactionId, ThresholdError> {
         let started = Instant::now();
         let mass = tx.mass();
-        info!(mass, "grpc submit_transaction start");
+        info!("grpc submit_transaction start mass={}", mass);
         let rpc_tx = Self::to_rpc_transaction(tx);
         let id = self.client.submit_transaction(rpc_tx, false).await.map_err(|err| {
-            error!(mass, error = %err, "grpc submit_transaction failed");
+            error!("grpc submit_transaction failed mass={} error={}", mass, err);
             ThresholdError::Message(err.to_string())
         })?;
-        debug!(elapsed_ms = started.elapsed().as_millis(), tx_id = %id, "grpc submit_transaction");
+        debug!(
+            "grpc submit_transaction tx_id={} elapsed_ms={}",
+            id,
+            started.elapsed().as_millis()
+        );
         Ok(id)
     }
 
@@ -91,7 +100,11 @@ impl NodeRpc for GrpcNodeRpc {
         let started = Instant::now();
         trace!("grpc get_sink_blue_score request");
         let score = self.client.get_sink_blue_score().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
-        debug!(elapsed_ms = started.elapsed().as_millis(), blue_score = score, "grpc get_sink_blue_score");
+        debug!(
+            "grpc get_sink_blue_score blue_score={} elapsed_ms={}",
+            score,
+            started.elapsed().as_millis()
+        );
         Ok(score)
     }
 }
