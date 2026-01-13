@@ -56,6 +56,36 @@ impl AppConfig {
             if group.session_timeout_seconds > 600 {
                 errors.push("group.session_timeout_seconds should not exceed 600".to_string());
             }
+
+            // Enforce consistency between the configured redeem script and the group membership keys.
+            //
+            // We currently support Schnorr multisig only, where the redeem script encodes x-only 32-byte pubkeys.
+            // If these drift (e.g. ECDSA-vs-Schnorr address mismatch), transactions will fail at runtime with txscript errors.
+            let redeem_hex = self.service.pskt.redeem_script_hex.trim();
+            if !redeem_hex.is_empty() {
+                match hex::decode(redeem_hex) {
+                    Ok(redeem) => match extract_schnorr_multisig_pubkeys(&redeem) {
+                        Ok((m, n, pubkeys)) => {
+                            if group.threshold_m as usize != m || group.threshold_n as usize != n {
+                                errors.push(format!(
+                                    "group.threshold_m/n ({}/{}) does not match redeem script m/n ({}/{})",
+                                    group.threshold_m, group.threshold_n, m, n
+                                ));
+                            }
+                            if group.member_pubkeys != pubkeys {
+                                let expected = pubkeys.iter().map(hex::encode).collect::<Vec<_>>();
+                                let actual = group.member_pubkeys.iter().map(hex::encode).collect::<Vec<_>>();
+                                errors.push(format!(
+                                    "group.member_pubkeys must exactly match the x-only pubkeys encoded in service.pskt.redeem_script_hex (expected {:?}, got {:?})",
+                                    expected, actual
+                                ));
+                            }
+                        }
+                        Err(msg) => errors.push(format!("invalid pskt.redeem_script_hex: {msg}")),
+                    },
+                    Err(err) => errors.push(format!("invalid pskt.redeem_script_hex: {err}")),
+                }
+            }
         }
 
         if let crate::domain::FeePaymentMode::Split { recipient_parts, signer_parts } = self.service.pskt.fee_payment_mode {
@@ -88,4 +118,51 @@ impl AppConfig {
             Err(errors)
         }
     }
+}
+
+fn extract_schnorr_multisig_pubkeys(redeem_script: &[u8]) -> Result<(usize, usize, Vec<Vec<u8>>), String> {
+    fn decode_small_int(op: u8) -> Option<usize> {
+        match op {
+            0x00 => Some(0),
+            0x51..=0x60 => Some((op - 0x50) as usize),
+            _ => None,
+        }
+    }
+
+    if redeem_script.len() < 3 {
+        return Err("redeem script too short".to_string());
+    }
+
+    let mut p = 0usize;
+    let m = decode_small_int(redeem_script[p]).ok_or_else(|| "bad multisig redeem script: invalid M opcode".to_string())?;
+    p += 1;
+
+    let mut pubkeys = Vec::new();
+    while p < redeem_script.len() && redeem_script[p] == 0x20 {
+        p += 1;
+        if p + 32 > redeem_script.len() {
+            return Err("bad multisig redeem script: truncated pubkey push".to_string());
+        }
+        pubkeys.push(redeem_script[p..p + 32].to_vec());
+        p += 32;
+    }
+
+    if p >= redeem_script.len() {
+        return Err("bad multisig redeem script: missing N opcode".to_string());
+    }
+    let n = decode_small_int(redeem_script[p]).ok_or_else(|| "bad multisig redeem script: invalid N opcode".to_string())?;
+    p += 1;
+
+    if p >= redeem_script.len() || redeem_script[p] != 0xae {
+        return Err("bad multisig redeem script: missing OP_CHECKMULTISIG".to_string());
+    }
+
+    if n == 0 || m == 0 || m > n {
+        return Err(format!("bad multisig redeem script: invalid threshold m={m} n={n}"));
+    }
+    if pubkeys.len() != n {
+        return Err(format!("bad multisig redeem script: pubkey count {} does not match N {n}", pubkeys.len()));
+    }
+
+    Ok((m, n, pubkeys))
 }

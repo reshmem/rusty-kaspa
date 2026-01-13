@@ -1,23 +1,20 @@
 use crate::service::metrics::Metrics;
 use crate::transport::iroh::{IrohConfig, IrohTransport};
-use async_trait::async_trait;
-use igra_core::application::Coordinator;
-use igra_core::application::EventProcessor;
 use igra_core::application::{LifecycleObserver, NoopObserver};
-use igra_core::domain::SigningEvent;
+use igra_core::domain::pskt::multisig as pskt_multisig;
+use igra_core::domain::signing::aggregation;
 use igra_core::foundation::Hash32;
 use igra_core::foundation::ThresholdError;
-use igra_core::foundation::{PeerId, RequestId, SessionId};
-use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktBuildConfig, PsktOutput, ServiceConfig};
+use igra_core::infrastructure::config::ServiceConfig;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::NodeRpc;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{SignatureSigner, SignatureVerifier, Transport};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct ServiceFlow {
-    coordinator: Coordinator,
     storage: Arc<dyn Storage>,
     transport: Arc<dyn Transport>,
     rpc: Arc<dyn NodeRpc>,
@@ -38,7 +35,6 @@ impl ServiceFlow {
         debug!("metrics initialized");
         let lifecycle = Arc::new(NoopObserver);
         Ok(Self {
-            coordinator: Coordinator::with_observer(transport.clone(), storage.clone(), lifecycle.clone()),
             storage,
             transport,
             rpc,
@@ -56,7 +52,6 @@ impl ServiceFlow {
         let metrics = Arc::new(Metrics::new()?);
         let lifecycle = Arc::new(NoopObserver);
         Ok(Self {
-            coordinator: Coordinator::with_observer(transport.clone(), storage.clone(), lifecycle.clone()),
             storage,
             transport,
             rpc,
@@ -83,61 +78,86 @@ impl ServiceFlow {
         Self::new(config, storage, transport).await
     }
 
-    pub async fn propose_from_rpc(
-        &self,
-        config: &ServiceConfig,
-        session_id: SessionId,
-        request_id: RequestId,
-        signing_event: SigningEvent,
-        expires_at_nanos: u64,
-        coordinator_peer_id: PeerId,
-    ) -> Result<Hash32, ThresholdError> {
-        info!(
-            "propose_from_rpc session_id={} request_id={} event_id={} expires_at_nanos={} coordinator_peer_id={}",
-            hex::encode(session_id.as_hash()),
-            request_id,
-            signing_event.event_id,
-            expires_at_nanos,
-            coordinator_peer_id
-        );
-        let pskt_config = resolve_pskt_config(config, &signing_event)?;
-        debug!(
-            "resolved pskt config sig_op_count={} source_addresses={} outputs={} has_redeem_script={}",
-            pskt_config.sig_op_count,
-            pskt_config.source_addresses.len(),
-            pskt_config.outputs.len(),
-            !pskt_config.redeem_script_hex.trim().is_empty()
-        );
-        self.coordinator
-            .propose_session_from_rpc(
-                self.rpc.as_ref(),
-                &pskt_config,
-                session_id,
-                request_id,
-                signing_event,
-                expires_at_nanos,
-                coordinator_peer_id,
-            )
-            .await
-    }
-
     pub async fn finalize_and_submit(
         &self,
-        request_id: &RequestId,
+        event_hash: Hash32,
         pskt: kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Combiner>,
         required_signatures: usize,
         ordered_pubkeys: &[secp256k1::PublicKey],
         params: &kaspa_consensus_core::config::params::Params,
     ) -> Result<kaspa_consensus_core::tx::TransactionId, ThresholdError> {
         info!(
-            "finalizing and submitting transaction request_id={} required_signatures={} pubkey_count={}",
-            request_id,
+            "finalizing and submitting transaction event_hash={} required_signatures={} pubkey_count={}",
+            hex::encode(event_hash),
             required_signatures,
             ordered_pubkeys.len()
         );
-        self.coordinator
-            .finalize_and_submit_multisig(self.rpc.as_ref(), request_id, pskt, required_signatures, ordered_pubkeys, params)
-            .await
+
+        let finalize_result = aggregation::finalize_pskt(pskt, required_signatures, ordered_pubkeys)?;
+        let tx_result = pskt_multisig::extract_tx(finalize_result.pskt, params)?;
+        let final_tx = tx_result.tx.clone();
+        let expected_tx_id = final_tx.id();
+
+        fn is_duplicate_submission(err: &ThresholdError) -> bool {
+            let msg = err.to_string().to_lowercase();
+            msg.contains("already") && (msg.contains("mempool") || msg.contains("known") || msg.contains("exists") || msg.contains("duplicate"))
+        }
+
+        fn is_non_retryable_submission(err: &ThresholdError) -> bool {
+            let msg = err.to_string().to_lowercase();
+            msg.contains("not standard") && msg.contains("storage mass") && msg.contains("max allowed")
+                || msg.contains("sig op count exceeds passed limit")
+                || (msg.contains("not standard") && msg.contains("under the required amount"))
+                || (msg.contains("not standard") && msg.contains("has 0 fees"))
+        }
+
+        let mut attempt = 0u32;
+        let tx_id = loop {
+            attempt += 1;
+            match self.rpc.submit_transaction(final_tx.clone()).await {
+                Ok(id) => {
+                    info!(
+                        "submit_transaction ok event_hash={} tx_id={} mass={}",
+                        hex::encode(event_hash),
+                        id,
+                        tx_result.mass
+                    );
+                    break id;
+                }
+                Err(err) if is_duplicate_submission(&err) => {
+                    info!(
+                        "submit_transaction already accepted; treating as success event_hash={} tx_id={} error={}",
+                        hex::encode(event_hash),
+                        expected_tx_id,
+                        err
+                    );
+                    break expected_tx_id;
+                }
+                Err(err) if is_non_retryable_submission(&err) => {
+                    warn!(
+                        "submit_transaction rejected as non-retryable; not retrying event_hash={} tx_id={} mass={} error={}",
+                        hex::encode(event_hash),
+                        expected_tx_id,
+                        tx_result.mass,
+                        err
+                    );
+                    return Err(err);
+                }
+                Err(err) if attempt < 4 => {
+                    let backoff_ms = 100u64.saturating_mul(2u64.saturating_pow(attempt - 1));
+                    warn!(
+                        "submit_transaction failed; retrying event_hash={} attempt={} backoff_ms={} error={}",
+                        hex::encode(event_hash),
+                        attempt,
+                        backoff_ms,
+                        err
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        };
+        Ok(tx_id)
     }
 
     pub fn storage(&self) -> Arc<dyn Storage> {
@@ -162,43 +182,7 @@ impl ServiceFlow {
 
     pub fn set_lifecycle_observer(&mut self, observer: Arc<dyn LifecycleObserver>) {
         self.lifecycle = observer.clone();
-        self.coordinator.set_lifecycle_observer(observer);
     }
-}
-
-#[async_trait]
-impl EventProcessor for ServiceFlow {
-    async fn handle_signing_event(
-        &self,
-        config: &ServiceConfig,
-        session_id: SessionId,
-        request_id: RequestId,
-        signing_event: SigningEvent,
-        expires_at_nanos: u64,
-        coordinator_peer_id: PeerId,
-    ) -> Result<Hash32, ThresholdError> {
-        self.propose_from_rpc(config, session_id, request_id, signing_event, expires_at_nanos, coordinator_peer_id).await
-    }
-}
-
-fn resolve_pskt_config(config: &ServiceConfig, signing_event: &SigningEvent) -> Result<PsktBuildConfig, ThresholdError> {
-    if signing_event.destination_address.trim().is_empty() || signing_event.amount_sompi == 0 {
-        return Err(ThresholdError::Message("signing_event missing destination_address or amount".to_string()));
-    }
-    if !config.pskt.redeem_script_hex.trim().is_empty() {
-        debug!("using configured redeem script");
-        let mut pskt = config.pskt.clone();
-        pskt.outputs =
-            vec![PsktOutput { address: signing_event.destination_address.clone(), amount_sompi: signing_event.amount_sompi }];
-        return Ok(pskt);
-    }
-    debug!("deriving redeem script via HD config");
-    let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::Message("missing redeem script or HD config".to_string()))?;
-    let redeem_script_hex = derive_redeem_script_hex(hd, &signing_event.derivation_path)?;
-    let mut pskt = config.pskt.clone();
-    pskt.outputs = vec![PsktOutput { address: signing_event.destination_address.clone(), amount_sompi: signing_event.amount_sompi }];
-    pskt.redeem_script_hex = redeem_script_hex;
-    Ok(pskt)
 }
 
 fn redact_url(url: &str) -> String {

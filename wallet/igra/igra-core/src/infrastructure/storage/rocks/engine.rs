@@ -1,14 +1,13 @@
-use crate::domain::{
-    GroupConfig, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal,
-};
+use crate::domain::{CrdtSignatureRecord, GroupConfig, SigningEvent, StoredCompletionRecord, StoredEventCrdt};
 use crate::foundation::ThresholdError;
-use crate::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
+use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
 use crate::infrastructure::storage::rocks::migration::open_db_with_cfs;
 use crate::infrastructure::storage::rocks::schema::*;
-use crate::infrastructure::storage::{BatchTransaction, Storage};
+use crate::infrastructure::storage::{BatchTransaction, CrdtStorageStats, Storage};
+use crate::infrastructure::transport::messages::{CompletionRecord, EventCrdtState};
 use bincode::Options;
 use rocksdb::{checkpoint::Checkpoint, ColumnFamily, Direction, IteratorMode, WriteBatch, DB};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use log::{debug, info, trace, warn};
 use std::path::Path;
 use std::sync::Arc;
@@ -16,6 +15,7 @@ use std::{env, fs};
 
 pub struct RocksStorage {
     db: Arc<DB>,
+    crdt_lock: std::sync::Mutex<()>,
 }
 
 impl RocksStorage {
@@ -23,7 +23,7 @@ impl RocksStorage {
         let path = path.as_ref();
         debug!("opening RocksStorage path={}", path.display());
         let db = open_db_with_cfs(path)?;
-        let storage = Self { db: Arc::new(db) };
+        let storage = Self { db: Arc::new(db), crdt_lock: std::sync::Mutex::new(()) };
         storage.maybe_run_migrations()?;
         info!("RocksStorage opened path={}", path.display());
         Ok(storage)
@@ -80,7 +80,7 @@ impl RocksStorage {
     }
 
     fn maybe_run_migrations(&self) -> Result<(), ThresholdError> {
-        const SCHEMA_VERSION: u32 = 1;
+        const SCHEMA_VERSION: u32 = 2;
         match self.schema_version()? {
             None => {
                 // Fresh DB
@@ -137,76 +137,28 @@ impl RocksStorage {
         KeyBuilder::with_capacity(4 + event_hash.len()).prefix(b"evt:").hash32(event_hash).build()
     }
 
-    fn key_request(request_id: &RequestId) -> Vec<u8> {
-        KeyBuilder::with_capacity(4 + request_id.len()).prefix(b"req:").str(request_id.as_str()).build()
-    }
-
-    fn key_proposal(request_id: &RequestId) -> Vec<u8> {
-        KeyBuilder::with_capacity(9 + request_id.len()).prefix(b"proposal:").str(request_id.as_str()).build()
-    }
-
-    fn key_request_input_prefix(request_id: &RequestId) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + request_id.len()).prefix(b"req_input:").str(request_id.as_str()).sep().build()
-    }
-
-    fn key_request_input(request_id: &RequestId, input_index: u32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + request_id.len() + 1 + 4)
-            .prefix(b"req_input:")
-            .str(request_id.as_str())
+    fn key_event_crdt(event_hash: &Hash32, tx_template_hash: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_hash.len() + 1 + tx_template_hash.len())
+            .prefix(b"evt_crdt:")
+            .hash32(event_hash)
             .sep()
-            .u32_be(input_index)
+            .hash32(tx_template_hash)
             .build()
     }
 
-    fn key_signer_ack_prefix(request_id: &RequestId) -> Vec<u8> {
-        KeyBuilder::with_capacity(12 + request_id.len()).prefix(b"req_ack:").str(request_id.as_str()).sep().build()
-    }
-
-    fn key_signer_ack(request_id: &RequestId, signer_peer_id: &PeerId) -> Vec<u8> {
-        KeyBuilder::with_capacity(12 + request_id.len() + signer_peer_id.len())
-            .prefix(b"req_ack:")
-            .str(request_id.as_str())
-            .sep()
-            .str(signer_peer_id.as_str())
-            .build()
-    }
-
-    fn key_partial_sig_prefix(request_id: &RequestId) -> Vec<u8> {
-        KeyBuilder::with_capacity(14 + request_id.len()).prefix(b"req_sig:").str(request_id.as_str()).sep().build()
-    }
-
-    fn key_partial_sig(request_id: &RequestId, signer_peer_id: &PeerId, input_index: u32) -> Vec<u8> {
-        KeyBuilder::with_capacity(14 + request_id.len() + signer_peer_id.len() + 1 + 4)
-            .prefix(b"req_sig:")
-            .str(request_id.as_str())
-            .sep()
-            .str(signer_peer_id.as_str())
-            .sep()
-            .u32_be(input_index)
-            .build()
-    }
-
-    #[allow(dead_code)]
-    fn key_partial_sig_input_prefix(request_id: &RequestId, input_index: u32) -> Vec<u8> {
-        KeyBuilder::with_capacity(14 + request_id.len() + 4 + 1)
-            .prefix(b"req_sig:")
-            .str(request_id.as_str())
-            .sep()
-            .u32_be(input_index)
+    fn key_event_crdt_prefix(event_hash: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_hash.len() + 1)
+            .prefix(b"evt_crdt:")
+            .hash32(event_hash)
             .sep()
             .build()
     }
 
-    #[allow(dead_code)]
-    fn key_partial_sig_input(request_id: &RequestId, input_index: u32, signer_pubkey: &[u8]) -> Vec<u8> {
-        KeyBuilder::with_capacity(14 + request_id.len() + 4 + 1 + signer_pubkey.len())
-            .prefix(b"req_sig:")
-            .str(request_id.as_str())
-            .sep()
-            .u32_be(input_index)
-            .sep()
-            .bytes(signer_pubkey)
-            .build()
+    fn now_nanos() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
     }
 
     fn key_seen(sender_peer_id: &PeerId, session_id: &SessionId, seq_no: u64) -> Vec<u8> {
@@ -257,28 +209,33 @@ impl RocksStorage {
         let mut total = 0u64;
         let mut counted = 0usize;
         let mut seen_events = HashSet::new();
-        let prefix = b"req:";
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        let prefix = b"evt_crdt:";
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
             let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
             if !key.starts_with(prefix) {
+                break;
+            }
+            let state = Self::decode::<StoredEventCrdt>(&value)?;
+            if state.completion.is_none() {
                 continue;
             }
-            let request = Self::decode::<SigningRequest>(&value)?;
-            if !matches!(request.decision, RequestDecision::Finalized) {
+            if seen_events.contains(&state.event_hash) {
                 continue;
             }
-            if seen_events.contains(&request.event_hash) {
-                continue;
-            }
-            seen_events.insert(request.event_hash);
-            if let Some(event) = self.get_event(&request.event_hash)? {
-                let event_day = Self::day_start_nanos(event.timestamp_nanos);
-                if event_day == Self::day_start_nanos(since_day_start) {
-                    total = total.saturating_add(event.amount_sompi);
-                    counted += 1;
-                }
+            seen_events.insert(state.event_hash);
+
+            let event = match state.signing_event {
+                Some(ev) => Some(ev),
+                None => self.get_event(&state.event_hash)?,
+            };
+            let Some(event) = event else { continue };
+
+            let event_day = Self::day_start_nanos(event.timestamp_nanos);
+            if event_day == Self::day_start_nanos(since_day_start) {
+                total = total.saturating_add(event.amount_sompi);
+                counted += 1;
             }
         }
         debug!(
@@ -290,73 +247,6 @@ impl RocksStorage {
 }
 
 impl RocksStorage {
-    pub fn archive_old_requests(&self, before_nanos: u64) -> Result<usize, ThresholdError> {
-        info!("archive_old_requests start before_nanos={}", before_nanos);
-        let mut archived = 0usize;
-        let prefix = b"req:";
-        let request_cf = self.cf_handle(CF_REQUEST)?;
-        let mut batch = WriteBatch::default();
-        let iter = self.db.iterator_cf(request_cf, IteratorMode::Start);
-        for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
-            if !key.starts_with(prefix) {
-                continue;
-            }
-            let request = Self::decode::<SigningRequest>(&value)?;
-            if !matches!(request.decision, RequestDecision::Finalized) {
-                continue;
-            }
-            let event = match self.get_event(&request.event_hash)? {
-                Some(event) => event,
-                None => continue,
-            };
-            if event.timestamp_nanos >= before_nanos {
-                continue;
-            }
-            let mut archive_key = Vec::with_capacity(8 + key.len());
-            archive_key.extend_from_slice(b"archive:");
-            archive_key.extend_from_slice(&key);
-            batch.put_cf(request_cf, &archive_key, &value);
-            batch.delete_cf(request_cf, &key);
-            archived += 1;
-        }
-        if archived > 0 {
-            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        }
-        info!("archive_old_requests complete before_nanos={} archived={}", before_nanos, archived);
-        Ok(archived)
-    }
-
-    pub fn delete_old_archives(&self, before_nanos: u64) -> Result<usize, ThresholdError> {
-        info!("delete_old_archives start before_nanos={}", before_nanos);
-        let mut deleted = 0usize;
-        let prefix = b"archive:req:";
-        let request_cf = self.cf_handle(CF_REQUEST)?;
-        let mut batch = WriteBatch::default();
-        let iter = self.db.iterator_cf(request_cf, IteratorMode::Start);
-        for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
-            if !key.starts_with(prefix) {
-                continue;
-            }
-            let request = Self::decode::<SigningRequest>(&value)?;
-            let event = match self.get_event(&request.event_hash)? {
-                Some(event) => event,
-                None => continue,
-            };
-            if event.timestamp_nanos >= before_nanos {
-                continue;
-            }
-            batch.delete_cf(request_cf, &key);
-            deleted += 1;
-        }
-        if deleted > 0 {
-            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        }
-        info!("delete_old_archives complete before_nanos={} deleted={}", before_nanos, deleted);
-        Ok(deleted)
-    }
-
     pub fn compact(&self) -> Result<(), ThresholdError> {
         debug!("rocksdb compact_range start");
         self.db.compact_range(None::<&[u8]>, None::<&[u8]>);
@@ -389,11 +279,8 @@ impl Storage for RocksStorage {
         debug!("insert_event event_hash={} event_id={}", hex::encode(event_hash), event.event_id);
         let key = Self::key_event(&event_hash);
         let cf = self.cf_handle(CF_EVENT)?;
-
-        // Check for duplicate before inserting to prevent replay attacks
         if self.db.get_cf(cf, &key).map_err(|e| ThresholdError::StorageError(e.to_string()))?.is_some() {
-            debug!("event replay detected event_hash={}", hex::encode(event_hash));
-            return Err(ThresholdError::EventReplayed(hex::encode(event_hash)));
+            return Ok(());
         }
 
         let value = Self::encode(&event)?;
@@ -413,189 +300,330 @@ impl Storage for RocksStorage {
         }
     }
 
-    fn insert_request(&self, request: SigningRequest) -> Result<(), ThresholdError> {
-        debug!("insert_request request_id={} decision={:?}", request.request_id, request.decision);
-        let key = Self::key_request(&request.request_id);
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let existing = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        if existing.is_some() {
-            return Ok(());
+    fn get_event_crdt(&self, event_hash: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>, ThresholdError> {
+        let key = Self::key_event_crdt(event_hash, tx_template_hash);
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        match value {
+            Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
+            None => Ok(None),
         }
-        let value = Self::encode(&request)?;
-        self.db.put_cf(cf, &key, value).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        debug!("request stored request_id={}", request.request_id);
+    }
 
-        if request.final_tx_id.is_some() && matches!(request.decision, RequestDecision::Finalized) {
-            if let Some(event) = self.get_event(&request.event_hash)? {
+    fn merge_event_crdt(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        incoming: &EventCrdtState,
+        signing_event: Option<&SigningEvent>,
+        kpsbt_blob: Option<&[u8]>,
+    ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
+        let _guard = self
+            .crdt_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
+
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let key = Self::key_event_crdt(event_hash, tx_template_hash);
+        let now_nanos = Self::now_nanos();
+
+        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| ThresholdError::Message(e.to_string()))? {
+            Some(bytes) => Self::decode(&bytes)?,
+            None => StoredEventCrdt {
+                event_hash: *event_hash,
+                tx_template_hash: *tx_template_hash,
+                signing_event: None,
+                kpsbt_blob: None,
+                signatures: Vec::new(),
+                completion: None,
+                created_at_nanos: now_nanos,
+                updated_at_nanos: now_nanos,
+            },
+        };
+
+        let mut changed = false;
+
+        if local.signing_event.is_none() {
+            if let Some(ev) = signing_event {
+                local.signing_event = Some(ev.clone());
+                changed = true;
+            }
+        }
+
+        if local.kpsbt_blob.is_none() {
+            if let Some(blob) = kpsbt_blob {
+                local.kpsbt_blob = Some(blob.to_vec());
+                changed = true;
+            }
+        }
+
+        let mut existing: HashSet<(u32, Vec<u8>)> = HashSet::with_capacity(local.signatures.len());
+        for sig in &local.signatures {
+            existing.insert((sig.input_index, sig.pubkey.clone()));
+        }
+
+        for sig in &incoming.signatures {
+            let sig_key = (sig.input_index, sig.pubkey.clone());
+            if !existing.contains(&sig_key) {
+                local.signatures.push(CrdtSignatureRecord {
+                    input_index: sig.input_index,
+                    pubkey: sig.pubkey.clone(),
+                    signature: sig.signature.clone(),
+                    signer_peer_id: sig.signer_peer_id.clone().unwrap_or_else(|| PeerId::from("unknown")),
+                    timestamp_nanos: sig.timestamp_nanos,
+                });
+                existing.insert(sig_key);
+                changed = true;
+            }
+        }
+
+        if let Some(incoming_completion) = &incoming.completion {
+            match &local.completion {
+                None => {
+                    local.completion = Some(StoredCompletionRecord {
+                        tx_id: TransactionId::from(incoming_completion.tx_id),
+                        submitter_peer_id: incoming_completion.submitter_peer_id.clone(),
+                        timestamp_nanos: incoming_completion.timestamp_nanos,
+                        blue_score: incoming_completion.blue_score,
+                    });
+                    changed = true;
+                }
+                Some(existing_completion) => {
+                    if incoming_completion.timestamp_nanos > existing_completion.timestamp_nanos {
+                        local.completion = Some(StoredCompletionRecord {
+                            tx_id: TransactionId::from(incoming_completion.tx_id),
+                            submitter_peer_id: incoming_completion.submitter_peer_id.clone(),
+                            timestamp_nanos: incoming_completion.timestamp_nanos,
+                            blue_score: incoming_completion.blue_score,
+                        });
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if changed {
+            local.updated_at_nanos = now_nanos;
+            let value = Self::encode(&local)?;
+            self.db.put_cf(cf, &key, value).map_err(|e| ThresholdError::Message(e.to_string()))?;
+        }
+
+        Ok((local, changed))
+    }
+
+    fn add_signature_to_crdt(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        input_index: u32,
+        pubkey: &[u8],
+        signature: &[u8],
+        signer_peer_id: &PeerId,
+        timestamp_nanos: u64,
+    ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
+        let _guard = self
+            .crdt_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
+
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let key = Self::key_event_crdt(event_hash, tx_template_hash);
+        let now_nanos = Self::now_nanos();
+
+        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| ThresholdError::Message(e.to_string()))? {
+            Some(bytes) => Self::decode(&bytes)?,
+            None => StoredEventCrdt {
+                event_hash: *event_hash,
+                tx_template_hash: *tx_template_hash,
+                signing_event: None,
+                kpsbt_blob: None,
+                signatures: Vec::new(),
+                completion: None,
+                created_at_nanos: now_nanos,
+                updated_at_nanos: now_nanos,
+            },
+        };
+
+        let already = local
+            .signatures
+            .iter()
+            .any(|s| s.input_index == input_index && s.pubkey.as_slice() == pubkey);
+
+        if already {
+            return Ok((local, false));
+        }
+
+        local.signatures.push(CrdtSignatureRecord {
+            input_index,
+            pubkey: pubkey.to_vec(),
+            signature: signature.to_vec(),
+            signer_peer_id: signer_peer_id.clone(),
+            timestamp_nanos,
+        });
+        local.updated_at_nanos = now_nanos;
+
+        let value = Self::encode(&local)?;
+        self.db.put_cf(cf, &key, value).map_err(|e| ThresholdError::Message(e.to_string()))?;
+        Ok((local, true))
+    }
+
+    fn mark_crdt_completed(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        tx_id: TransactionId,
+        submitter_peer_id: &PeerId,
+        timestamp_nanos: u64,
+        blue_score: Option<u64>,
+    ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
+        let incoming = EventCrdtState {
+            signatures: vec![],
+            completion: Some(CompletionRecord {
+                tx_id: *tx_id.as_hash(),
+                submitter_peer_id: submitter_peer_id.clone(),
+                timestamp_nanos,
+                blue_score,
+            }),
+            signing_event: None,
+            kpsbt_blob: None,
+            version: 0,
+        };
+        let (state, changed) = self.merge_event_crdt(event_hash, tx_template_hash, &incoming, None, None)?;
+        if changed {
+            if let Some(event) = self.get_event(event_hash)? {
                 self.add_to_daily_volume(event.amount_sompi, event.timestamp_nanos)?;
             }
         }
-        Ok(())
+        Ok((state, changed))
     }
 
-    fn update_request_decision(&self, request_id: &RequestId, decision: RequestDecision) -> Result<(), ThresholdError> {
-        let key = Self::key_request(request_id);
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let value = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let mut request = match value {
-            Some(bytes) => Self::decode::<SigningRequest>(&bytes)?,
-            None => return Err(ThresholdError::KeyNotFound(format!("request {} not found", request_id))),
+    fn crdt_has_threshold(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        input_count: usize,
+        required: usize,
+    ) -> Result<bool, ThresholdError> {
+        let state = match self.get_event_crdt(event_hash, tx_template_hash)? {
+            Some(s) => s,
+            None => return Ok(false),
         };
-        let old_decision = request.decision.clone();
-        crate::domain::request::state_machine::ensure_valid_transition(&request.decision, &decision)?;
-        request.decision = decision;
-        info!(
-            "request decision updated request_id={} old_decision={:?} new_decision={:?}",
-            request_id, old_decision, request.decision
-        );
-        let updated = Self::encode(&request)?;
-        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))
-    }
 
-    fn get_request(&self, request_id: &RequestId) -> Result<Option<SigningRequest>, ThresholdError> {
-        trace!("get_request request_id={}", request_id);
-        let key = Self::key_request(request_id);
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        match value {
-            Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
-            None => Ok(None),
+        if input_count == 0 || required == 0 {
+            return Ok(false);
         }
-    }
 
-    fn insert_proposal(&self, request_id: &RequestId, proposal: StoredProposal) -> Result<(), ThresholdError> {
-        trace!("insert_proposal request_id={} kpsbt_len={}", request_id, proposal.kpsbt_blob.len());
-        let key = Self::key_proposal(request_id);
-        let value = Self::encode(&proposal)?;
-        let cf = self.cf_handle(CF_PROPOSAL)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
-    }
-
-    fn get_proposal(&self, request_id: &RequestId) -> Result<Option<StoredProposal>, ThresholdError> {
-        let key = Self::key_proposal(request_id);
-        let cf = self.cf_handle(CF_PROPOSAL)?;
-        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        match value {
-            Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
-            None => Ok(None),
+        let mut per_input: HashMap<u32, HashSet<&[u8]>> = HashMap::new();
+        for sig in &state.signatures {
+            if (sig.input_index as usize) < input_count {
+                per_input.entry(sig.input_index).or_default().insert(sig.pubkey.as_slice());
+            }
         }
+
+        Ok((0..input_count as u32).all(|idx| per_input.get(&idx).map_or(false, |set| set.len() >= required)))
     }
 
-    fn insert_request_input(&self, request_id: &RequestId, input: RequestInput) -> Result<(), ThresholdError> {
-        let key = Self::key_request_input(request_id, input.input_index);
-        let value = Self::encode(&input)?;
-        let cf = self.cf_handle(CF_REQUEST_INPUT)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
+    fn list_pending_event_crdts(&self) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
+        let prefix = b"evt_crdt:";
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let mut results = Vec::new();
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
+        for item in iter {
+            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            let state: StoredEventCrdt = Self::decode(&value)?;
+            if state.completion.is_none() {
+                results.push(state);
+            }
+        }
+        Ok(results)
     }
 
-    fn list_request_inputs(&self, request_id: &RequestId) -> Result<Vec<RequestInput>, ThresholdError> {
-        let prefix = Self::key_request_input_prefix(request_id);
-        let mut inputs = Vec::new();
-        let cf = self.cf_handle(CF_REQUEST_INPUT)?;
+    fn list_event_crdts_for_event(&self, event_hash: &Hash32) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
+        let prefix = Self::key_event_crdt_prefix(event_hash);
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let mut results = Vec::new();
         let iter = self.db.iterator_cf(cf, IteratorMode::From(&prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
             if !key.starts_with(&prefix) {
                 break;
             }
-            inputs.push(Self::decode::<RequestInput>(&value)?);
+            let state: StoredEventCrdt = Self::decode(&value)?;
+            results.push(state);
         }
-        Ok(inputs)
+        Ok(results)
     }
 
-    fn insert_signer_ack(&self, request_id: &RequestId, ack: SignerAckRecord) -> Result<(), ThresholdError> {
-        debug!(
-            "insert_signer_ack request_id={} signer_peer_id={} accept={}",
-            request_id, ack.signer_peer_id, ack.accept
-        );
-        let key = Self::key_signer_ack(request_id, &ack.signer_peer_id);
-        let value = Self::encode(&ack)?;
-        let cf = self.cf_handle(CF_SIGNER_ACK)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
-    }
+    fn crdt_storage_stats(&self) -> Result<CrdtStorageStats, ThresholdError> {
+        let prefix = b"evt_crdt:";
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let mut total = 0u64;
+        let mut pending = 0u64;
 
-    fn list_signer_acks(&self, request_id: &RequestId) -> Result<Vec<SignerAckRecord>, ThresholdError> {
-        let prefix = Self::key_signer_ack_prefix(request_id);
-        let mut entries = Vec::new();
-        let cf = self.cf_handle(CF_SIGNER_ACK)?;
-        let iter = self.db.iterator_cf(cf, IteratorMode::From(&prefix, Direction::Forward));
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
-            if !key.starts_with(&prefix) {
+            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            if !key.starts_with(prefix) {
                 break;
             }
-            entries.push(Self::decode::<SignerAckRecord>(&value)?);
+            total += 1;
+            let state: StoredEventCrdt = Self::decode(&value)?;
+            if state.completion.is_none() {
+                pending += 1;
+            }
         }
-        Ok(entries)
+
+        let cf_estimated_num_keys = self
+            .db
+            .property_int_value_cf(cf, "rocksdb.estimate-num-keys")
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let cf_estimated_live_data_size_bytes = self
+            .db
+            .property_int_value_cf(cf, "rocksdb.estimate-live-data-size")
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+
+        Ok(CrdtStorageStats {
+            total_event_crdts: total,
+            pending_event_crdts: pending,
+            completed_event_crdts: total.saturating_sub(pending),
+            cf_estimated_num_keys,
+            cf_estimated_live_data_size_bytes,
+        })
     }
 
-    fn insert_partial_sig(&self, request_id: &RequestId, sig: PartialSigRecord) -> Result<(), ThresholdError> {
-        debug!(
-            "insert_partial_sig request_id={} signer_peer_id={} input_index={} signature_len={}",
-            request_id,
-            sig.signer_peer_id,
-            sig.input_index,
-            sig.signature.len()
-        );
-        let key = Self::key_partial_sig(request_id, &sig.signer_peer_id, sig.input_index);
-        let value = Self::encode(&sig)?;
-        let cf = self.cf_handle(CF_PARTIAL_SIG)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
-    }
+    fn cleanup_completed_event_crdts(&self, older_than_nanos: u64) -> Result<usize, ThresholdError> {
+        let _guard = self
+            .crdt_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
 
-    fn list_partial_sigs(&self, request_id: &RequestId) -> Result<Vec<PartialSigRecord>, ThresholdError> {
-        let prefix = Self::key_partial_sig_prefix(request_id);
-        let mut entries = Vec::new();
-        let cf = self.cf_handle(CF_PARTIAL_SIG)?;
-        let iter = self.db.iterator_cf(cf, IteratorMode::From(&prefix, Direction::Forward));
+        let prefix = b"evt_crdt:";
+        let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
+        let mut batch = WriteBatch::default();
+        let mut deleted = 0usize;
+
         for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
-            if !key.starts_with(&prefix) {
+            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            if !key.starts_with(prefix) {
                 break;
             }
-            entries.push(Self::decode::<PartialSigRecord>(&value)?);
+            let state: StoredEventCrdt = Self::decode(&value)?;
+            let Some(completion) = state.completion.as_ref() else { continue };
+            if completion.timestamp_nanos < older_than_nanos {
+                batch.delete_cf(cf, key);
+                deleted += 1;
+            }
         }
-        Ok(entries)
-    }
 
-    fn update_request_final_tx(&self, request_id: &RequestId, final_tx_id: TransactionId) -> Result<(), ThresholdError> {
-        let key = Self::key_request(request_id);
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let value = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let mut request = match value {
-            Some(bytes) => Self::decode::<SigningRequest>(&bytes)?,
-            None => return Err(ThresholdError::KeyNotFound(format!("request {} not found", request_id))),
-        };
-        if request.final_tx_id.is_some() {
-            return Ok(());
+        if deleted > 0 {
+            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
         }
-        crate::domain::request::state_machine::ensure_valid_transition(&request.decision, &RequestDecision::Finalized)?;
-        request.final_tx_id = Some(final_tx_id);
-        request.decision = RequestDecision::Finalized;
-        let updated = Self::encode(&request)?;
-        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        info!("request finalized request_id={} final_tx_id={}", request_id, hex::encode(final_tx_id.as_hash()));
-        if let Some(event) = self.get_event(&request.event_hash)? {
-            self.add_to_daily_volume(event.amount_sompi, event.timestamp_nanos)?;
-        }
-        Ok(())
-    }
 
-    fn update_request_final_tx_score(&self, request_id: &RequestId, accepted_blue_score: u64) -> Result<(), ThresholdError> {
-        debug!(
-            "update_request_final_tx_score request_id={} accepted_blue_score={}",
-            request_id, accepted_blue_score
-        );
-        let key = Self::key_request(request_id);
-        let cf = self.cf_handle(CF_REQUEST)?;
-        let value = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let mut request = match value {
-            Some(bytes) => Self::decode::<SigningRequest>(&bytes)?,
-            None => return Err(ThresholdError::KeyNotFound(format!("request {} not found", request_id))),
-        };
-        request.final_tx_accepted_blue_score = Some(accepted_blue_score);
-        let updated = Self::encode(&request)?;
-        self.db.put_cf(cf, key, updated).map_err(|err| ThresholdError::Message(err.to_string()))
+        Ok(deleted)
     }
 
     fn get_volume_since(&self, timestamp_nanos: u64) -> Result<u64, ThresholdError> {

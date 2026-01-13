@@ -127,16 +127,12 @@ fn main() -> Result<(), ThresholdError> {
     let derivation_path = igra_core::foundation::derivation_path_from_index(0);
     let payment_secret = None::<Secret>;
     let mut signers = Vec::new();
-    let mut member_pubkeys = Vec::new();
-    let mut source_addresses: Vec<String> = Vec::new();
+    let mut signer_addresses: Vec<String> = Vec::new();
+    let mut signer_mnemonics: Vec<String> = Vec::new();
 
-    for (i, profile) in ["signer-1", "signer-2", "signer-3"].iter().enumerate() {
+    for (_i, profile) in ["signer-1", "signer-2", "signer-3"].iter().enumerate() {
         let mnemonic = mnemonic_phrase()?;
-
-        // Derive pubkey and address
-        let (pubkey, address) = derive_pubkey_and_address(&mnemonic, true, 0, Some(i as u32))?;
-        member_pubkeys.push(pubkey_hex(&pubkey));
-        source_addresses.push(address.clone());
+        signer_mnemonics.push(mnemonic.phrase().to_string());
 
         // Iroh seed
         let iroh_seed_hex = random_seed_hex();
@@ -149,20 +145,27 @@ fn main() -> Result<(), ThresholdError> {
         let iroh_pubkey_hex = hex::encode(iroh_signing.verifying_key().to_bytes());
         let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex)?;
 
+        // NOTE: `pubkey_hex` and `address` are filled below after we derive the actual Schnorr multisig key material.
         let signer = SignerOut {
             profile: profile.to_string(),
-            mnemonic: mnemonic.phrase().to_string(),
+            mnemonic: signer_mnemonics.last().cloned().unwrap_or_default(),
             iroh_seed_hex,
             iroh_peer_id,
             iroh_pubkey_hex,
-            pubkey_hex: pubkey_hex(&pubkey),
-            address,
+            pubkey_hex: String::new(),
+            address: String::new(),
             derivation_path: derivation_path.clone(),
         };
         signers.push(signer);
     }
 
-    // Redeem script for 2-of-3 using signer mnemonics
+    // Derive Schnorr multisig key material for 2-of-3 using signer mnemonics.
+    //
+    // IMPORTANT: We must keep the following consistent:
+    // - derived signer pubkeys (per-mnemonic, per-derivation_path)
+    // - redeem_script_hex (Schnorr multisig redeem script; x-only keys)
+    // - member_pubkeys (must match redeem script x-only keys)
+    // - multisig_address (P2SH of the Schnorr redeem script)
     let prv_keys: Vec<PrvKeyData> = signers
         .iter()
         .map(|s| {
@@ -179,20 +182,36 @@ fn main() -> Result<(), ThresholdError> {
         payment_secret: payment_secret.as_ref(),
     })
     .expect("derive pubkeys");
-    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2).expect("redeem");
+
+    // Match `derive_redeem_script_hex()` determinism: sort pubkeys before building the redeem script.
+    let mut ordered_pubkeys = pubkeys.clone();
+    ordered_pubkeys.sort_by(|a, b| a.serialize().cmp(&b.serialize()));
+
+    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2).expect("redeem");
     let redeem_script_hex = hex::encode(redeem_script);
 
-    let multisig_address = {
-        let keys: Vec<PublicKey> = member_pubkeys
-            .iter()
-            .map(|hex_pk| {
-                let bytes = hex::decode(hex_pk).expect("pubkey hex decode");
-                PublicKey::from_slice(&bytes).expect("pubkey parse")
-            })
-            .collect();
-        create_multisig_address(2, keys, Prefix::Devnet, true).expect("multisig address").to_string()
-    };
+    // Derive multisig address for SCHNORR multisig (ecdsa=false) so it matches `redeem_script_hex`.
+    let multisig_address =
+        create_multisig_address(2, ordered_pubkeys.clone(), Prefix::Devnet, false).expect("multisig address").to_string();
     let change_address = multisig_address.clone();
+
+    // Fill derived signer pubkeys/addresses for debugging / tooling.
+    for (signer, pubkey) in signers.iter_mut().zip(pubkeys.iter()) {
+        signer.pubkey_hex = pubkey_hex(pubkey);
+        let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
+            .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
+        signer.address = address.to_string();
+        signer_addresses.push(signer.address.clone());
+    }
+
+    // `group.member_pubkeys` must match the redeem script key set. For Schnorr multisig scripts this is x-only pubkeys.
+    let member_pubkeys: Vec<String> = ordered_pubkeys
+        .iter()
+        .map(|pk| {
+            let (xonly, _) = pk.x_only_public_key();
+            hex::encode(xonly.serialize())
+        })
+        .collect();
 
     // Hyperlane validators (2)
     let secp = Secp256k1::new();
@@ -220,7 +239,7 @@ fn main() -> Result<(), ThresholdError> {
     let output = Output {
         wallet,
         signers,
-        signer_addresses: source_addresses.clone(),
+        signer_addresses: signer_addresses.clone(),
         member_pubkeys: member_pubkeys.clone(),
         redeem_script_hex,
         source_addresses: vec![multisig_address.clone()],

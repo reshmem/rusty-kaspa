@@ -13,7 +13,7 @@ use kaspa_wallet_pskt::prelude::{
     Combiner, Creator, Finalizer, InputBuilder, OutputBuilder, SignInputOk, Signature, Signer, Updater, PSKT,
 };
 use kaspa_wallet_pskt::pskt::{Inner, Input, Output, Version};
-use secp256k1::{Keypair, Message, PublicKey, Secp256k1};
+use secp256k1::{Keypair, Message, Parity, PublicKey, Secp256k1, XOnlyPublicKey};
 use std::iter;
 
 #[derive(Clone, Debug)]
@@ -99,7 +99,11 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
         let max = inner.inputs.len().saturating_sub(1) as u32;
         let input =
             inner.inputs.get_mut(sig.input_index as usize).ok_or(ThresholdError::InvalidInputIndex { index: sig.input_index, max })?;
+        // Canonicalize Schnorr pubkey identity to x-only even parity.
+        // This makes partial sigs compatible across historical versions that used different pubkey parities.
         let pubkey = PublicKey::from_slice(&sig.pubkey).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let (xonly, _) = pubkey.x_only_public_key();
+        let pubkey = PublicKey::from_x_only_public_key(xonly, Parity::Even);
         let signature =
             secp256k1::schnorr::Signature::from_slice(&sig.signature).map_err(|err| ThresholdError::Message(err.to_string()))?;
         input.partial_sigs.insert(pubkey, Signature::Schnorr(signature));
@@ -134,6 +138,80 @@ pub fn partial_sigs_for_pubkey(pskt: &PSKT<Signer>, pubkey: &PublicKey) -> Vec<(
         .enumerate()
         .filter_map(|(idx, input)| input.partial_sigs.get(pubkey).map(|sig| (idx as u32, sig.into_bytes().to_vec())))
         .collect()
+}
+
+pub fn canonical_schnorr_pubkey_for_keypair(keypair: &Keypair) -> PublicKey {
+    let (xonly, _) = keypair.x_only_public_key();
+    PublicKey::from_x_only_public_key(xonly, Parity::Even)
+}
+
+pub fn ordered_pubkeys_from_redeem_script(redeem_script: &[u8]) -> Result<Vec<PublicKey>, ThresholdError> {
+    fn decode_small_int(op: u8) -> Option<usize> {
+        match op {
+            0x00 => Some(0),
+            0x51..=0x60 => Some((op - 0x50) as usize),
+            _ => None,
+        }
+    }
+
+    if redeem_script.len() < 3 {
+        return Err(ThresholdError::PsktValidationFailed("redeem script too short".to_string()));
+    }
+
+    let mut p = 0usize;
+    let m = decode_small_int(redeem_script[p])
+        .ok_or_else(|| ThresholdError::PsktValidationFailed("invalid multisig redeem script: bad M opcode".to_string()))?;
+    p += 1;
+
+    let mut xonly_keys = Vec::new();
+    while p < redeem_script.len() {
+        if redeem_script[p] != 0x20 {
+            break;
+        }
+        p += 1;
+        if p + 32 > redeem_script.len() {
+            return Err(ThresholdError::PsktValidationFailed(
+                "invalid multisig redeem script: truncated pubkey push".to_string(),
+            ));
+        }
+        xonly_keys.push(redeem_script[p..p + 32].to_vec());
+        p += 32;
+    }
+
+    if p >= redeem_script.len() {
+        return Err(ThresholdError::PsktValidationFailed(
+            "invalid multisig redeem script: missing N opcode".to_string(),
+        ));
+    }
+    let n = decode_small_int(redeem_script[p])
+        .ok_or_else(|| ThresholdError::PsktValidationFailed("invalid multisig redeem script: bad N opcode".to_string()))?;
+    p += 1;
+
+    if p >= redeem_script.len() || redeem_script[p] != 0xae {
+        return Err(ThresholdError::PsktValidationFailed(
+            "invalid multisig redeem script: missing OP_CHECKMULTISIG".to_string(),
+        ));
+    }
+
+    if n == 0 || m == 0 || m > n {
+        return Err(ThresholdError::PsktValidationFailed(format!(
+            "invalid multisig redeem script: invalid threshold m={m} n={n}"
+        )));
+    }
+    if xonly_keys.len() != n {
+        return Err(ThresholdError::PsktValidationFailed(format!(
+            "invalid multisig redeem script: pubkey count {} does not match N {n}",
+            xonly_keys.len()
+        )));
+    }
+
+    let mut pubkeys = Vec::with_capacity(xonly_keys.len());
+    for key_bytes in xonly_keys {
+        let xonly = XOnlyPublicKey::from_slice(&key_bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        pubkeys.push(PublicKey::from_x_only_public_key(xonly, Parity::Even));
+    }
+
+    Ok(pubkeys)
 }
 
 fn signable_tx_from_inner(inner: &Inner) -> SignableTransaction {
@@ -171,6 +249,7 @@ pub fn sign_pskt(pskt: PSKT<Signer>, keypair: &Keypair) -> Result<PsktSignResult
     let secp = Secp256k1::new();
     let reused_values = SigHashReusedValuesUnsync::new();
     let input_count = pskt.inputs.len();
+    let canonical_pubkey = canonical_schnorr_pubkey_for_keypair(keypair);
 
     pskt.pass_signature_sync(|tx, sighashes| -> Result<Vec<SignInputOk>, String> {
         tx.tx
@@ -182,7 +261,7 @@ pub fn sign_pskt(pskt: PSKT<Signer>, keypair: &Keypair) -> Result<PsktSignResult
                 let msg = Message::from_digest_slice(hash.as_bytes().as_slice()).map_err(|err| err.to_string())?;
                 Ok(SignInputOk {
                     signature: Signature::Schnorr(secp.sign_schnorr(&msg, keypair)),
-                    pub_key: keypair.public_key(),
+                    pub_key: canonical_pubkey,
                     key_source: None,
                 })
             })

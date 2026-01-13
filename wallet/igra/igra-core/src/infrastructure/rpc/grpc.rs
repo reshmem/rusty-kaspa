@@ -85,7 +85,18 @@ impl NodeRpc for GrpcNodeRpc {
         info!("grpc submit_transaction start mass={}", mass);
         let rpc_tx = Self::to_rpc_transaction(tx);
         let id = self.client.submit_transaction(rpc_tx, false).await.map_err(|err| {
-            error!("grpc submit_transaction failed mass={} error={}", mass, err);
+            let msg = err.to_string().to_lowercase();
+            // Duplicate submissions are expected in a leaderless / CRDT-based design:
+            // multiple signers may race to submit the same final tx.
+            let is_acceptable_duplicate = msg.contains("already in the mempool")
+                || msg.contains("already accepted by the consensus")
+                || msg.contains("known transaction")
+                || msg.contains("already known");
+            if is_acceptable_duplicate {
+                debug!("grpc submit_transaction duplicate mass={} error={}", mass, err);
+            } else {
+                error!("grpc submit_transaction failed mass={} error={}", mass, err);
+            }
             ThresholdError::Message(err.to_string())
         })?;
         debug!(

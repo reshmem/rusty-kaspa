@@ -1,9 +1,5 @@
-use super::traits::{
-    FinalizeNotice, MessageEnvelope, PartialSigSubmit, SignatureVerifier, SigningEventPropose, TransportMessage, TransportSubscription,
-};
-use crate::domain::{PartialSigRecord, SignerAckRecord, StoredProposal};
+use super::traits::{MessageEnvelope, SignatureVerifier, TransportSubscription};
 use crate::foundation::ThresholdError;
-use crate::foundation::{PeerId, SessionId, TransactionId};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
@@ -111,16 +107,6 @@ pub fn filter_stream(
                             }
                         };
                     }
-                    if let Err(err) = record_payload(
-                        &storage,
-                        &envelope.sender_peer_id,
-                        envelope.session_id,
-                        envelope.timestamp_nanos,
-                        &envelope.payload,
-                    ) {
-                        yield Err(err);
-                        continue;
-                    }
                     yield Ok(envelope)
                 }
                 Ok(false) => {
@@ -148,100 +134,4 @@ pub fn filter_stream(
         Some(keepalive) => TransportSubscription::new_with_keepalive(Box::pin(mapped), keepalive),
         None => TransportSubscription::new(Box::pin(mapped)),
     }
-}
-
-pub fn record_payload(
-    storage: &Arc<dyn Storage>,
-    sender_peer_id: &PeerId,
-    session_id: SessionId,
-    timestamp_nanos: u64,
-    payload: &TransportMessage,
-) -> Result<(), ThresholdError> {
-    trace!(
-        "record_payload sender_peer_id={} session_id={} timestamp_nanos={}",
-        sender_peer_id,
-        hex::encode(session_id.as_hash()),
-        timestamp_nanos
-    );
-    match payload {
-        TransportMessage::SigningEventPropose(SigningEventPropose {
-            request_id,
-            event_hash,
-            validation_hash,
-            signing_event,
-            kpsbt_blob,
-            ..
-        }) => {
-            trace!(
-                "record proposal payload request_id={} event_hash={} validation_hash={} event_id={} kpsbt_len={}",
-                request_id,
-                hex::encode(event_hash),
-                hex::encode(validation_hash),
-                signing_event.event_id,
-                kpsbt_blob.len()
-            );
-            match storage.insert_event(*event_hash, signing_event.clone()) {
-                Ok(()) => {}
-                Err(ThresholdError::EventReplayed(_)) => {}
-                Err(err) => return Err(err),
-            }
-            storage.insert_proposal(
-                request_id,
-                StoredProposal {
-                    request_id: request_id.clone(),
-                    session_id,
-                    event_hash: *event_hash,
-                    validation_hash: *validation_hash,
-                    signing_event: signing_event.clone(),
-                    kpsbt_blob: kpsbt_blob.clone(),
-                },
-            )?;
-        }
-        TransportMessage::SignerAck(ack) => {
-            trace!(
-                "record signer ack payload request_id={} accept={} reason={:?}",
-                ack.request_id,
-                ack.accept,
-                ack.reason
-            );
-            storage.insert_signer_ack(
-                &ack.request_id,
-                SignerAckRecord {
-                    signer_peer_id: sender_peer_id.clone(),
-                    accept: ack.accept,
-                    reason: ack.reason.clone(),
-                    timestamp_nanos,
-                },
-            )?;
-        }
-        TransportMessage::PartialSigSubmit(PartialSigSubmit { request_id, input_index, pubkey, signature }) => {
-            trace!(
-                "record partial sig payload request_id={} input_index={} pubkey_len={} signature_len={}",
-                request_id,
-                *input_index,
-                pubkey.len(),
-                signature.len()
-            );
-            storage.insert_partial_sig(
-                request_id,
-                PartialSigRecord {
-                    signer_peer_id: sender_peer_id.clone(),
-                    input_index: *input_index,
-                    pubkey: pubkey.clone(),
-                    signature: signature.clone(),
-                    timestamp_nanos,
-                },
-            )?;
-        }
-        TransportMessage::FinalizeNotice(FinalizeNotice { request_id, final_tx_id }) => {
-            trace!(
-                "record finalize payload request_id={} final_tx_id={}",
-                request_id,
-                hex::encode(final_tx_id)
-            );
-            storage.update_request_final_tx(request_id, TransactionId::from(*final_tx_id))?;
-        }
-        _ => {}
-    }
-    Ok(())
 }

@@ -10,6 +10,7 @@ use igra_core::application::EventContext;
 use igra_core::domain::validation::{parse_validator_pubkeys, CompositeVerifier};
 use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktOutput};
+use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::hyperlane::ConfiguredIsm;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
 use igra_service::service::coordination::run_coordination_loop;
@@ -87,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ServiceFlow::new_with_iroh(&app_config.service, storage.clone(), gossip, identity.signer, identity.verifier, iroh_config)
             .await?;
     let flow = Arc::new(flow);
-    spawn_status_reporter(flow.metrics());
+    spawn_status_reporter(flow.metrics(), storage.clone());
     let transport = flow.transport();
     let peer_id = identity.peer_id;
     let peer_id_for_state = peer_id.clone();
@@ -123,8 +124,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let hyperlane_threshold = app_config.hyperlane.threshold.unwrap_or(1) as usize;
         let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, hyperlane_threshold, layerzero_validators));
         let metrics = flow.metrics();
-        let event_ctx =
-            EventContext { processor: flow.clone(), config: app_config.service.clone(), message_verifier, storage: storage.clone() };
+        let event_ctx = EventContext {
+            config: app_config.service.clone(),
+            policy: app_config.policy.clone(),
+            local_peer_id: peer_id_for_state.clone(),
+            message_verifier,
+            storage: storage.clone(),
+            transport: flow.transport(),
+            rpc: flow.rpc(),
+        };
         let rpc_state = Arc::new(RpcState {
             event_ctx,
             rpc_token: app_config.rpc.token.clone(),
@@ -169,16 +177,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_status_reporter(metrics: Arc<Metrics>) {
+fn spawn_status_reporter(metrics: Arc<Metrics>, storage: Arc<dyn Storage>) {
     tokio::spawn(async move {
         let interval_seconds = 300u64;
         info!("status reporter started interval_seconds={}", interval_seconds);
         let mut interval = tokio::time::interval(Duration::from_secs(interval_seconds));
         loop {
             interval.tick().await;
+            if let Ok(stats) = storage.crdt_storage_stats() {
+                metrics.set_crdt_storage_stats(stats);
+            }
             let snapshot = metrics.snapshot();
             info!(
-                "periodic status report uptime_minutes={} sessions_total={} sessions_finalized={} sessions_timed_out={} signer_acks_accepted={} signer_acks_rejected={} partial_sigs_total={} rpc_ok={} rpc_error={}",
+                "periodic status report uptime_minutes={} sessions_total={} sessions_finalized={} sessions_timed_out={} signer_acks_accepted={} signer_acks_rejected={} partial_sigs_total={} rpc_ok={} rpc_error={} crdt_total={} crdt_pending={} crdt_completed={} crdt_cf_estimated_live_data_size_bytes={} crdt_gc_deleted_total={} tx_template_hash_mismatches_total={}",
                 snapshot.uptime.as_secs() / 60,
                 snapshot.sessions_proposal_received,
                 snapshot.sessions_finalized,
@@ -187,7 +198,13 @@ fn spawn_status_reporter(metrics: Arc<Metrics>) {
                 snapshot.signer_acks_rejected,
                 snapshot.partial_sigs_total,
                 snapshot.rpc_ok,
-                snapshot.rpc_error
+                snapshot.rpc_error,
+                snapshot.crdt_total,
+                snapshot.crdt_pending,
+                snapshot.crdt_completed,
+                snapshot.crdt_cf_estimated_live_data_size_bytes,
+                snapshot.crdt_gc_deleted_total,
+                snapshot.tx_template_hash_mismatches_total
             );
         }
     });

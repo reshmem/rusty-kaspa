@@ -216,7 +216,9 @@ fi
 KASPA_IGRA_WALLET_SECRET="${KASPA_IGRA_WALLET_SECRET:-devnet-secret}"
 FAKE_HYPERLANE_INTERVAL="${HYPERLANE_INTERVAL_SECS:-10}"
 FAKE_HYPERLANE_START="${HYPERLANE_START_EPOCH_SECS:-0}"
-FAKE_HYPERLANE_AMOUNT="${HYPERLANE_AMOUNT_SOMPI:-10000000}"
+# 10_000_000 sompi (0.1 KAS) is right at the edge of the mempool "standard tx mass" limit (KIP-0009 storage mass),
+# and can be rejected as non-standard depending on tx overhead. Use a safer default for devnet.
+FAKE_HYPERLANE_AMOUNT="${HYPERLANE_AMOUNT_SOMPI:-20000000}"
 FAKE_HYPERLANE_DEST="${HYPERLANE_DESTINATION:-kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3}"
 FAKE_HYPERLANE_DOMAIN="${HYPERLANE_DOMAIN:-5}"
 FAKE_HYPERLANE_SENDER="${HYPERLANE_SENDER:-0x0}"
@@ -556,6 +558,74 @@ run_keygen() {
   "${keygen_bin}"
 }
 
+validate_keygen_output() {
+  local json_str="$1"
+  python3 - <<'PY' <<<"${json_str}"
+import json
+import re
+import sys
+
+data = json.loads(sys.stdin.read())
+
+def die(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+hex_re = re.compile(r"^[0-9a-fA-F]+$")
+
+member_pubkeys = data.get("member_pubkeys") or []
+if not isinstance(member_pubkeys, list) or not member_pubkeys:
+    die("missing member_pubkeys")
+
+for idx, pk in enumerate(member_pubkeys):
+    if not isinstance(pk, str) or not pk:
+        die(f"member_pubkeys[{idx}] is empty")
+    s = pk.strip()
+    if s.startswith("0x"):
+        s = s[2:]
+    if len(s) != 64 or not hex_re.match(s):
+        die(f"member_pubkeys[{idx}] must be x-only (32-byte) hex, got len={len(s)} value={pk!r}")
+
+redeem = (data.get("redeem_script_hex") or "").strip()
+if not redeem or not hex_re.match(redeem):
+    die("missing or invalid redeem_script_hex")
+
+multisig_address = (data.get("multisig_address") or "").strip()
+if not multisig_address:
+    die("missing multisig_address")
+
+source_addresses = data.get("source_addresses") or []
+if not isinstance(source_addresses, list) or len(source_addresses) != 1:
+    die(f"source_addresses must be a single multisig address, got {source_addresses!r}")
+if (source_addresses[0] or "").strip() != multisig_address:
+    die("source_addresses[0] must equal multisig_address")
+
+change_address = (data.get("change_address") or "").strip()
+if not change_address:
+    die("missing change_address")
+if change_address != multisig_address:
+    die("change_address must equal multisig_address for devnet")
+
+sys.exit(0)
+PY
+}
+
+rebuild_devnet_keygen() {
+  log_warn "Rebuilding devnet-keygen to match current multisig config format (x-only pubkeys + Schnorr address)..."
+  if ! (cd "${REPO_ROOT}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
+    cargo build --release --locked -p igra-core --bin devnet-keygen); then
+    log_error "Failed to rebuild devnet-keygen"
+    return 1
+  fi
+  if [[ ! -x "${TARGET_DIR}/release/devnet-keygen" ]]; then
+    log_error "devnet-keygen not found after rebuild (expected at ${TARGET_DIR}/release/devnet-keygen)"
+    return 1
+  fi
+  cp -f "${TARGET_DIR}/release/devnet-keygen" "${BIN_DIR}/devnet-keygen"
+  log_success "devnet-keygen rebuilt and staged"
+  return 0
+}
+
 validate_json() {
   local json_str="$1"
   local description="${2:-JSON data}"
@@ -867,6 +937,15 @@ generate_keys() {
   if ! keygen_json="$(run_keygen)"; then
     log_error "Key generation failed"
     exit 1
+  fi
+  if ! validate_keygen_output "${keygen_json}" >/dev/null 2>&1; then
+    log_warn "Existing devnet-keygen output is not compatible with the current config validator; rebuilding."
+    rebuild_devnet_keygen || exit 1
+    keygen_json="$(run_keygen)" || exit 1
+    validate_keygen_output "${keygen_json}" || {
+      log_error "devnet-keygen output still invalid after rebuild"
+      exit 1
+    }
   fi
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] Skipping config rewrite"

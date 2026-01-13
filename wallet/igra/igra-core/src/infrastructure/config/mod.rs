@@ -23,10 +23,11 @@ pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: &str) -> Res
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(Secret::from);
     let inputs = HdInputs { key_data: &key_data, xpubs: &hd.xpubs, derivation_path, payment_secret: payment_secret.as_ref() };
-    let pubkeys = derive_pubkeys(inputs)?;
+    let mut pubkeys = derive_pubkeys(inputs)?;
     if pubkeys.is_empty() {
         return Err(ThresholdError::Message("no HD pubkeys configured".to_string()));
     }
+    pubkeys.sort_by(|a, b| a.serialize().cmp(&b.serialize()));
     let redeem = redeem_script_from_pubkeys(&pubkeys, hd.required_sigs)?;
     Ok(hex::encode(redeem))
 }

@@ -99,6 +99,12 @@ pub struct RuntimeConfig {
     pub session_timeout_seconds: u64,
     #[serde(default)]
     pub session_expiry_seconds: Option<u64>,
+    /// How often to run CRDT garbage collection (completed states). `None` uses defaults.
+    #[serde(default)]
+    pub crdt_gc_interval_seconds: Option<u64>,
+    /// How long to retain completed CRDT states. `None` uses defaults.
+    #[serde(default)]
+    pub crdt_gc_ttl_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

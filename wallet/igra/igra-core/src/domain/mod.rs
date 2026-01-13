@@ -1,12 +1,12 @@
 pub mod model;
 pub use model::*;
 pub mod audit;
-pub mod coordination;
+pub mod crdt;
+pub use crdt::{EventCrdt, GSet, LWWRegister};
 pub mod event;
 pub mod group_id;
 pub mod hashes;
 pub mod policy;
 pub mod pskt;
-pub mod request;
 pub mod signing;
 pub mod validation;

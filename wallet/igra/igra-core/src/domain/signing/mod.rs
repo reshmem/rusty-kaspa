@@ -7,10 +7,8 @@ pub mod mpc;
 pub mod musig2;
 pub mod results;
 pub mod threshold;
-pub mod types;
 
 pub use results::*;
-pub use types::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SigningBackendKind {

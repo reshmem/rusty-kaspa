@@ -22,15 +22,16 @@ impl SignerBackend for ThresholdSigner {
 
     fn sign(&self, kpsbt_blob: &[u8], request_id: &RequestId) -> Result<SigningResult, ThresholdError> {
         let keypair = self.keypair.to_secp256k1()?;
+        let canonical_pubkey = pskt_multisig::canonical_schnorr_pubkey_for_keypair(&keypair);
         let signer_pskt = pskt_multisig::deserialize_pskt_signer(kpsbt_blob)?;
         let input_count = signer_pskt.inputs.len();
         let signed = pskt_multisig::sign_pskt(signer_pskt, &keypair)?.pskt;
-        let partials = pskt_multisig::partial_sigs_for_pubkey(&signed, &self.keypair.public_key());
+        let partials = pskt_multisig::partial_sigs_for_pubkey(&signed, &canonical_pubkey);
         let signatures_produced: Vec<SignatureOutput> = partials
             .into_iter()
             .map(|(input_index, signature)| SignatureOutput {
                 input_index,
-                pubkey: self.keypair.public_key().serialize().to_vec(),
+                pubkey: canonical_pubkey.serialize().to_vec(),
                 signature,
             })
             .collect();
@@ -43,7 +44,7 @@ impl SignerBackend for ThresholdSigner {
             request_id: request_id.clone(),
             input_count,
             signatures_produced,
-            signer_pubkey: self.keypair.public_key().serialize().to_vec(),
+            signer_pubkey: canonical_pubkey.serialize().to_vec(),
         })
     }
 }

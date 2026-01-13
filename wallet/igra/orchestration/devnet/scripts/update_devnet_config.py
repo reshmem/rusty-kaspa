@@ -359,9 +359,14 @@ def rewrite_toml(
     config["service"]["data_dir"] = str(igra_data)
 
     # Update pskt section
-    config["service"]["pskt"]["source_addresses"] = data.get("source_addresses", [])
+    multisig_address = data.get("multisig_address") or ""
+    if multisig_address:
+        config["service"]["pskt"]["source_addresses"] = [multisig_address]
+        config["service"]["pskt"]["change_address"] = multisig_address
+    else:
+        config["service"]["pskt"]["source_addresses"] = data.get("source_addresses", [])
+        config["service"]["pskt"]["change_address"] = data.get("change_address", "")
     config["service"]["pskt"]["redeem_script_hex"] = data.get("redeem_script_hex", "")
-    config["service"]["pskt"]["change_address"] = data.get("change_address", "")
 
     # Update hd section
     config["service"]["hd"]["mnemonics"] = [s.get("mnemonic", "") for s in data.get("signers", []) if s.get("mnemonic")]
@@ -370,9 +375,22 @@ def rewrite_toml(
     # Update group section
     config["group"]["member_pubkeys"] = data.get("member_pubkeys", [])
 
+    # `sig_op_count` must be an upper bound on signature operations for P2SH multisig scripts.
+    # For `m-of-n` CHECKMULTISIG, the upper bound is `n`.
+    threshold_n = int(config["group"].get("threshold_n") or 0)
+    if threshold_n > 0:
+        config["service"]["pskt"]["sig_op_count"] = threshold_n
+
     # Update hyperlane section
     config["hyperlane"]["validators"] = [k.get("public_key_hex", "") for k in data.get("hyperlane_keys", []) if k.get("public_key_hex")]
     config["hyperlane"]["threshold"] = 2
+
+    # Keep a deterministic derivation path default for Hyperlane event ingestion (devnet convenience).
+    signers = data.get("signers", [])
+    if isinstance(signers, list) and signers:
+        default_path = (signers[0] or {}).get("derivation_path") or ""
+        if default_path:
+            config["hyperlane"]["default_derivation_path"] = default_path
 
     # Enable ISM-style mailbox processing for devnet by generating `hyperlane.domains`.
     # NOTE: the mailbox_process handler selects the set by `message.origin`.

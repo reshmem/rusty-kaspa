@@ -223,7 +223,9 @@ async fn main() -> Result<(), String> {
     let interval_secs = parse_env_u64("HYPERLANE_INTERVAL_SECS", 10);
     let retry_delay_secs = parse_env_u64("HYPERLANE_RETRY_DELAY_SECS", 1);
     let start_epoch_secs = parse_env_u64("HYPERLANE_START_EPOCH_SECS", 0);
-    let amount_sompi = parse_env_u64("HYPERLANE_AMOUNT_SOMPI", 10_000_000); // 0.1 KAS
+    // 10_000_000 sompi (0.1 KAS) can hit the mempool's standardness mass limit (KIP-0009 storage mass),
+    // causing transactions to be rejected as non-standard. Use a safer default for devnet.
+    let amount_sompi = parse_env_u64("HYPERLANE_AMOUNT_SOMPI", 20_000_000); // 0.2 KAS
     let destination_address =
         env::var("HYPERLANE_DESTINATION").unwrap_or_else(|_| DEFAULT_DESTINATION_ADDRESS.to_string()).trim().to_string();
     if destination_address.is_empty() {

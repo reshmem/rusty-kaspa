@@ -24,6 +24,8 @@ const DEFAULT_POLL_SECS: u64 = 5;
 const DEFAULT_SIG_OP_COUNT: u8 = 2;
 const DEFAULT_SESSION_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_SESSION_EXPIRY_SECS: u64 = 600;
+const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
+const DEFAULT_CRDT_GC_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// Environment variable prefix for config overrides.
 ///
@@ -234,6 +236,14 @@ fn postprocess(config: &mut AppConfig, data_dir: &Path) -> Result<(), ThresholdE
 
     if config.runtime.session_expiry_seconds.is_none() {
         config.runtime.session_expiry_seconds = Some(DEFAULT_SESSION_EXPIRY_SECS);
+    }
+
+    if config.runtime.crdt_gc_interval_seconds.is_none() {
+        config.runtime.crdt_gc_interval_seconds = Some(DEFAULT_CRDT_GC_INTERVAL_SECS);
+    }
+
+    if config.runtime.crdt_gc_ttl_seconds.is_none() {
+        config.runtime.crdt_gc_ttl_seconds = Some(DEFAULT_CRDT_GC_TTL_SECS);
     }
 
     encrypt_hd_config(config)?;

@@ -1,4 +1,4 @@
-use crate::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
+use crate::foundation::{Hash32, PeerId, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -57,48 +57,6 @@ pub enum EventSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SigningRequest {
-    pub request_id: RequestId,
-    pub session_id: SessionId,
-    pub event_hash: Hash32,
-    pub coordinator_peer_id: PeerId,
-    pub tx_template_hash: Hash32,
-    pub validation_hash: Hash32,
-    pub decision: RequestDecision,
-    pub expires_at_nanos: u64,
-    pub final_tx_id: Option<TransactionId>,
-    pub final_tx_accepted_blue_score: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum RequestDecision {
-    Pending,
-    Approved,
-    Rejected { reason: String },
-    Expired,
-    Finalized,
-    Aborted { reason: String },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RequestInput {
-    pub input_index: u32,
-    pub utxo_tx_id: Hash32,
-    pub utxo_output_index: u32,
-    pub utxo_value: u64,
-    pub signing_hash: Hash32,
-    pub my_signature: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SignerAckRecord {
-    pub signer_peer_id: PeerId,
-    pub accept: bool,
-    pub reason: Option<String>,
-    pub timestamp_nanos: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PartialSigRecord {
     pub signer_peer_id: PeerId,
     pub input_index: u32,
@@ -119,12 +77,41 @@ pub enum FeePaymentMode {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct StoredProposal {
-    pub request_id: RequestId,
-    pub session_id: SessionId,
+/// CRDT state for an event/transaction pair - used in storage.
+/// Key: (event_hash, tx_template_hash).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct StoredEventCrdt {
+    /// The cross-chain event being processed.
     pub event_hash: Hash32,
-    pub validation_hash: Hash32,
-    pub signing_event: SigningEvent,
-    pub kpsbt_blob: Vec<u8>,
+    /// The specific transaction being signed (deterministically constructed).
+    pub tx_template_hash: Hash32,
+    /// The original signing event (for reference).
+    pub signing_event: Option<SigningEvent>,
+    /// The KPSBT blob (for finalization).
+    pub kpsbt_blob: Option<Vec<u8>>,
+    /// G-Set of signatures (keyed by input_index + pubkey).
+    pub signatures: Vec<CrdtSignatureRecord>,
+    /// LWW-Register for completion status.
+    pub completion: Option<StoredCompletionRecord>,
+    /// When this CRDT was first created locally.
+    pub created_at_nanos: u64,
+    /// When this CRDT was last updated.
+    pub updated_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CrdtSignatureRecord {
+    pub input_index: u32,
+    pub pubkey: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub signer_peer_id: PeerId,
+    pub timestamp_nanos: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredCompletionRecord {
+    pub tx_id: TransactionId,
+    pub submitter_peer_id: PeerId,
+    pub timestamp_nanos: u64,
+    pub blue_score: Option<u64>,
 }

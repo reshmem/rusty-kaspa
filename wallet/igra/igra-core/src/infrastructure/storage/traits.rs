@@ -1,10 +1,18 @@
-use crate::domain::{
-    GroupConfig, PartialSigRecord, RequestDecision, RequestInput, SignerAckRecord, SigningEvent, SigningRequest, StoredProposal,
-};
+use crate::domain::{GroupConfig, SigningEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
-use crate::foundation::{Hash32, PeerId, RequestId, SessionId, TransactionId};
+use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::infrastructure::transport::messages::EventCrdtState;
 
 pub type Result<T> = std::result::Result<T, ThresholdError>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CrdtStorageStats {
+    pub total_event_crdts: u64,
+    pub pending_event_crdts: u64,
+    pub completed_event_crdts: u64,
+    pub cf_estimated_num_keys: Option<u64>,
+    pub cf_estimated_live_data_size_bytes: Option<u64>,
+}
 
 pub trait Storage: Send + Sync {
     fn upsert_group_config(&self, group_id: Hash32, config: GroupConfig) -> Result<()>;
@@ -13,24 +21,47 @@ pub trait Storage: Send + Sync {
     fn insert_event(&self, event_hash: Hash32, event: SigningEvent) -> Result<()>;
     fn get_event(&self, event_hash: &Hash32) -> Result<Option<SigningEvent>>;
 
-    fn insert_request(&self, request: SigningRequest) -> Result<()>;
-    fn update_request_decision(&self, request_id: &RequestId, decision: RequestDecision) -> Result<()>;
-    fn get_request(&self, request_id: &RequestId) -> Result<Option<SigningRequest>>;
+    fn get_event_crdt(&self, event_hash: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>>;
 
-    fn insert_proposal(&self, request_id: &RequestId, proposal: StoredProposal) -> Result<()>;
-    fn get_proposal(&self, request_id: &RequestId) -> Result<Option<StoredProposal>>;
+    fn merge_event_crdt(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        incoming: &EventCrdtState,
+        signing_event: Option<&SigningEvent>,
+        kpsbt_blob: Option<&[u8]>,
+    ) -> Result<(StoredEventCrdt, bool)>;
 
-    fn insert_request_input(&self, request_id: &RequestId, input: RequestInput) -> Result<()>;
-    fn list_request_inputs(&self, request_id: &RequestId) -> Result<Vec<RequestInput>>;
+    fn add_signature_to_crdt(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        input_index: u32,
+        pubkey: &[u8],
+        signature: &[u8],
+        signer_peer_id: &PeerId,
+        timestamp_nanos: u64,
+    ) -> Result<(StoredEventCrdt, bool)>;
 
-    fn insert_signer_ack(&self, request_id: &RequestId, ack: SignerAckRecord) -> Result<()>;
-    fn list_signer_acks(&self, request_id: &RequestId) -> Result<Vec<SignerAckRecord>>;
+    fn mark_crdt_completed(
+        &self,
+        event_hash: &Hash32,
+        tx_template_hash: &Hash32,
+        tx_id: TransactionId,
+        submitter_peer_id: &PeerId,
+        timestamp_nanos: u64,
+        blue_score: Option<u64>,
+    ) -> Result<(StoredEventCrdt, bool)>;
 
-    fn insert_partial_sig(&self, request_id: &RequestId, sig: PartialSigRecord) -> Result<()>;
-    fn list_partial_sigs(&self, request_id: &RequestId) -> Result<Vec<PartialSigRecord>>;
+    fn crdt_has_threshold(&self, event_hash: &Hash32, tx_template_hash: &Hash32, input_count: usize, required: usize) -> Result<bool>;
 
-    fn update_request_final_tx(&self, request_id: &RequestId, final_tx_id: TransactionId) -> Result<()>;
-    fn update_request_final_tx_score(&self, request_id: &RequestId, accepted_blue_score: u64) -> Result<()>;
+    fn list_pending_event_crdts(&self) -> Result<Vec<StoredEventCrdt>>;
+
+    fn list_event_crdts_for_event(&self, event_hash: &Hash32) -> Result<Vec<StoredEventCrdt>>;
+
+    fn crdt_storage_stats(&self) -> Result<CrdtStorageStats>;
+
+    fn cleanup_completed_event_crdts(&self, older_than_nanos: u64) -> Result<usize>;
 
     fn get_volume_since(&self, timestamp_nanos: u64) -> Result<u64>;
 

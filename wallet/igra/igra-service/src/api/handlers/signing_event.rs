@@ -65,30 +65,36 @@ mod tests {
     use super::*;
     use crate::service::metrics::Metrics;
     use async_trait::async_trait;
-    use igra_core::application::{EventContext, EventProcessor};
+    use futures_util::stream;
+    use igra_core::application::EventContext;
     use igra_core::domain::validation::NoopVerifier;
-    use igra_core::domain::SigningEvent;
-    use igra_core::foundation::{Hash32, PeerId, RequestId, SessionId};
+    use igra_core::domain::GroupPolicy;
+    use igra_core::foundation::{Hash32, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
+    use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::RocksStorage;
-    use igra_core::ThresholdError;
+    use igra_core::infrastructure::transport::iroh::traits::{StateSyncRequest, StateSyncResponse, Transport, TransportSubscription};
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    struct NoopProcessor;
+    struct NoopTransport;
 
     #[async_trait]
-    impl EventProcessor for NoopProcessor {
-        async fn handle_signing_event(
-            &self,
-            _config: &ServiceConfig,
-            _session_id: SessionId,
-            _request_id: RequestId,
-            _signing_event: SigningEvent,
-            _expires_at_nanos: u64,
-            _coordinator_peer_id: PeerId,
-        ) -> Result<Hash32, ThresholdError> {
-            Ok([0u8; 32])
+    impl Transport for NoopTransport {
+        async fn publish_event_state(&self, _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast) -> Result<(), ThresholdError> {
+            Ok(())
+        }
+
+        async fn publish_state_sync_request(&self, _request: StateSyncRequest) -> Result<(), ThresholdError> {
+            Ok(())
+        }
+
+        async fn publish_state_sync_response(&self, _response: StateSyncResponse) -> Result<(), ThresholdError> {
+            Ok(())
+        }
+
+        async fn subscribe_group(&self, _group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+            Ok(TransportSubscription::new(Box::pin(stream::empty())))
         }
     }
 
@@ -97,10 +103,13 @@ mod tests {
         let dir_path = temp_dir.into_path();
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
         let ctx = EventContext {
-            processor: Arc::new(NoopProcessor),
             config: ServiceConfig::default(),
+            policy: GroupPolicy::default(),
+            local_peer_id: PeerId::from("test-peer"),
             message_verifier: Arc::new(NoopVerifier),
             storage,
+            transport: Arc::new(NoopTransport),
+            rpc: Arc::new(UnimplementedRpc::new()),
         };
         RpcState {
             event_ctx: ctx,

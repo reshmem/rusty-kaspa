@@ -1,5 +1,6 @@
 use igra_core::foundation::ThresholdError;
-use prometheus::{Encoder, IntCounter, IntCounterVec, Registry, TextEncoder};
+use igra_core::infrastructure::storage::CrdtStorageStats;
+use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder};
 use log::debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -15,6 +16,12 @@ pub struct MetricsSnapshot {
     pub partial_sigs_total: u64,
     pub rpc_ok: u64,
     pub rpc_error: u64,
+    pub crdt_total: u64,
+    pub crdt_pending: u64,
+    pub crdt_completed: u64,
+    pub crdt_cf_estimated_live_data_size_bytes: u64,
+    pub crdt_gc_deleted_total: u64,
+    pub tx_template_hash_mismatches_total: u64,
 }
 
 pub struct Metrics {
@@ -23,6 +30,13 @@ pub struct Metrics {
     signer_acks_total: IntCounterVec,
     partial_sigs_total: IntCounter,
     rpc_requests_total: IntCounterVec,
+    crdt_event_crdts_total: IntGauge,
+    crdt_event_crdts_pending: IntGauge,
+    crdt_event_crdts_completed: IntGauge,
+    crdt_cf_estimated_num_keys: IntGauge,
+    crdt_cf_estimated_live_data_size_bytes: IntGauge,
+    crdt_gc_deleted_total: IntCounter,
+    tx_template_hash_mismatches_total: IntCounterVec,
     started_at: Instant,
     sessions_proposal_received: AtomicU64,
     sessions_finalized: AtomicU64,
@@ -32,6 +46,12 @@ pub struct Metrics {
     partial_sigs_seen: AtomicU64,
     rpc_ok: AtomicU64,
     rpc_error: AtomicU64,
+    crdt_total: AtomicU64,
+    crdt_pending: AtomicU64,
+    crdt_completed: AtomicU64,
+    crdt_cf_estimated_live_data_size_bytes_value: AtomicU64,
+    crdt_gc_deleted_total_value: AtomicU64,
+    tx_template_hash_mismatches_total_value: AtomicU64,
 }
 
 impl Metrics {
@@ -52,10 +72,50 @@ impl Metrics {
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
+        let crdt_event_crdts_total =
+            IntGauge::new("crdt_event_states_total", "Total CRDT event states (exact scan)") //
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_event_crdts_pending =
+            IntGauge::new("crdt_event_states_pending", "Pending CRDT event states (exact scan)") //
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_event_crdts_completed =
+            IntGauge::new("crdt_event_states_completed", "Completed CRDT event states (exact scan)") //
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_cf_estimated_num_keys =
+            IntGauge::new("crdt_cf_estimated_num_keys", "RocksDB estimate-num-keys for CRDT CF (0 if unknown)") //
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_cf_estimated_live_data_size_bytes = IntGauge::new(
+            "crdt_cf_estimated_live_data_size_bytes",
+            "RocksDB estimate-live-data-size for CRDT CF in bytes (0 if unknown)",
+        )
+        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_gc_deleted_total =
+            IntCounter::new("crdt_gc_deleted_total", "Total CRDT event states deleted by GC") //
+                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let tx_template_hash_mismatches_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "tx_template_hash_mismatches_total",
+                "Tx template hash mismatches detected (by kind)",
+            ),
+            &["kind"],
+        )
+        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+
         registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
         registry.register(Box::new(signer_acks_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
         registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
         registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(crdt_event_crdts_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(crdt_event_crdts_pending.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(crdt_event_crdts_completed.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(crdt_cf_estimated_num_keys.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry
+            .register(Box::new(crdt_cf_estimated_live_data_size_bytes.clone()))
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(crdt_gc_deleted_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry
+            .register(Box::new(tx_template_hash_mismatches_total.clone()))
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
         let out = Self {
             registry,
@@ -63,6 +123,13 @@ impl Metrics {
             signer_acks_total,
             partial_sigs_total,
             rpc_requests_total,
+            crdt_event_crdts_total,
+            crdt_event_crdts_pending,
+            crdt_event_crdts_completed,
+            crdt_cf_estimated_num_keys,
+            crdt_cf_estimated_live_data_size_bytes,
+            crdt_gc_deleted_total,
+            tx_template_hash_mismatches_total,
             started_at: Instant::now(),
             sessions_proposal_received: AtomicU64::new(0),
             sessions_finalized: AtomicU64::new(0),
@@ -72,8 +139,14 @@ impl Metrics {
             partial_sigs_seen: AtomicU64::new(0),
             rpc_ok: AtomicU64::new(0),
             rpc_error: AtomicU64::new(0),
+            crdt_total: AtomicU64::new(0),
+            crdt_pending: AtomicU64::new(0),
+            crdt_completed: AtomicU64::new(0),
+            crdt_cf_estimated_live_data_size_bytes_value: AtomicU64::new(0),
+            crdt_gc_deleted_total_value: AtomicU64::new(0),
+            tx_template_hash_mismatches_total_value: AtomicU64::new(0),
         };
-        debug!("prometheus metrics registered metric_count=4");
+        debug!("prometheus metrics registered");
         Ok(out)
     }
 
@@ -121,6 +194,36 @@ impl Metrics {
         }
     }
 
+    pub fn set_crdt_storage_stats(&self, stats: CrdtStorageStats) {
+        let total = stats.total_event_crdts;
+        let pending = stats.pending_event_crdts;
+        let completed = stats.completed_event_crdts;
+
+        self.crdt_event_crdts_total.set(total as i64);
+        self.crdt_event_crdts_pending.set(pending as i64);
+        self.crdt_event_crdts_completed.set(completed as i64);
+        self.crdt_total.store(total, Ordering::Relaxed);
+        self.crdt_pending.store(pending, Ordering::Relaxed);
+        self.crdt_completed.store(completed, Ordering::Relaxed);
+
+        let estimated_num_keys = stats.cf_estimated_num_keys.unwrap_or(0);
+        let estimated_live_bytes = stats.cf_estimated_live_data_size_bytes.unwrap_or(0);
+        self.crdt_cf_estimated_num_keys.set(estimated_num_keys as i64);
+        self.crdt_cf_estimated_live_data_size_bytes.set(estimated_live_bytes as i64);
+        self.crdt_cf_estimated_live_data_size_bytes_value
+            .store(estimated_live_bytes, Ordering::Relaxed);
+    }
+
+    pub fn inc_crdt_gc_deleted_total(&self, deleted: u64) {
+        self.crdt_gc_deleted_total.inc_by(deleted);
+        self.crdt_gc_deleted_total_value.fetch_add(deleted, Ordering::Relaxed);
+    }
+
+    pub fn inc_tx_template_hash_mismatch(&self, kind: &str) {
+        self.tx_template_hash_mismatches_total.with_label_values(&[kind]).inc();
+        self.tx_template_hash_mismatches_total_value.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             uptime: self.started_at.elapsed(),
@@ -132,6 +235,14 @@ impl Metrics {
             partial_sigs_total: self.partial_sigs_seen.load(Ordering::Relaxed),
             rpc_ok: self.rpc_ok.load(Ordering::Relaxed),
             rpc_error: self.rpc_error.load(Ordering::Relaxed),
+            crdt_total: self.crdt_total.load(Ordering::Relaxed),
+            crdt_pending: self.crdt_pending.load(Ordering::Relaxed),
+            crdt_completed: self.crdt_completed.load(Ordering::Relaxed),
+            crdt_cf_estimated_live_data_size_bytes: self
+                .crdt_cf_estimated_live_data_size_bytes_value
+                .load(Ordering::Relaxed),
+            crdt_gc_deleted_total: self.crdt_gc_deleted_total_value.load(Ordering::Relaxed),
+            tx_template_hash_mismatches_total: self.tx_template_hash_mismatches_total_value.load(Ordering::Relaxed),
         }
     }
 
