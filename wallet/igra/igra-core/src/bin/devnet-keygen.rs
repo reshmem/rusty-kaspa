@@ -124,7 +124,6 @@ fn main() -> Result<(), ThresholdError> {
     };
 
     // Signers
-    let derivation_path = igra_core::foundation::derivation_path_from_index(0);
     let payment_secret = None::<Secret>;
     let mut signers = Vec::new();
     let mut signer_addresses: Vec<String> = Vec::new();
@@ -154,7 +153,7 @@ fn main() -> Result<(), ThresholdError> {
             iroh_pubkey_hex,
             pubkey_hex: String::new(),
             address: String::new(),
-            derivation_path: derivation_path.clone(),
+            derivation_path: String::new(),
         };
         signers.push(signer);
     }
@@ -162,7 +161,7 @@ fn main() -> Result<(), ThresholdError> {
     // Derive Schnorr multisig key material for 2-of-3 using signer mnemonics.
     //
     // IMPORTANT: We must keep the following consistent:
-    // - derived signer pubkeys (per-mnemonic, per-derivation_path)
+    // - derived signer pubkeys (per-mnemonic)
     // - redeem_script_hex (Schnorr multisig redeem script; x-only keys)
     // - member_pubkeys (must match redeem script x-only keys)
     // - multisig_address (P2SH of the Schnorr redeem script)
@@ -178,7 +177,7 @@ fn main() -> Result<(), ThresholdError> {
     let pubkeys = igra_core::foundation::derive_pubkeys(igra_core::foundation::HdInputs {
         key_data: &prv_keys,
         xpubs: &[],
-        derivation_path: &derivation_path,
+        derivation_path: None,
         payment_secret: payment_secret.as_ref(),
     })
     .expect("derive pubkeys");

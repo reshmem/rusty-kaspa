@@ -1,4 +1,4 @@
-use crate::domain::SigningEvent;
+use crate::domain::{SourceType, StoredEvent};
 use crate::foundation::ThresholdError;
 use secp256k1::PublicKey;
 
@@ -19,12 +19,12 @@ pub struct VerificationReport {
     pub valid_signatures: usize,
     pub threshold_required: usize,
     pub failure_reason: Option<String>,
-    pub event_hash: Option<[u8; 32]>,
+    pub event_id: Option<crate::foundation::Hash32>,
 }
 
 pub trait MessageVerifier: Send + Sync {
-    fn verify(&self, event: &SigningEvent) -> Result<VerificationReport, ThresholdError>;
-    fn report_for(&self, event: &SigningEvent) -> VerificationReport;
+    fn verify(&self, event: &StoredEvent) -> Result<VerificationReport, ThresholdError>;
+    fn report_for(&self, event: &StoredEvent) -> VerificationReport;
 }
 
 pub struct CompositeVerifier {
@@ -40,9 +40,9 @@ impl CompositeVerifier {
 }
 
 impl MessageVerifier for CompositeVerifier {
-    fn verify(&self, event: &SigningEvent) -> Result<VerificationReport, ThresholdError> {
-        match event.event_source {
-            crate::domain::EventSource::Hyperlane { .. } => {
+    fn verify(&self, event: &StoredEvent) -> Result<VerificationReport, ThresholdError> {
+        match event.event.source {
+            SourceType::Hyperlane { .. } => {
                 let result = hyperlane::verify_event(event, &self.hyperlane_validators, self.hyperlane_threshold)?;
                 Ok(VerificationReport {
                     source: ValidationSource::Hyperlane,
@@ -51,10 +51,10 @@ impl MessageVerifier for CompositeVerifier {
                     valid_signatures: result.valid_signatures,
                     threshold_required: result.threshold_required,
                     failure_reason: result.failure_reason.map(|f| format!("{:?}", f)),
-                    event_hash: Some(result.event_hash),
+                    event_id: Some(result.event_id),
                 })
             }
-            crate::domain::EventSource::LayerZero { .. } => {
+            SourceType::LayerZero { .. } => {
                 let result = layerzero::verify_event(event, &self.layerzero_validators)?;
                 Ok(VerificationReport {
                     source: ValidationSource::LayerZero,
@@ -63,7 +63,7 @@ impl MessageVerifier for CompositeVerifier {
                     valid_signatures: if result.valid { 1 } else { 0 },
                     threshold_required: 1,
                     failure_reason: result.failure_reason.map(|f| format!("{:?}", f)),
-                    event_hash: Some(result.event_hash),
+                    event_id: Some(result.event_id),
                 })
             }
             _ => Ok(VerificationReport {
@@ -73,30 +73,30 @@ impl MessageVerifier for CompositeVerifier {
                 valid_signatures: 0,
                 threshold_required: 0,
                 failure_reason: None,
-                event_hash: None,
+                event_id: None,
             }),
         }
     }
 
-    fn report_for(&self, event: &SigningEvent) -> VerificationReport {
-        match event.event_source {
-            crate::domain::EventSource::Hyperlane { .. } => VerificationReport {
+    fn report_for(&self, event: &StoredEvent) -> VerificationReport {
+        match event.event.source {
+            SourceType::Hyperlane { .. } => VerificationReport {
                 source: ValidationSource::Hyperlane,
                 validator_count: self.hyperlane_validators.len(),
                 valid: false,
                 valid_signatures: 0,
                 threshold_required: self.hyperlane_threshold,
                 failure_reason: None,
-                event_hash: None,
+                event_id: None,
             },
-            crate::domain::EventSource::LayerZero { .. } => VerificationReport {
+            SourceType::LayerZero { .. } => VerificationReport {
                 source: ValidationSource::LayerZero,
                 validator_count: self.layerzero_validators.len(),
                 valid: false,
                 valid_signatures: 0,
                 threshold_required: 1,
                 failure_reason: None,
-                event_hash: None,
+                event_id: None,
             },
             _ => VerificationReport {
                 source: ValidationSource::None,
@@ -105,7 +105,7 @@ impl MessageVerifier for CompositeVerifier {
                 valid_signatures: 0,
                 threshold_required: 0,
                 failure_reason: None,
-                event_hash: None,
+                event_id: None,
             },
         }
     }
@@ -120,7 +120,7 @@ impl Default for NoopVerifier {
 }
 
 impl MessageVerifier for NoopVerifier {
-    fn verify(&self, _event: &SigningEvent) -> Result<VerificationReport, ThresholdError> {
+    fn verify(&self, _event: &StoredEvent) -> Result<VerificationReport, ThresholdError> {
         Ok(VerificationReport {
             source: ValidationSource::None,
             validator_count: 0,
@@ -128,11 +128,11 @@ impl MessageVerifier for NoopVerifier {
             valid_signatures: 0,
             threshold_required: 0,
             failure_reason: None,
-            event_hash: None,
+            event_id: None,
         })
     }
 
-    fn report_for(&self, _event: &SigningEvent) -> VerificationReport {
+    fn report_for(&self, _event: &StoredEvent) -> VerificationReport {
         VerificationReport {
             source: ValidationSource::None,
             validator_count: 0,
@@ -140,7 +140,7 @@ impl MessageVerifier for NoopVerifier {
             valid_signatures: 0,
             threshold_required: 0,
             failure_reason: None,
-            event_hash: None,
+            event_id: None,
         }
     }
 }

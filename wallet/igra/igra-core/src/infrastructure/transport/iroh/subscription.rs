@@ -5,8 +5,8 @@ use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
 use futures_util::StreamExt;
 use iroh_gossip::api::Event as GossipEvent;
-use std::sync::Arc;
 use log::warn;
+use std::sync::Arc;
 
 // Maximum message size: 10 MB (must match limit in mod.rs)
 use crate::foundation::constants::MAX_MESSAGE_SIZE_BYTES;
@@ -65,8 +65,9 @@ where
                     yield Ok(envelope);
                 }
                 GossipEvent::Lagged => {
-                    warn!("iroh gossip stream lagged");
-                    yield Err(ThresholdError::Message("iroh gossip stream lagged".to_string()));
+                    // Group id not available in this layer; surface lag with placeholder.
+                    warn!("iroh gossip stream lagged group_id=unknown");
+                    yield Err(ThresholdError::Message("iroh gossip stream lagged group_id=unknown".to_string()));
                 }
                 _ => {}
             }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
 use igra_core::domain::validation::NoopVerifier;
-use igra_core::domain::{EventSource, GroupPolicy};
+use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
 use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
@@ -50,9 +50,8 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
         }
     }
 
-    let encrypted = Encryptable::from(ordered)
-        .into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305)
-        .expect("encrypt mnemonics");
+    let encrypted =
+        Encryptable::from(ordered).into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305).expect("encrypt mnemonics");
 
     PsktHdConfig {
         mnemonics: Vec::new(),
@@ -60,6 +59,7 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
         xpubs: Vec::new(),
         required_sigs,
         passphrase: None,
+        derivation_path: Some("m/45'/111111'/0'/0/0".to_string()),
     }
 }
 
@@ -67,7 +67,7 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
     let mut service = ServiceConfig::default();
     service.pskt = PsktBuildConfig {
         node_rpc_url: String::new(),
-        source_addresses: Vec::new(),
+        source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
         redeem_script_hex,
         sig_op_count: 2,
         outputs: Vec::new(),
@@ -84,18 +84,16 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
     }
 }
 
-fn signing_event(event_id: &str) -> SigningEventWire {
+fn signing_event(label: &str) -> SigningEventWire {
+    let external_id = hex::encode(blake3::hash(label.as_bytes()).as_bytes());
     SigningEventWire {
-        event_id: event_id.to_string(),
-        event_source: EventSource::Api { issuer: "tests".to_string() },
-        derivation_path: "m/45'/111111'/0'/0/0".to_string(),
-        derivation_index: Some(0),
+        external_id,
+        source: SourceType::Api,
         destination_address: "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string(),
-        amount_sompi: 10_000_000,
+        amount_sompi: 25_000_000,
         metadata: BTreeMap::new(),
-        timestamp_nanos: 1,
-        signature_hex: None,
-        signature: None,
+        proof_hex: None,
+        proof: None,
     }
 }
 
@@ -249,7 +247,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     let pubkeys = key_data
         .iter()
         .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, "m/45'/111111'/0'/0/0", None)
+            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
                 .public_key()
         })
@@ -275,14 +273,13 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     let transports: [Arc<dyn Transport>; 3] = [
         raw_transports[0].clone(),
         raw_transports[1].clone(),
-        Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_partition_flag(partitioned.clone())),
+        Arc::new(
+            FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_partition_flag(partitioned.clone()),
+        ),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] = [
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-    ];
+    let storages: [Arc<dyn Storage>; 3] =
+        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -292,19 +289,40 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     }
 
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone())?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
     let loops = [
-        tokio::spawn(run_coordination_loop(configs[0].clone(), flows[0].clone(), transports[0].clone(), storages[0].clone(), PeerId::from("signer-1"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[1].clone(), flows[1].clone(), transports[1].clone(), storages[1].clone(), PeerId::from("signer-2"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[2].clone(), flows[2].clone(), transports[2].clone(), storages[2].clone(), PeerId::from("signer-3"), group_id)),
+        tokio::spawn(run_coordination_loop(
+            configs[0].clone(),
+            flows[0].clone(),
+            transports[0].clone(),
+            storages[0].clone(),
+            PeerId::from("signer-1"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[1].clone(),
+            flows[1].clone(),
+            transports[1].clone(),
+            storages[1].clone(),
+            PeerId::from("signer-2"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[2].clone(),
+            flows[2].clone(),
+            transports[2].clone(),
+            storages[2].clone(),
+            PeerId::from("signer-3"),
+            group_id,
+        )),
     ];
 
     // Ingest the same event on all 3 nodes (as if each had its own watcher).
-    let mut event_hash_hex = None;
+    let mut event_id_hex = None;
     for i in 0..3usize {
         let ctx = EventContext {
             config: configs[i].service.clone(),
@@ -318,18 +336,18 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([1u8; 32]),
-            request_id: format!("req-{}", i + 1),
+            external_request_id: Some(format!("req-{}", i + 1)),
             coordinator_peer_id: format!("signer-{}", i + 1),
             expires_at_nanos: 0,
-            signing_event: signing_event("event-partition"),
+            event: signing_event("event-partition"),
         };
 
         let result = submit_signing_event(&ctx, params).await?;
-        event_hash_hex.get_or_insert(result.event_hash_hex);
+        event_id_hex.get_or_insert(result.event_id_hex);
     }
-    let event_hash_hex = event_hash_hex.expect("event hash");
-    let event_hash_bytes = hex::decode(event_hash_hex).expect("event_hash_hex");
-    let event_hash: Hash32 = event_hash_bytes.as_slice().try_into().expect("hash32");
+    let event_id_hex = event_id_hex.expect("event id");
+    let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
+    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
 
     // Nodes 1 and 2 should complete without node 3 seeing their messages.
     wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], Duration::from_secs(10)).await?;
@@ -339,7 +357,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     // Heal the partition and request sync.
     partitioned.store(false, Ordering::Relaxed);
     raw_transports[2]
-        .publish_state_sync_request(StateSyncRequest { event_hashes: vec![event_hash], requester_peer_id: PeerId::from("signer-3") })
+        .publish_state_sync_request(StateSyncRequest { event_ids: vec![event_id], requester_peer_id: PeerId::from("signer-3") })
         .await?;
 
     // Node 3 catches up via response merge.
@@ -368,7 +386,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     let pubkeys = key_data
         .iter()
         .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, "m/45'/111111'/0'/0/0", None)
+            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
                 .public_key()
         })
@@ -397,11 +415,8 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
         Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_drop_broadcast_threshold(128)),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] = [
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-    ];
+    let storages: [Arc<dyn Storage>; 3] =
+        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -411,18 +426,39 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     }
 
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone())?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
     let loops = [
-        tokio::spawn(run_coordination_loop(configs[0].clone(), flows[0].clone(), transports[0].clone(), storages[0].clone(), PeerId::from("signer-1"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[1].clone(), flows[1].clone(), transports[1].clone(), storages[1].clone(), PeerId::from("signer-2"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[2].clone(), flows[2].clone(), transports[2].clone(), storages[2].clone(), PeerId::from("signer-3"), group_id)),
+        tokio::spawn(run_coordination_loop(
+            configs[0].clone(),
+            flows[0].clone(),
+            transports[0].clone(),
+            storages[0].clone(),
+            PeerId::from("signer-1"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[1].clone(),
+            flows[1].clone(),
+            transports[1].clone(),
+            storages[1].clone(),
+            PeerId::from("signer-2"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[2].clone(),
+            flows[2].clone(),
+            transports[2].clone(),
+            storages[2].clone(),
+            PeerId::from("signer-3"),
+            group_id,
+        )),
     ];
 
-    let mut event_hash_hex = None;
+    let mut event_id_hex = None;
     for i in 0..3usize {
         let ctx = EventContext {
             config: configs[i].service.clone(),
@@ -436,23 +472,26 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([2u8; 32]),
-            request_id: format!("req-{}", i + 1),
+            external_request_id: Some(format!("req-{}", i + 1)),
             coordinator_peer_id: format!("signer-{}", i + 1),
             expires_at_nanos: 0,
-            signing_event: signing_event("event-loss"),
+            event: signing_event("event-loss"),
         };
 
         let result = submit_signing_event(&ctx, params).await?;
-        event_hash_hex.get_or_insert(result.event_hash_hex);
+        event_id_hex.get_or_insert(result.event_id_hex);
     }
-    let event_hash_hex = event_hash_hex.expect("event hash");
-    let event_hash_bytes = hex::decode(event_hash_hex).expect("event_hash_hex");
-    let event_hash: Hash32 = event_hash_bytes.as_slice().try_into().expect("hash32");
+    let event_id_hex = event_id_hex.expect("event id");
+    let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
+    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
 
     // Force a sync round to compensate for dropped broadcasts.
     for (idx, raw) in raw_transports.iter().enumerate() {
-        raw.publish_state_sync_request(StateSyncRequest { event_hashes: vec![event_hash], requester_peer_id: PeerId::from(format!("signer-{}", idx + 1)) })
-            .await?;
+        raw.publish_state_sync_request(StateSyncRequest {
+            event_ids: vec![event_id],
+            requester_peer_id: PeerId::from(format!("signer-{}", idx + 1)),
+        })
+        .await?;
     }
 
     wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], Duration::from_secs(15)).await?;
@@ -480,7 +519,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     let pubkeys = key_data
         .iter()
         .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, "m/45'/111111'/0'/0/0", None)
+            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
                 .public_key()
         })
@@ -507,11 +546,8 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
         Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_max_delay_ms(25)),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] = [
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-        Arc::new(MemoryStorage::new()),
-    ];
+    let storages: [Arc<dyn Storage>; 3] =
+        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -521,15 +557,36 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     }
 
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone())?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
     let loops = [
-        tokio::spawn(run_coordination_loop(configs[0].clone(), flows[0].clone(), transports[0].clone(), storages[0].clone(), PeerId::from("signer-1"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[1].clone(), flows[1].clone(), transports[1].clone(), storages[1].clone(), PeerId::from("signer-2"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[2].clone(), flows[2].clone(), transports[2].clone(), storages[2].clone(), PeerId::from("signer-3"), group_id)),
+        tokio::spawn(run_coordination_loop(
+            configs[0].clone(),
+            flows[0].clone(),
+            transports[0].clone(),
+            storages[0].clone(),
+            PeerId::from("signer-1"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[1].clone(),
+            flows[1].clone(),
+            transports[1].clone(),
+            storages[1].clone(),
+            PeerId::from("signer-2"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[2].clone(),
+            flows[2].clone(),
+            transports[2].clone(),
+            storages[2].clone(),
+            PeerId::from("signer-3"),
+            group_id,
+        )),
     ];
 
     for i in 0..3usize {
@@ -545,10 +602,10 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([3u8; 32]),
-            request_id: format!("req-{}", i + 1),
+            external_request_id: Some(format!("req-{}", i + 1)),
             coordinator_peer_id: format!("signer-{}", i + 1),
             expires_at_nanos: 0,
-            signing_event: signing_event("event-reorder"),
+            event: signing_event("event-reorder"),
         };
 
         submit_signing_event(&ctx, params).await?;
@@ -579,7 +636,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let pubkeys = key_data
         .iter()
         .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, "m/45'/111111'/0'/0/0", None)
+            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
                 .public_key()
         })
@@ -600,11 +657,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
         Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
     ];
-    let transports: [Arc<dyn Transport>; 3] = [
-        raw_transports[0].clone(),
-        raw_transports[1].clone(),
-        raw_transports[2].clone(),
-    ];
+    let transports: [Arc<dyn Transport>; 3] = [raw_transports[0].clone(), raw_transports[1].clone(), raw_transports[2].clone()];
 
     let node3_dir = tempdir().expect("tempdir");
     let storage1: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
@@ -618,9 +671,9 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         configs.push(Arc::new(app));
     }
 
-    let flow1 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage1.clone(), transports[0].clone())?);
-    let flow2 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage2.clone(), transports[1].clone())?);
-    let flow3 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3.clone(), transports[2].clone())?);
+    let flow1 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage1.clone(), transports[0].clone(), Arc::new(NoopVerifier))?);
+    let flow2 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage2.clone(), transports[1].clone(), Arc::new(NoopVerifier))?);
+    let flow3 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
 
     let loop1 = tokio::spawn(run_coordination_loop(
         configs[0].clone(),
@@ -647,7 +700,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         group_id,
     ));
 
-    let mut event_hash_hex = None;
+    let mut event_id_hex = None;
     for (idx, (storage, transport)) in [
         (storage1.clone(), transports[0].clone()),
         (storage2.clone(), transports[1].clone()),
@@ -668,18 +721,18 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([4u8; 32]),
-            request_id: format!("req-{}", idx + 1),
+            external_request_id: Some(format!("req-{}", idx + 1)),
             coordinator_peer_id: format!("signer-{}", idx + 1),
             expires_at_nanos: 0,
-            signing_event: signing_event("event-restart"),
+            event: signing_event("event-restart"),
         };
 
         let result = submit_signing_event(&ctx, params).await?;
-        event_hash_hex.get_or_insert(result.event_hash_hex);
+        event_id_hex.get_or_insert(result.event_id_hex);
     }
-    let event_hash_hex = event_hash_hex.expect("event hash");
-    let event_hash_bytes = hex::decode(event_hash_hex).expect("event_hash_hex");
-    let event_hash: Hash32 = event_hash_bytes.as_slice().try_into().expect("hash32");
+    let event_id_hex = event_id_hex.expect("event id");
+    let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
+    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
 
     // Crash node 3 after it has had a chance to persist its local signature.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -693,7 +746,8 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
 
     // Restart node 3 with the same RocksDB dir.
     let storage3_restarted: Arc<dyn Storage> = Arc::new(RocksStorage::open(node3_dir.path())?);
-    let flow3_restarted = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3_restarted.clone(), transports[2].clone())?);
+    let flow3_restarted =
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3_restarted.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
     let loop3_restarted = tokio::spawn(run_coordination_loop(
         configs[2].clone(),
         flow3_restarted.clone(),
@@ -705,7 +759,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
 
     // Trigger a sync round to pull completion/sigs.
     raw_transports[2]
-        .publish_state_sync_request(StateSyncRequest { event_hashes: vec![event_hash], requester_peer_id: PeerId::from("signer-3") })
+        .publish_state_sync_request(StateSyncRequest { event_ids: vec![event_id], requester_peer_id: PeerId::from("signer-3") })
         .await?;
 
     wait_for_complete(&storage3_restarted, Duration::from_secs(10)).await?;

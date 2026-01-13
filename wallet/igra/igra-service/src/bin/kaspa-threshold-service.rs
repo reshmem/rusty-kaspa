@@ -10,18 +10,18 @@ use igra_core::application::EventContext;
 use igra_core::domain::validation::{parse_validator_pubkeys, CompositeVerifier};
 use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktOutput};
-use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::hyperlane::ConfiguredIsm;
+use igra_core::infrastructure::storage::Storage;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
 use igra_service::service::coordination::run_coordination_loop;
 use igra_service::service::flow::ServiceFlow;
 use igra_service::service::metrics::Metrics;
 use igra_service::transport::iroh::IrohConfig;
+use log::{debug, info, warn};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use log::{debug, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     setup::warn_test_mode(&app_config);
 
-    let storage = setup::init_storage(&app_config.service.data_dir)?;
+    let storage = setup::init_storage(&app_config.service.data_dir, app_config.service.allow_schema_wipe)?;
     info!("storage initialized data_dir={}", app_config.service.data_dir);
 
     let audit_id = args.audit.clone().or_else(igra_core::infrastructure::config::get_audit_request_id);
@@ -84,9 +84,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iroh_config =
         IrohConfig { network_id: app_config.iroh.network_id, group_id, bootstrap_nodes: app_config.iroh.bootstrap.clone() };
-    let flow =
-        ServiceFlow::new_with_iroh(&app_config.service, storage.clone(), gossip, identity.signer, identity.verifier, iroh_config)
-            .await?;
+
+    let hyperlane_validators = parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
+    let layerzero_validators = parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
+    let hyperlane_threshold = app_config.hyperlane.threshold.unwrap_or(1) as usize;
+    let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, hyperlane_threshold, layerzero_validators));
+    let flow = ServiceFlow::new_with_iroh(
+        &app_config.service,
+        storage.clone(),
+        gossip,
+        identity.signer,
+        identity.verifier,
+        iroh_config,
+        message_verifier.clone(),
+    )
+    .await?;
     let flow = Arc::new(flow);
     spawn_status_reporter(flow.metrics(), storage.clone());
     let transport = flow.transport();
@@ -119,16 +131,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let hyperlane_ism =
             if app_config.hyperlane.domains.is_empty() { None } else { Some(ConfiguredIsm::from_config(&app_config.hyperlane)?) };
-        let hyperlane_validators = parse_validator_pubkeys("hyperlane.validators", &app_config.hyperlane.validators)?;
-        let layerzero_validators = parse_validator_pubkeys("layerzero.endpoint_pubkeys", &app_config.layerzero.endpoint_pubkeys)?;
-        let hyperlane_threshold = app_config.hyperlane.threshold.unwrap_or(1) as usize;
-        let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, hyperlane_threshold, layerzero_validators));
         let metrics = flow.metrics();
         let event_ctx = EventContext {
             config: app_config.service.clone(),
             policy: app_config.policy.clone(),
             local_peer_id: peer_id_for_state.clone(),
-            message_verifier,
+            message_verifier: message_verifier.clone(),
             storage: storage.clone(),
             transport: flow.transport(),
             rpc: flow.rpc(),
@@ -142,11 +150,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hyperlane_ism,
             group_id_hex,
             coordinator_peer_id: peer_id_for_state.to_string(),
-            hyperlane_default_derivation_path: app_config
-                .hyperlane
-                .default_derivation_path
-                .clone()
-                .unwrap_or_else(|| "m/45h/111111h/0h/0/0".to_string()),
             rate_limit_rps: app_config.rpc.rate_limit_rps.unwrap_or(30),
             rate_limit_burst: app_config.rpc.rate_limit_burst.unwrap_or(60),
             session_expiry_seconds: app_config.runtime.session_expiry_seconds.unwrap_or(600),
@@ -240,7 +243,7 @@ async fn run_test_pskt_mode(
     let mut test_pskt_config = app_config.service.pskt.clone();
     if test_pskt_config.redeem_script_hex.trim().is_empty() {
         if let (Some(hd), Some(path)) = (app_config.service.hd.as_ref(), runtime.hd_test_derivation_path.as_deref()) {
-            test_pskt_config.redeem_script_hex = derive_redeem_script_hex(hd, path)?;
+            test_pskt_config.redeem_script_hex = derive_redeem_script_hex(hd, Some(path))?;
         }
     }
     test_pskt_config.outputs = test_outputs;

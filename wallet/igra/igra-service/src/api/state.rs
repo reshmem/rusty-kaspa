@@ -14,7 +14,6 @@ pub struct RpcState {
     pub hyperlane_ism: Option<ConfiguredIsm>,
     pub group_id_hex: Option<String>,
     pub coordinator_peer_id: String,
-    pub hyperlane_default_derivation_path: String,
     pub rate_limit_rps: u32,
     pub rate_limit_burst: u32,
     pub session_expiry_seconds: u64,

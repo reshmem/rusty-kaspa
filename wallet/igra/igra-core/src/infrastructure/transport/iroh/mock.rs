@@ -1,7 +1,6 @@
 use super::traits::{
     EventStateBroadcast, MessageEnvelope, StateSyncRequest, StateSyncResponse, Transport, TransportMessage, TransportSubscription,
 };
-use crate::foundation::util::time::current_timestamp_nanos_env;
 use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
 use crate::foundation::{PeerId, SessionId};
@@ -62,10 +61,6 @@ impl MockTransport {
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 
-    fn now_nanos() -> u64 {
-        current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
-    }
-
     async fn publish(&self, topic: Hash32, payload: TransportMessage) -> Result<(), ThresholdError> {
         let payload_hash = Self::payload_hash(&payload)?;
         let envelope = MessageEnvelope {
@@ -73,7 +68,7 @@ impl MockTransport {
             group_id: self.group_id,
             session_id: SessionId::from(topic),
             seq_no: self.seq.fetch_add(1, Ordering::Relaxed),
-            timestamp_nanos: Self::now_nanos(),
+            timestamp_nanos: crate::foundation::now_nanos(),
             payload,
             payload_hash,
             signature: Vec::new(),

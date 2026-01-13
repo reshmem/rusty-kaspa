@@ -1,9 +1,10 @@
 use crate::domain::pskt::multisig::{build_pskt, MultisigInput, MultisigOutput};
 use crate::domain::pskt::params::{PsktParams, UtxoInput};
 use crate::domain::pskt::results::{PsktBuildResult, UtxoSelectionResult};
+use crate::domain::pskt::validation::validate_params;
 use crate::domain::FeePaymentMode;
-use crate::foundation::ThresholdError;
 use crate::foundation::constants::MAX_PSKT_INPUTS;
+use crate::foundation::ThresholdError;
 use kaspa_addresses::Address;
 use kaspa_addresses::Prefix;
 use kaspa_consensus_core::config::params::{DEVNET_PARAMS, MAINNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
@@ -11,14 +12,19 @@ use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::mass::{calc_storage_mass, MassCalculator, UtxoCell};
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{Transaction, TransactionInput, TransactionOutput};
-use kaspa_txscript::{opcodes::codes::OpData65, script_builder::ScriptBuilder};
 use kaspa_txscript::pay_to_address_script;
+use kaspa_txscript::{opcodes::codes::OpData65, script_builder::ScriptBuilder};
 use kaspa_wallet_core::tx::mass::MAXIMUM_STANDARD_TRANSACTION_MASS;
 
 pub fn build_pskt_from_utxos(
     params: &PsktParams,
     mut utxos: Vec<UtxoInput>,
 ) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
+    let validation = validate_params(params);
+    if !validation.valid {
+        return Err(ThresholdError::PsktValidationFailed(format!("invalid PSKT params: {:?}", validation.validation_errors)));
+    }
+
     let base_outputs = params
         .outputs
         .iter()
@@ -34,17 +40,16 @@ pub fn build_pskt_from_utxos(
     let signature_script_template = signature_script_template(&params.redeem_script, required_signatures)?;
     let storm_param = consensus_params.storage_mass_parameter;
 
-    // Deterministic UTXO ordering.
+    // Deterministic UTXO ordering (leaderless requirement).
     //
-    // We sort by amount (asc) to avoid selecting a single very-large input for small withdrawals.
-    // For KIP-0009 storage mass, extremely large inputs can make `C / mean(input)` become 0
-    // due to integer division, which can push storage mass above the standardness limit.
-    //
-    // Tie-break by outpoint (txid, index) for determinism.
+    // Total ordering:
+    // 1) amount (desc) - prefer larger UTXOs to reduce input count
+    // 2) outpoint.txid (lexicographic asc)
+    // 3) outpoint.index (asc)
     utxos.sort_by(|a, b| {
-        a.entry
+        b.entry
             .amount
-            .cmp(&b.entry.amount)
+            .cmp(&a.entry.amount)
             .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
             .then(a.outpoint.index.cmp(&b.outpoint.index))
     });
@@ -85,7 +90,15 @@ pub fn build_pskt_from_utxos(
         selected.push(utxo);
 
         let mut candidate_outputs = base_outputs.clone();
-        match apply_fee_policy_with_auto_fee(params, &mass_calc, &selected, total_input, &base_outputs, &signature_script_template, &mut candidate_outputs) {
+        match apply_fee_policy_with_auto_fee(
+            params,
+            &mass_calc,
+            &selected,
+            total_input,
+            &base_outputs,
+            &signature_script_template,
+            &mut candidate_outputs,
+        ) {
             Ok(()) => {
                 let storage_mass = calc_storage_mass_for_candidate(&selected, &candidate_outputs)
                     .ok_or_else(|| ThresholdError::PsktValidationFailed("failed to compute transaction storage mass".to_string()))?;
@@ -159,8 +172,6 @@ fn consensus_params_for_pskt(params: &PsktParams) -> Result<&'static kaspa_conse
         Prefix::Devnet => &DEVNET_PARAMS,
         Prefix::Simnet => &SIMNET_PARAMS,
         Prefix::Testnet => &TESTNET_PARAMS,
-        #[cfg(test)]
-        Prefix::A | Prefix::B => &DEVNET_PARAMS,
     };
     Ok(out)
 }
@@ -196,10 +207,7 @@ fn signature_script_template(redeem_script: &[u8], required_signatures: usize) -
         signatures.push(SIG_HASH_ALL.to_u8());
     }
 
-    let redeem_push = ScriptBuilder::new()
-        .add_data(redeem_script)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?
-        .drain();
+    let redeem_push = ScriptBuilder::new().add_data(redeem_script).map_err(|err| ThresholdError::Message(err.to_string()))?.drain();
 
     let mut out = signatures;
     out.extend(redeem_push);
@@ -235,10 +243,7 @@ fn estimate_compute_mass_for_signed_tx(
                 sig_op_count,
             })
             .collect(),
-        outputs
-            .iter()
-            .map(|out| TransactionOutput { value: out.amount, script_public_key: out.script_public_key.clone() })
-            .collect(),
+        outputs.iter().map(|out| TransactionOutput { value: out.amount, script_public_key: out.script_public_key.clone() }).collect(),
         0,
         SUBNETWORK_ID_NATIVE,
         0,
@@ -319,7 +324,12 @@ impl FeeConfig {
     }
 }
 
-fn apply_fee_policy_for_fee(params: &PsktParams, total_input: u64, outputs: &mut Vec<MultisigOutput>, fee: u64) -> Result<(), ThresholdError> {
+fn apply_fee_policy_for_fee(
+    params: &PsktParams,
+    total_input: u64,
+    outputs: &mut Vec<MultisigOutput>,
+    fee: u64,
+) -> Result<(), ThresholdError> {
     if outputs.is_empty() {
         return Err(ThresholdError::PsktValidationFailed("missing outputs for fee calculation".to_string()));
     }

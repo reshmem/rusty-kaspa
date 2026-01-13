@@ -3,17 +3,18 @@
 use super::{LWWRegister, SignatureKey, SignatureRecord};
 use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
+use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use super::CompletionInfo;
 
 /// The main Event CRDT combining signature G-Set with completion LWW-Register.
-/// Keyed by (event_hash, tx_template_hash) - signatures only merge if both match.
+/// Keyed by (event_id, tx_template_hash) - signatures only merge if both match.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventCrdt {
     /// The cross-chain event being processed (for grouping/audit).
-    pub event_hash: Hash32,
+    pub event_id: Hash32,
 
     /// The specific transaction being signed (for signature compatibility).
     pub tx_template_hash: Hash32,
@@ -31,7 +32,7 @@ pub struct EventCrdt {
 impl Default for EventCrdt {
     fn default() -> Self {
         Self {
-            event_hash: [0u8; 32],
+            event_id: [0u8; 32],
             tx_template_hash: [0u8; 32],
             signatures: HashMap::new(),
             completion: LWWRegister::new(),
@@ -41,15 +42,9 @@ impl Default for EventCrdt {
 }
 
 impl EventCrdt {
-    /// Create a new EventCrdt for the given (event_hash, tx_template_hash) pair.
-    pub fn new(event_hash: Hash32, tx_template_hash: Hash32) -> Self {
-        Self {
-            event_hash,
-            tx_template_hash,
-            signatures: HashMap::new(),
-            completion: LWWRegister::new(),
-            version: 0,
-        }
+    /// Create a new EventCrdt for the given (event_id, tx_template_hash) pair.
+    pub fn new(event_id: Hash32, tx_template_hash: Hash32) -> Self {
+        Self { event_id, tx_template_hash, signatures: HashMap::new(), completion: LWWRegister::new(), version: 0 }
     }
 
     /// Add a signature to the G-Set.
@@ -113,10 +108,10 @@ impl EventCrdt {
     }
 
     /// Merge another EventCrdt into this one.
-    /// CRITICAL: Only merges if BOTH event_hash AND tx_template_hash match.
+    /// CRITICAL: Only merges if BOTH event_id AND tx_template_hash match.
     /// Returns the number of changes made.
     pub fn merge(&mut self, other: &EventCrdt) -> usize {
-        if self.event_hash != other.event_hash || self.tx_template_hash != other.tx_template_hash {
+        if self.event_id != other.event_id || self.tx_template_hash != other.tx_template_hash {
             return 0;
         }
 
@@ -145,11 +140,17 @@ impl EventCrdt {
 
     /// Validate that the CRDT is self-consistent.
     pub fn validate(&self) -> Result<(), ThresholdError> {
-        if self.event_hash == [0u8; 32] {
-            return Err(ThresholdError::Message("missing event_hash".to_string()));
+        if self.event_id == [0u8; 32] {
+            return Err(ThresholdError::Message(format!(
+                "missing event_id in CRDT, tx_template_hash={}",
+                hex::encode(self.tx_template_hash)
+            )));
         }
         if self.tx_template_hash == [0u8; 32] {
-            return Err(ThresholdError::Message("missing tx_template_hash".to_string()));
+            return Err(ThresholdError::Message(format!(
+                "missing tx_template_hash in CRDT, event_id={}",
+                hex::encode(self.event_id)
+            )));
         }
         Ok(())
     }
@@ -283,4 +284,3 @@ mod tests {
         assert_eq!(ab.signature_count(), ba.signature_count());
     }
 }
-

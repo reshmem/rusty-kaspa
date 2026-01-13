@@ -10,7 +10,7 @@ redeem_script_hex = "" # Filled by generator
 sig_op_count = 2
 fee_payment_mode = "recipient_pays"
 fee_sompi = 0
-change_address = "" # Filled by generator
+# change_address is optional; when omitted, defaults to `source_addresses[0]` (the multisig address).
 
 [service.hd]
 mnemonics = [] # Filled by generator

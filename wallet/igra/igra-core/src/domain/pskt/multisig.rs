@@ -42,7 +42,7 @@ pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Resul
             .sig_op_count(input.sig_op_count)
             .redeem_script(input.redeem_script.clone())
             .build()
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| ThresholdError::PsktError { operation: "build_input".into(), details: err.to_string() })?;
         pskt = pskt.input(input);
     }
 
@@ -51,7 +51,7 @@ pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Resul
             .amount(output.amount)
             .script_public_key(output.script_public_key.clone())
             .build()
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| ThresholdError::PsktError { operation: "build_output".into(), details: err.to_string() })?;
         pskt = pskt.output(output);
     }
 
@@ -68,7 +68,9 @@ pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Resul
 pub fn set_sequence_all(pskt: PSKT<Updater>, sequence: u64) -> Result<PSKT<Updater>, ThresholdError> {
     let mut updated = pskt;
     for index in 0..updated.inputs.len() {
-        updated = updated.set_sequence(sequence, index).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        updated = updated
+            .set_sequence(sequence, index)
+            .map_err(|err| ThresholdError::PsktError { operation: "set_sequence".into(), details: err.to_string() })?;
     }
     Ok(updated)
 }
@@ -79,33 +81,38 @@ pub fn to_signer(pskt: PSKT<Updater>) -> PSKT<Signer> {
 
 pub fn serialize_pskt<ROLE>(pskt: &PSKT<ROLE>) -> Result<Vec<u8>, ThresholdError> {
     let inner: &Inner = pskt;
-    let bytes = serde_json::to_vec(inner).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = serde_json::to_vec(inner).map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
     Ok(bytes)
 }
 
 pub fn deserialize_pskt_signer(bytes: &[u8]) -> Result<PSKT<Signer>, ThresholdError> {
-    let inner: Inner = serde_json::from_slice(bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let inner: Inner = serde_json::from_slice(bytes)
+        .map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
     Ok(PSKT::from(inner))
 }
 
 pub fn deserialize_pskt_combiner(bytes: &[u8]) -> Result<PSKT<Combiner>, ThresholdError> {
-    let inner: Inner = serde_json::from_slice(bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let inner: Inner = serde_json::from_slice(bytes)
+        .map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
     Ok(PSKT::from(inner))
 }
 
 pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Result<PSKT<Combiner>, ThresholdError> {
-    let mut inner: Inner = serde_json::from_slice(pskt_blob).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let mut inner: Inner = serde_json::from_slice(pskt_blob)
+        .map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
     for sig in partials.iter() {
         let max = inner.inputs.len().saturating_sub(1) as u32;
         let input =
             inner.inputs.get_mut(sig.input_index as usize).ok_or(ThresholdError::InvalidInputIndex { index: sig.input_index, max })?;
         // Canonicalize Schnorr pubkey identity to x-only even parity.
         // This makes partial sigs compatible across historical versions that used different pubkey parities.
-        let pubkey = PublicKey::from_slice(&sig.pubkey).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let pubkey = PublicKey::from_slice(&sig.pubkey)
+            .map_err(|err| ThresholdError::CryptoError { operation: "parse_pubkey".into(), details: err.to_string() })?;
         let (xonly, _) = pubkey.x_only_public_key();
         let pubkey = PublicKey::from_x_only_public_key(xonly, Parity::Even);
         let signature =
-            secp256k1::schnorr::Signature::from_slice(&sig.signature).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            secp256k1::schnorr::Signature::from_slice(&sig.signature)
+                .map_err(|err| ThresholdError::CryptoError { operation: "parse_signature".into(), details: err.to_string() })?;
         input.partial_sigs.insert(pubkey, Signature::Schnorr(signature));
     }
     Ok(PSKT::from(inner))
@@ -114,7 +121,7 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
 pub fn tx_template_hash(pskt: &PSKT<Signer>) -> Result<Hash32, ThresholdError> {
     let inner: &Inner = pskt;
     let tx = signable_tx_from_inner(inner);
-    let bytes = borsh_to_vec(&tx.tx).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let bytes = borsh_to_vec(&tx.tx).map_err(|err| ThresholdError::SerializationError { format: "borsh".into(), details: err.to_string() })?;
     let hash = *blake3::hash(&bytes).as_bytes();
     Ok(hash)
 }
@@ -170,33 +177,25 @@ pub fn ordered_pubkeys_from_redeem_script(redeem_script: &[u8]) -> Result<Vec<Pu
         }
         p += 1;
         if p + 32 > redeem_script.len() {
-            return Err(ThresholdError::PsktValidationFailed(
-                "invalid multisig redeem script: truncated pubkey push".to_string(),
-            ));
+            return Err(ThresholdError::PsktValidationFailed("invalid multisig redeem script: truncated pubkey push".to_string()));
         }
         xonly_keys.push(redeem_script[p..p + 32].to_vec());
         p += 32;
     }
 
     if p >= redeem_script.len() {
-        return Err(ThresholdError::PsktValidationFailed(
-            "invalid multisig redeem script: missing N opcode".to_string(),
-        ));
+        return Err(ThresholdError::PsktValidationFailed("invalid multisig redeem script: missing N opcode".to_string()));
     }
     let n = decode_small_int(redeem_script[p])
         .ok_or_else(|| ThresholdError::PsktValidationFailed("invalid multisig redeem script: bad N opcode".to_string()))?;
     p += 1;
 
     if p >= redeem_script.len() || redeem_script[p] != 0xae {
-        return Err(ThresholdError::PsktValidationFailed(
-            "invalid multisig redeem script: missing OP_CHECKMULTISIG".to_string(),
-        ));
+        return Err(ThresholdError::PsktValidationFailed("invalid multisig redeem script: missing OP_CHECKMULTISIG".to_string()));
     }
 
     if n == 0 || m == 0 || m > n {
-        return Err(ThresholdError::PsktValidationFailed(format!(
-            "invalid multisig redeem script: invalid threshold m={m} n={n}"
-        )));
+        return Err(ThresholdError::PsktValidationFailed(format!("invalid multisig redeem script: invalid threshold m={m} n={n}")));
     }
     if xonly_keys.len() != n {
         return Err(ThresholdError::PsktValidationFailed(format!(
@@ -207,7 +206,8 @@ pub fn ordered_pubkeys_from_redeem_script(redeem_script: &[u8]) -> Result<Vec<Pu
 
     let mut pubkeys = Vec::with_capacity(xonly_keys.len());
     for key_bytes in xonly_keys {
-        let xonly = XOnlyPublicKey::from_slice(&key_bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let xonly = XOnlyPublicKey::from_slice(&key_bytes)
+            .map_err(|err| ThresholdError::CryptoError { operation: "parse_pubkey".into(), details: err.to_string() })?;
         pubkeys.push(PublicKey::from_x_only_public_key(xonly, Parity::Even));
     }
 
@@ -267,12 +267,12 @@ pub fn sign_pskt(pskt: PSKT<Signer>, keypair: &Keypair) -> Result<PsktSignResult
             })
             .collect()
     })
-    .map_err(|err| ThresholdError::Message(err.to_string()))
+    .map_err(|err| ThresholdError::PsktError { operation: "sign_pskt".into(), details: err.to_string() })
     .map(|signed| PsktSignResult { input_count, signatures_added: input_count, pskt: signed })
 }
 
 pub fn combine_pskts(base: PSKT<Combiner>, signed: PSKT<Signer>) -> Result<PSKT<Combiner>, ThresholdError> {
-    (base + signed).map_err(|err| ThresholdError::Message(err.to_string()))
+    (base + signed).map_err(|err| ThresholdError::PsktError { operation: "combine_pskts".into(), details: err.to_string() })
 }
 
 pub fn finalize_multisig(
@@ -317,7 +317,7 @@ pub fn finalize_multisig(
                 })
                 .collect::<Result<Vec<Vec<u8>>, String>>()
         })
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+        .map_err(|err| ThresholdError::PsktError { operation: "finalize_pskt".into(), details: err.to_string() })
         .map(|finalizer| PsktFinalizeResult {
             input_count,
             signatures_per_input: signature_counts.into_inner(),
@@ -330,8 +330,11 @@ pub fn extract_tx(
     pskt: PSKT<Finalizer>,
     params: &kaspa_consensus_core::config::params::Params,
 ) -> Result<TransactionExtractionResult, ThresholdError> {
-    let extractor = pskt.extractor().map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let tx = extractor.extract_tx(params).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let extractor =
+        pskt.extractor().map_err(|err| ThresholdError::PsktError { operation: "extractor".into(), details: err.to_string() })?;
+    let tx = extractor
+        .extract_tx(params)
+        .map_err(|err| ThresholdError::PsktError { operation: "extract_tx".into(), details: err.to_string() })?;
     let tx_id = tx.tx.id().as_bytes();
     Ok(TransactionExtractionResult {
         tx_id,

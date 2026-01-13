@@ -120,4 +120,3 @@ mod tests {
         assert_eq!(ab.value(), Some(&"b"));
     }
 }
-

@@ -1,18 +1,51 @@
-# Legacy / Process Docs
+# Documentation Index
 
-This folder collects historical planning, audits, and process artifacts. These documents capture how work was planned, reviewed, and tracked at the time. They are preserved for context and auditability, but they are not the canonical source of current system behavior. For current behavior and feature documentation, use the top-level `docs/` sections (overview, specs, architecture, security, service, and testing).
+## Overview
+- `docs/overview/kaspa-threshold-signing-overview.md`
 
-## How To Use
-- Start with current docs for implementation details and API behavior.
-- Refer to legacy docs to understand past decisions, rationale, and historical work plans.
-- Treat legacy checklists and TODOs as snapshots in time, not current requirements.
+## API
+- `docs/api/kaspa-threshold-signing-api-docs.md`
 
-## Dev-Process Timeline (by document date)
-- 2025-12-28: `docs/legacy/dev/TODO-dev.md` (baseline backlog and roadmap).
-- 2025-12-29: `docs/legacy/dev/SECOND-SCAN.md` (status scan and gap analysis).
-- 2025-12-29: `docs/legacy/checklists/V1-LAUNCH-CHECKLIST.md` (launch readiness checklist).
-- 2025-12-31: `docs/legacy/dev/IMPROVEMENTS.md` (architecture and code improvement proposals).
-- 2025-12-31: `docs/legacy/dev/CODE_REFACTORING.md` (refactor plan and structural changes).
-- 2025-12-31: `docs/legacy/testing/INTEGRATION_FIXES.md` (test gaps and fixes backlog).
-- 2025-12-31: `docs/legacy/testing/INTEGRATION_FIXES-2.md` (follow-on fixes and additions).
-- 2025-12-31: `docs/legacy/testing/TEST_REFACTORING.md` (test suite restructuring plan).
+## Specs
+- `docs/specs/PROTOCOL_SPEC.md`
+- `docs/specs/kaspa-threshold-signing-spec-refined.md`
+
+## Architecture
+- `docs/architecture/STATE_MACHINE.md`
+- `docs/architecture/DB_SCHEMA.md`
+- `docs/architecture/Architecture-Improvements-GEMINI.md`
+
+## Security
+- `docs/security/THREAT_MODEL.md`
+- `docs/security/SECURITY_ASSUMPTIONS.md`
+- `docs/security/SECURITY-FIXES-REQUIRED.md`
+- `docs/security/SECURITY-FIXES-SUMMARY.md`
+- `docs/security/SECURITY_AUDIT.md`
+- `docs/security/SECURITY_FIXES_IMPLEMENTED.md`
+
+## Core
+- `docs/core/README.md`
+
+## Service
+- `docs/service/README.md`
+- `docs/service/DEPLOYMENT.md`
+- `docs/service/SECURITY.md`
+- `docs/service/API_REFERENCE.md`
+- `docs/service/INTEGRATION.md`
+- `docs/service/Architecture.md`
+- `docs/service/Flows.md`
+
+## Testing
+- `docs/testing/INTEGRATION.md`
+
+## Legacy (Process)
+- `docs/legacy/dev/TODO-dev.md`
+- `docs/legacy/dev/GEMINI-TODOs.md`
+- `docs/legacy/dev/SECOND-SCAN.md`
+- `docs/legacy/dev/IMPROVEMENTS.md`
+- `docs/legacy/dev/CODE_REFACTORING.md`
+- `docs/legacy/testing/INTEGRATION_TESTS_ADDED.md`
+- `docs/legacy/testing/INTEGRATION_FIXES.md`
+- `docs/legacy/testing/INTEGRATION_FIXES-2.md`
+- `docs/legacy/testing/TEST_REFACTORING.md`
+- `docs/legacy/checklists/V1-LAUNCH-CHECKLIST.md`

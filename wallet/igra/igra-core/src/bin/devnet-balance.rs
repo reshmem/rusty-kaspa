@@ -1,3 +1,4 @@
+use igra_core::foundation::GRPC_MAX_MESSAGE_SIZE_BYTES;
 use kaspa_addresses::Address;
 use kaspa_grpc_client::GrpcClient;
 use kaspa_notify::subscription::context::SubscriptionContext;
@@ -68,7 +69,7 @@ async fn main() -> ExitCode {
         true,
         None,
         false,
-        Some(500_000),
+        Some(GRPC_MAX_MESSAGE_SIZE_BYTES),
         Default::default(),
     )
     .await

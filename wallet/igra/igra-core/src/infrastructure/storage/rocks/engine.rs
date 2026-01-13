@@ -1,14 +1,16 @@
-use crate::domain::{CrdtSignatureRecord, GroupConfig, SigningEvent, StoredCompletionRecord, StoredEventCrdt};
+use crate::domain::pskt::multisig as pskt_multisig;
+use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, GroupConfig, StoredCompletionRecord, StoredEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
+use crate::storage_err;
 use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
 use crate::infrastructure::storage::rocks::migration::open_db_with_cfs;
 use crate::infrastructure::storage::rocks::schema::*;
 use crate::infrastructure::storage::{BatchTransaction, CrdtStorageStats, Storage};
 use crate::infrastructure::transport::messages::{CompletionRecord, EventCrdtState};
 use bincode::Options;
+use log::{debug, info, trace, warn};
 use rocksdb::{checkpoint::Checkpoint, ColumnFamily, Direction, IteratorMode, WriteBatch, DB};
 use std::collections::{HashMap, HashSet};
-use log::{debug, info, trace, warn};
 use std::path::Path;
 use std::sync::Arc;
 use std::{env, fs};
@@ -20,11 +22,27 @@ pub struct RocksStorage {
 
 impl RocksStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ThresholdError> {
+        Self::open_with_options(path, false)
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, allow_schema_wipe: bool) -> Result<Self, ThresholdError> {
         let path = path.as_ref();
         debug!("opening RocksStorage path={}", path.display());
         let db = open_db_with_cfs(path)?;
         let storage = Self { db: Arc::new(db), crdt_lock: std::sync::Mutex::new(()) };
-        storage.maybe_run_migrations()?;
+        if let Err(err) = storage.maybe_run_migrations() {
+            if allow_schema_wipe {
+                if let ThresholdError::SchemaMismatch { stored, current } = err {
+                    warn!("schema mismatch (stored={}, current={}); wiping db path={}", stored, current, path.display());
+                    drop(storage);
+                    if path.exists() {
+                        fs::remove_dir_all(path).map_err(|err| storage_err!("fs::remove_dir_all checkpoint_cleanup", err))?;
+                    }
+                    return Self::open_with_options(path, false);
+                }
+            }
+            return Err(err);
+        }
         info!("RocksStorage opened path={}", path.display());
         Ok(storage)
     }
@@ -34,43 +52,47 @@ impl RocksStorage {
             let trimmed = data_dir.trim();
             if !trimmed.is_empty() {
                 let dir = Path::new(trimmed);
-                fs::create_dir_all(dir).map_err(|err| ThresholdError::Message(err.to_string()))?;
+                fs::create_dir_all(dir).map_err(|err| storage_err!("fs::create_dir_all kaspa_data_dir", err))?;
                 let path = dir.join("threshold-signing");
                 debug!("opening RocksStorage (KASPA_DATA_DIR) path={}", path.display());
-                return Self::open(path);
+                return Self::open_with_options(path, false);
             }
         }
-        let base = env::current_dir().map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let base = env::current_dir().map_err(|err| storage_err!("env::current_dir", err))?;
         let dir = base.join(".igra");
-        fs::create_dir_all(&dir).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        fs::create_dir_all(&dir).map_err(|err| storage_err!("fs::create_dir_all default_dir", err))?;
         let path = dir.join("threshold-signing");
         debug!("opening RocksStorage (default dir) path={}", path.display());
-        Self::open(path)
+        Self::open_with_options(path, false)
     }
 
     pub fn open_in_dir(data_dir: impl AsRef<Path>) -> Result<Self, ThresholdError> {
+        Self::open_in_dir_with_options(data_dir, false)
+    }
+
+    pub fn open_in_dir_with_options(data_dir: impl AsRef<Path>, allow_schema_wipe: bool) -> Result<Self, ThresholdError> {
         let dir = data_dir.as_ref();
         if dir.as_os_str().is_empty() {
             return Self::open_default();
         }
-        fs::create_dir_all(dir).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        fs::create_dir_all(dir).map_err(|err| storage_err!("fs::create_dir_all open_in_dir", err))?;
         let path = dir.join("threshold-signing");
         debug!("opening RocksStorage in dir path={}", path.display());
-        Self::open(path)
+        Self::open_with_options(path, allow_schema_wipe)
     }
 
     pub fn create_checkpoint(&self, path: impl AsRef<Path>) -> Result<(), ThresholdError> {
         let path = path.as_ref();
         info!("creating RocksStorage checkpoint path={}", path.display());
         if path.exists() {
-            let mut entries = fs::read_dir(path).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let mut entries = fs::read_dir(path).map_err(|err| storage_err!("fs::read_dir checkpoint", err))?;
             if entries.next().is_some() {
                 return Err(ThresholdError::Message(format!("checkpoint directory is not empty: {}", path.display())));
             }
-            fs::remove_dir_all(path).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            fs::remove_dir_all(path).map_err(|err| storage_err!("fs::remove_dir_all checkpoint", err))?;
         }
-        let checkpoint = Checkpoint::new(&self.db).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        checkpoint.create_checkpoint(path).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let checkpoint = Checkpoint::new(&self.db).map_err(|err| storage_err!("rocksdb::Checkpoint::new", err))?;
+        checkpoint.create_checkpoint(path).map_err(|err| storage_err!("rocksdb::create_checkpoint", err))?;
         info!("checkpoint created path={}", path.display());
         Ok(())
     }
@@ -88,16 +110,7 @@ impl RocksStorage {
                 self.set_schema_version(SCHEMA_VERSION)?;
             }
             Some(v) if v == SCHEMA_VERSION => { /* ok */ }
-            Some(v) if v < SCHEMA_VERSION => {
-                warn!("database schema version {} is older than supported {}; migration not implemented", v, SCHEMA_VERSION);
-                return Err(ThresholdError::Message("database schema too old; migration required".to_string()));
-            }
-            Some(v) => {
-                return Err(ThresholdError::Message(format!(
-                    "database schema version {} is newer than supported {}; please upgrade software",
-                    v, SCHEMA_VERSION
-                )));
-            }
+            Some(v) => return Err(ThresholdError::SchemaMismatch { stored: v, current: SCHEMA_VERSION }),
         }
         Ok(())
     }
@@ -112,7 +125,7 @@ impl RocksStorage {
             }
             Ok(Some(_)) => Err(ThresholdError::Message("corrupt schema version".to_string())),
             Ok(None) => Ok(None),
-            Err(e) => Err(ThresholdError::Message(e.to_string())),
+            Err(e) => Err(storage_err!("rocksdb get_cf schema_version", e)),
         }
     }
 
@@ -133,32 +146,29 @@ impl RocksStorage {
         KeyBuilder::with_capacity(4 + group_id.len()).prefix(b"grp:").hash32(group_id).build()
     }
 
-    fn key_event(event_hash: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(4 + event_hash.len()).prefix(b"evt:").hash32(event_hash).build()
+    fn key_event(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(4 + event_id.len()).prefix(b"evt:").hash32(event_id).build()
     }
 
-    fn key_event_crdt(event_hash: &Hash32, tx_template_hash: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + event_hash.len() + 1 + tx_template_hash.len())
+    fn key_event_active_template(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(11 + event_id.len()).prefix(b"evt_active:").hash32(event_id).build()
+    }
+
+    fn key_event_completion(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(15 + event_id.len()).prefix(b"evt_completion:").hash32(event_id).build()
+    }
+
+    fn key_event_crdt(event_id: &Hash32, tx_template_hash: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.len() + 1 + tx_template_hash.len())
             .prefix(b"evt_crdt:")
-            .hash32(event_hash)
+            .hash32(event_id)
             .sep()
             .hash32(tx_template_hash)
             .build()
     }
 
-    fn key_event_crdt_prefix(event_hash: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + event_hash.len() + 1)
-            .prefix(b"evt_crdt:")
-            .hash32(event_hash)
-            .sep()
-            .build()
-    }
-
-    fn now_nanos() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
+    fn key_event_crdt_prefix(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.len() + 1).prefix(b"evt_crdt:").hash32(event_id).sep().build()
     }
 
     fn key_seen(sender_peer_id: &PeerId, session_id: &SessionId, seq_no: u64) -> Vec<u8> {
@@ -176,13 +186,8 @@ impl RocksStorage {
         KeyBuilder::with_capacity(4 + 8).prefix(b"vol:").u64_be(day_start_nanos).build()
     }
 
-    fn day_start_nanos(now_nanos: u64) -> u64 {
-        let nanos_per_day = 24 * 60 * 60 * 1_000_000_000u64;
-        (now_nanos / nanos_per_day) * nanos_per_day
-    }
-
     fn add_to_daily_volume(&self, amount_sompi: u64, timestamp_nanos: u64) -> Result<(), ThresholdError> {
-        let day_start = Self::day_start_nanos(timestamp_nanos);
+        let day_start = crate::foundation::day_start_nanos(timestamp_nanos);
         let key = Self::key_volume(day_start);
         debug!("add_to_daily_volume amount_sompi={} day_start={}", amount_sompi, day_start);
 
@@ -190,13 +195,13 @@ impl RocksStorage {
         // The merge operator handles concurrent updates safely without locks
         let value = amount_sompi.to_be_bytes();
         let cf = self.cf_handle(CF_VOLUME)?;
-        self.db.merge_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.merge_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))
     }
 
     fn volume_from_index(&self, since_day_start: u64) -> Result<Option<u64>, ThresholdError> {
         let key = Self::key_volume(since_day_start);
         let cf = self.cf_handle(CF_VOLUME)?;
-        let value = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let value = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb", err))?;
         let Some(bytes) = value else {
             return Ok(None);
         };
@@ -213,7 +218,7 @@ impl RocksStorage {
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb", err))?;
             if !key.starts_with(prefix) {
                 break;
             }
@@ -221,27 +226,20 @@ impl RocksStorage {
             if state.completion.is_none() {
                 continue;
             }
-            if seen_events.contains(&state.event_hash) {
+            if seen_events.contains(&state.event_id) {
                 continue;
             }
-            seen_events.insert(state.event_hash);
+            seen_events.insert(state.event_id);
 
-            let event = match state.signing_event {
-                Some(ev) => Some(ev),
-                None => self.get_event(&state.event_hash)?,
-            };
-            let Some(event) = event else { continue };
+            let Some(event) = self.get_event(&state.event_id)? else { continue };
 
-            let event_day = Self::day_start_nanos(event.timestamp_nanos);
-            if event_day == Self::day_start_nanos(since_day_start) {
-                total = total.saturating_add(event.amount_sompi);
+            let event_day = crate::foundation::day_start_nanos(event.received_at_nanos);
+            if event_day == crate::foundation::day_start_nanos(since_day_start) {
+                total = total.saturating_add(event.event.amount_sompi);
                 counted += 1;
             }
         }
-        debug!(
-            "volume_from_scan summary since_day_start={} counted={} total={}",
-            since_day_start, counted, total
-        );
+        debug!("volume_from_scan summary since_day_start={} counted={} total={}", since_day_start, counted, total);
         Ok(total)
     }
 }
@@ -261,49 +259,118 @@ impl Storage for RocksStorage {
         let key = Self::key_group(&group_id);
         let value = Self::encode(&config)?;
         let cf = self.cf_handle(CF_GROUP)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))
     }
 
     fn get_group_config(&self, group_id: &Hash32) -> Result<Option<GroupConfig>, ThresholdError> {
         trace!("get_group_config group_id={}", hex::encode(group_id));
         let key = Self::key_group(group_id);
         let cf = self.cf_handle(CF_GROUP)?;
-        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
         match value {
             Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
             None => Ok(None),
         }
     }
 
-    fn insert_event(&self, event_hash: Hash32, event: SigningEvent) -> Result<(), ThresholdError> {
-        debug!("insert_event event_hash={} event_id={}", hex::encode(event_hash), event.event_id);
-        let key = Self::key_event(&event_hash);
+    fn insert_event(&self, event_id: Hash32, event: StoredEvent) -> Result<(), ThresholdError> {
+        debug!("insert_event event_id={} external_id={}", hex::encode(event_id), hex::encode(event.event.external_id));
+        let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
-        if self.db.get_cf(cf, &key).map_err(|e| ThresholdError::StorageError(e.to_string()))?.is_some() {
+        if self.db
+            .get_cf(cf, &key)
+            .map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?
+            .is_some()
+        {
             return Ok(());
         }
 
         let value = Self::encode(&event)?;
-        self.db.put_cf(cf, key, value).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        debug!("event stored event_hash={}", hex::encode(event_hash));
+        self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))?;
+        debug!("event stored event_id={}", hex::encode(event_id));
         Ok(())
     }
 
-    fn get_event(&self, event_hash: &Hash32) -> Result<Option<SigningEvent>, ThresholdError> {
-        trace!("get_event event_hash={}", hex::encode(event_hash));
-        let key = Self::key_event(event_hash);
+    fn insert_event_if_not_exists(&self, event_id: Hash32, event: StoredEvent) -> Result<bool, ThresholdError> {
+        let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
-        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        if self.db
+            .get_cf(cf, &key)
+            .map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?
+            .is_some()
+        {
+            return Ok(false);
+        }
+
+        let value = Self::encode(&event)?;
+        self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))?;
+        Ok(true)
+    }
+
+    fn get_event(&self, event_id: &Hash32) -> Result<Option<StoredEvent>, ThresholdError> {
+        trace!("get_event event_id={}", hex::encode(event_id));
+        let key = Self::key_event(event_id);
+        let cf = self.cf_handle(CF_EVENT)?;
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
         match value {
             Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
             None => Ok(None),
         }
     }
 
-    fn get_event_crdt(&self, event_hash: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>, ThresholdError> {
-        let key = Self::key_event_crdt(event_hash, tx_template_hash);
+    fn get_event_active_template_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+        let key = Self::key_event_active_template(event_id);
+        let cf = self.cf_handle(CF_EVENT_INDEX)?;
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
+        match value {
+            None => Ok(None),
+            Some(bytes) => {
+                let array: [u8; 32] = bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
+                Ok(Some(array))
+            }
+        }
+    }
+
+    fn set_event_active_template_hash(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<(), ThresholdError> {
+        let key = Self::key_event_active_template(event_id);
+        let cf = self.cf_handle(CF_EVENT_INDEX)?;
+        if let Some(existing) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb", err))? {
+            let existing: [u8; 32] = existing
+                .as_slice()
+                .try_into()
+                .map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
+            if &existing != tx_template_hash {
+                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
+            }
+            return Ok(());
+        }
+        self.db.put_cf(cf, key, tx_template_hash).map_err(|err| storage_err!("rocksdb", err))
+    }
+
+    fn get_event_completion(&self, event_id: &Hash32) -> Result<Option<StoredCompletionRecord>, ThresholdError> {
+        let key = Self::key_event_completion(event_id);
+        let cf = self.cf_handle(CF_EVENT_INDEX)?;
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
+        match value {
+            None => Ok(None),
+            Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
+        }
+    }
+
+    fn set_event_completion(&self, event_id: &Hash32, completion: &StoredCompletionRecord) -> Result<(), ThresholdError> {
+        let key = Self::key_event_completion(event_id);
+        let cf = self.cf_handle(CF_EVENT_INDEX)?;
+        let value = Self::encode(completion)?;
+        self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))
+    }
+
+    fn get_event_crdt(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>, ThresholdError> {
+        let key = Self::key_event_crdt(event_id, tx_template_hash);
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
-        let value = self.db.get_cf(cf, key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
         match value {
             Some(bytes) => Ok(Some(Self::decode(&bytes)?)),
             None => Ok(None),
@@ -312,27 +379,33 @@ impl Storage for RocksStorage {
 
     fn merge_event_crdt(
         &self,
-        event_hash: &Hash32,
+        event_id: &Hash32,
         tx_template_hash: &Hash32,
         incoming: &EventCrdtState,
-        signing_event: Option<&SigningEvent>,
+        signing_material: Option<&CrdtSigningMaterial>,
         kpsbt_blob: Option<&[u8]>,
     ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
-        let _guard = self
-            .crdt_lock
-            .lock()
-            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
+        let _guard = self.crdt_lock.lock().map_err(|_| storage_err!("rocks crdt lock", "poisoned"))?;
+
+        // Enforce a single tx template per event_id (leaderless convergence invariant).
+        // IMPORTANT: do not *set* the active template hash based on signature-only messages.
+        // Only lock the event_id -> template mapping once we have validated signing material.
+        if let Some(existing) = self.get_event_active_template_hash(event_id)? {
+            if &existing != tx_template_hash {
+                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
+            }
+        }
 
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
-        let key = Self::key_event_crdt(event_hash, tx_template_hash);
-        let now_nanos = Self::now_nanos();
+        let key = Self::key_event_crdt(event_id, tx_template_hash);
+        let now_nanos = crate::foundation::now_nanos();
 
-        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| ThresholdError::Message(e.to_string()))? {
+        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb", e))? {
             Some(bytes) => Self::decode(&bytes)?,
             None => StoredEventCrdt {
-                event_hash: *event_hash,
+                event_id: *event_id,
                 tx_template_hash: *tx_template_hash,
-                signing_event: None,
+                signing_material: None,
                 kpsbt_blob: None,
                 signatures: Vec::new(),
                 completion: None,
@@ -342,18 +415,42 @@ impl Storage for RocksStorage {
         };
 
         let mut changed = false;
+        let had_completion = local.completion.is_some();
 
-        if local.signing_event.is_none() {
-            if let Some(ev) = signing_event {
-                local.signing_event = Some(ev.clone());
-                changed = true;
+        if local.signing_material.is_none() {
+            if let Some(ev) = signing_material {
+                crate::domain::normalization::validate_source_data(&ev.audit.source_data)?;
+                let computed_event_id = crate::domain::hashes::compute_event_id(&ev.event);
+                if computed_event_id != *event_id {
+                    warn!(
+                        "rejecting CRDT signing_material with mismatched event_id expected={} computed={}",
+                        hex::encode(event_id),
+                        hex::encode(computed_event_id)
+                    );
+                } else {
+                    local.signing_material = Some(ev.clone());
+                    changed = true;
+                }
             }
         }
 
         if local.kpsbt_blob.is_none() {
             if let Some(blob) = kpsbt_blob {
-                local.kpsbt_blob = Some(blob.to_vec());
-                changed = true;
+                let signer_pskt = pskt_multisig::deserialize_pskt_signer(blob)?;
+                let computed_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
+                if computed_hash != *tx_template_hash {
+                    warn!(
+                        "rejecting CRDT kpsbt_blob with mismatched tx_template_hash expected={} computed={} kpsbt_len={}",
+                        hex::encode(tx_template_hash),
+                        hex::encode(computed_hash),
+                        blob.len()
+                    );
+                } else {
+                    // Only now we can safely lock the active template hash (prevents DoS by signature-only broadcasts).
+                    self.set_event_active_template_hash(event_id, tx_template_hash)?;
+                    local.kpsbt_blob = Some(blob.to_vec());
+                    changed = true;
+                }
             }
         }
 
@@ -363,15 +460,13 @@ impl Storage for RocksStorage {
         }
 
         for sig in &incoming.signatures {
-            let sig_key = (sig.input_index, sig.pubkey.clone());
+            let record =
+                <CrdtSignatureRecord as std::convert::TryFrom<&crate::infrastructure::transport::messages::CrdtSignature>>::try_from(
+                    sig,
+                )?;
+            let sig_key = (record.input_index, record.pubkey.clone());
             if !existing.contains(&sig_key) {
-                local.signatures.push(CrdtSignatureRecord {
-                    input_index: sig.input_index,
-                    pubkey: sig.pubkey.clone(),
-                    signature: sig.signature.clone(),
-                    signer_peer_id: sig.signer_peer_id.clone().unwrap_or_else(|| PeerId::from("unknown")),
-                    timestamp_nanos: sig.timestamp_nanos,
-                });
+                local.signatures.push(record);
                 existing.insert(sig_key);
                 changed = true;
             }
@@ -380,22 +475,12 @@ impl Storage for RocksStorage {
         if let Some(incoming_completion) = &incoming.completion {
             match &local.completion {
                 None => {
-                    local.completion = Some(StoredCompletionRecord {
-                        tx_id: TransactionId::from(incoming_completion.tx_id),
-                        submitter_peer_id: incoming_completion.submitter_peer_id.clone(),
-                        timestamp_nanos: incoming_completion.timestamp_nanos,
-                        blue_score: incoming_completion.blue_score,
-                    });
+                    local.completion = Some(StoredCompletionRecord::from(incoming_completion));
                     changed = true;
                 }
                 Some(existing_completion) => {
                     if incoming_completion.timestamp_nanos > existing_completion.timestamp_nanos {
-                        local.completion = Some(StoredCompletionRecord {
-                            tx_id: TransactionId::from(incoming_completion.tx_id),
-                            submitter_peer_id: incoming_completion.submitter_peer_id.clone(),
-                            timestamp_nanos: incoming_completion.timestamp_nanos,
-                            blue_score: incoming_completion.blue_score,
-                        });
+                        local.completion = Some(StoredCompletionRecord::from(incoming_completion));
                         changed = true;
                     }
                 }
@@ -405,7 +490,17 @@ impl Storage for RocksStorage {
         if changed {
             local.updated_at_nanos = now_nanos;
             let value = Self::encode(&local)?;
-            self.db.put_cf(cf, &key, value).map_err(|e| ThresholdError::Message(e.to_string()))?;
+            self.db.put_cf(cf, &key, value).map_err(|e| storage_err!("rocksdb", e))?;
+
+            if let Some(completion) = local.completion.as_ref() {
+                self.set_event_completion(event_id, completion)?;
+                // Update daily volume only once per event (first time we see completion).
+                if !had_completion {
+                    if let Some(event) = self.get_event(event_id)? {
+                        self.add_to_daily_volume(event.event.amount_sompi, event.received_at_nanos)?;
+                    }
+                }
+            }
         }
 
         Ok((local, changed))
@@ -413,7 +508,7 @@ impl Storage for RocksStorage {
 
     fn add_signature_to_crdt(
         &self,
-        event_hash: &Hash32,
+        event_id: &Hash32,
         tx_template_hash: &Hash32,
         input_index: u32,
         pubkey: &[u8],
@@ -421,21 +516,20 @@ impl Storage for RocksStorage {
         signer_peer_id: &PeerId,
         timestamp_nanos: u64,
     ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
-        let _guard = self
-            .crdt_lock
-            .lock()
-            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
+        let _guard = self.crdt_lock.lock().map_err(|_| storage_err!("rocks crdt lock", "poisoned"))?;
+
+        self.set_event_active_template_hash(event_id, tx_template_hash)?;
 
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
-        let key = Self::key_event_crdt(event_hash, tx_template_hash);
-        let now_nanos = Self::now_nanos();
+        let key = Self::key_event_crdt(event_id, tx_template_hash);
+        let now_nanos = crate::foundation::now_nanos();
 
-        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| ThresholdError::Message(e.to_string()))? {
+        let mut local: StoredEventCrdt = match self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb", e))? {
             Some(bytes) => Self::decode(&bytes)?,
             None => StoredEventCrdt {
-                event_hash: *event_hash,
+                event_id: *event_id,
                 tx_template_hash: *tx_template_hash,
-                signing_event: None,
+                signing_material: None,
                 kpsbt_blob: None,
                 signatures: Vec::new(),
                 completion: None,
@@ -444,10 +538,7 @@ impl Storage for RocksStorage {
             },
         };
 
-        let already = local
-            .signatures
-            .iter()
-            .any(|s| s.input_index == input_index && s.pubkey.as_slice() == pubkey);
+        let already = local.signatures.iter().any(|s| s.input_index == input_index && s.pubkey.as_slice() == pubkey);
 
         if already {
             return Ok((local, false));
@@ -463,13 +554,13 @@ impl Storage for RocksStorage {
         local.updated_at_nanos = now_nanos;
 
         let value = Self::encode(&local)?;
-        self.db.put_cf(cf, &key, value).map_err(|e| ThresholdError::Message(e.to_string()))?;
+        self.db.put_cf(cf, &key, value).map_err(|e| storage_err!("rocksdb", e))?;
         Ok((local, true))
     }
 
     fn mark_crdt_completed(
         &self,
-        event_hash: &Hash32,
+        event_id: &Hash32,
         tx_template_hash: &Hash32,
         tx_id: TransactionId,
         submitter_peer_id: &PeerId,
@@ -484,27 +575,22 @@ impl Storage for RocksStorage {
                 timestamp_nanos,
                 blue_score,
             }),
-            signing_event: None,
+            signing_material: None,
             kpsbt_blob: None,
             version: 0,
         };
-        let (state, changed) = self.merge_event_crdt(event_hash, tx_template_hash, &incoming, None, None)?;
-        if changed {
-            if let Some(event) = self.get_event(event_hash)? {
-                self.add_to_daily_volume(event.amount_sompi, event.timestamp_nanos)?;
-            }
-        }
+        let (state, changed) = self.merge_event_crdt(event_id, tx_template_hash, &incoming, None, None)?;
         Ok((state, changed))
     }
 
     fn crdt_has_threshold(
         &self,
-        event_hash: &Hash32,
+        event_id: &Hash32,
         tx_template_hash: &Hash32,
         input_count: usize,
         required: usize,
     ) -> Result<bool, ThresholdError> {
-        let state = match self.get_event_crdt(event_hash, tx_template_hash)? {
+        let state = match self.get_event_crdt(event_id, tx_template_hash)? {
             Some(s) => s,
             None => return Ok(false),
         };
@@ -529,7 +615,7 @@ impl Storage for RocksStorage {
         let mut results = Vec::new();
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            let (key, value) = item.map_err(|e| storage_err!("rocksdb", e))?;
             if !key.starts_with(prefix) {
                 break;
             }
@@ -541,13 +627,13 @@ impl Storage for RocksStorage {
         Ok(results)
     }
 
-    fn list_event_crdts_for_event(&self, event_hash: &Hash32) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
-        let prefix = Self::key_event_crdt_prefix(event_hash);
+    fn list_event_crdts_for_event(&self, event_id: &Hash32) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
+        let prefix = Self::key_event_crdt_prefix(event_id);
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
         let mut results = Vec::new();
         let iter = self.db.iterator_cf(cf, IteratorMode::From(&prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            let (key, value) = item.map_err(|e| storage_err!("rocksdb", e))?;
             if !key.starts_with(&prefix) {
                 break;
             }
@@ -565,7 +651,7 @@ impl Storage for RocksStorage {
 
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            let (key, value) = item.map_err(|e| storage_err!("rocksdb", e))?;
             if !key.starts_with(prefix) {
                 break;
             }
@@ -576,14 +662,12 @@ impl Storage for RocksStorage {
             }
         }
 
-        let cf_estimated_num_keys = self
-            .db
-            .property_int_value_cf(cf, "rocksdb.estimate-num-keys")
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let cf_estimated_num_keys =
+            self.db.property_int_value_cf(cf, "rocksdb.estimate-num-keys").map_err(|err| storage_err!("rocksdb", err))?;
         let cf_estimated_live_data_size_bytes = self
             .db
             .property_int_value_cf(cf, "rocksdb.estimate-live-data-size")
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| storage_err!("rocksdb", err))?;
 
         Ok(CrdtStorageStats {
             total_event_crdts: total,
@@ -595,19 +679,17 @@ impl Storage for RocksStorage {
     }
 
     fn cleanup_completed_event_crdts(&self, older_than_nanos: u64) -> Result<usize, ThresholdError> {
-        let _guard = self
-            .crdt_lock
-            .lock()
-            .map_err(|_| ThresholdError::StorageError("rocks crdt lock poisoned".to_string()))?;
+        let _guard = self.crdt_lock.lock().map_err(|_| storage_err!("rocks crdt lock", "poisoned"))?;
 
         let prefix = b"evt_crdt:";
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
+        let cf_index = self.cf_handle(CF_EVENT_INDEX)?;
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         let mut batch = WriteBatch::default();
         let mut deleted = 0usize;
 
         for item in iter {
-            let (key, value) = item.map_err(|e| ThresholdError::Message(e.to_string()))?;
+            let (key, value) = item.map_err(|e| storage_err!("rocksdb", e))?;
             if !key.starts_with(prefix) {
                 break;
             }
@@ -615,12 +697,14 @@ impl Storage for RocksStorage {
             let Some(completion) = state.completion.as_ref() else { continue };
             if completion.timestamp_nanos < older_than_nanos {
                 batch.delete_cf(cf, key);
+                batch.delete_cf(cf_index, Self::key_event_active_template(&state.event_id));
+                batch.delete_cf(cf_index, Self::key_event_completion(&state.event_id));
                 deleted += 1;
             }
         }
 
         if deleted > 0 {
-            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            self.db.write(batch).map_err(|err| storage_err!("rocksdb", err))?;
         }
 
         Ok(deleted)
@@ -628,7 +712,7 @@ impl Storage for RocksStorage {
 
     fn get_volume_since(&self, timestamp_nanos: u64) -> Result<u64, ThresholdError> {
         trace!("get_volume_since timestamp_nanos={}", timestamp_nanos);
-        let day_start = Self::day_start_nanos(timestamp_nanos);
+        let day_start = crate::foundation::day_start_nanos(timestamp_nanos);
         if let Some(total) = self.volume_from_index(day_start)? {
             debug!("volume_from_index hit day_start={} total={}", day_start, total);
             return Ok(total);
@@ -638,12 +722,12 @@ impl Storage for RocksStorage {
         // Cache the computed total for this day to speed up subsequent reads.
         let cf = self.cf_handle(CF_VOLUME)?;
         let key = Self::key_volume(day_start);
-        self.db.put_cf(cf, key, total.to_be_bytes()).map_err(|e| ThresholdError::Message(e.to_string()))?;
+        self.db.put_cf(cf, key, total.to_be_bytes()).map_err(|e| storage_err!("rocksdb", e))?;
         Ok(total)
     }
 
     fn health_check(&self) -> Result<(), ThresholdError> {
-        self.db.property_value("rocksdb.stats").map_err(|err| ThresholdError::Message(err.to_string()))?;
+        self.db.property_value("rocksdb.stats").map_err(|err| storage_err!("rocksdb", err))?;
         Ok(())
     }
 
@@ -656,11 +740,11 @@ impl Storage for RocksStorage {
     ) -> Result<bool, ThresholdError> {
         let key = Self::key_seen(sender_peer_id, session_id, seq_no);
         let cf = self.cf_handle(CF_SEEN)?;
-        let existing = self.db.get_cf(cf, &key).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let existing = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb", err))?;
         if existing.is_some() {
             return Ok(false);
         }
-        self.db.put_cf(cf, key, timestamp_nanos.to_be_bytes()).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        self.db.put_cf(cf, key, timestamp_nanos.to_be_bytes()).map_err(|err| storage_err!("rocksdb", err))?;
         debug!(
             "marked message seen sender_peer_id={} session_id={} seq_no={}",
             sender_peer_id,
@@ -677,16 +761,12 @@ impl Storage for RocksStorage {
         let cf = self.cf_handle(CF_SEEN)?;
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
         for item in iter {
-            let (key, value) = item.map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb", err))?;
             if !key.starts_with(prefix) {
                 break;
             }
             if value.len() != 8 {
-                warn!(
-                    "corrupted seen-message timestamp; skipping key={:?} value_len={}",
-                    key,
-                    value.len()
-                );
+                warn!("corrupted seen-message timestamp; skipping key={:?} value_len={}", key, value.len());
                 continue;
             }
             let timestamp: u64 = match value.as_ref().try_into() {
@@ -703,12 +783,9 @@ impl Storage for RocksStorage {
         }
 
         if deleted > 0 {
-            self.db.write(batch).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            self.db.write(batch).map_err(|err| storage_err!("rocksdb", err))?;
         }
-        debug!(
-            "cleanup_seen_messages complete older_than_nanos={} deleted={}",
-            older_than_nanos, deleted
-        );
+        debug!("cleanup_seen_messages complete older_than_nanos={} deleted={}", older_than_nanos, deleted);
         Ok(deleted)
     }
 
@@ -734,7 +811,7 @@ impl<'a> BatchTransaction for RocksBatch<'a> {
     }
 
     fn commit(self: Box<Self>) -> Result<(), ThresholdError> {
-        self.db.write(self.batch).map_err(|err| ThresholdError::Message(err.to_string()))
+        self.db.write(self.batch).map_err(|err| storage_err!("rocksdb", err))
     }
 
     fn rollback(self: Box<Self>) {

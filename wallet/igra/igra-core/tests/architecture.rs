@@ -181,7 +181,8 @@ fn domain_error_types_are_debug() {
 #[test]
 fn domain_model_types_are_clone() {
     fn assert_clone<T: Clone>() {}
-    assert_clone::<igra_core::domain::SigningEvent>();
+    assert_clone::<igra_core::domain::Event>();
+    assert_clone::<igra_core::domain::StoredEvent>();
     assert_clone::<igra_core::domain::StoredEventCrdt>();
     assert_clone::<igra_core::domain::GroupPolicy>();
 }

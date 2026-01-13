@@ -1,6 +1,6 @@
 //! CRDT-specific types used across the module.
 
-use crate::foundation::{PeerId, TransactionId};
+use crate::foundation::PeerId;
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a signature within a CRDT.
@@ -18,7 +18,11 @@ impl SignatureKey {
     }
 }
 
-/// A signature record stored in the CRDT G-Set.
+/// A signature record stored in the in-memory CRDT G-Set.
+///
+/// This type is optimized for CRDT merging and uses `Option<PeerId>` for protocol compatibility
+/// (older/partial broadcasts may omit the peer id). Persisted CRDT state uses
+/// `crate::domain::CrdtSignatureRecord`, which always requires a `signer_peer_id`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct SignatureRecord {
     pub input_index: u32,
@@ -28,12 +32,8 @@ pub struct SignatureRecord {
     pub timestamp_nanos: u64,
 }
 
-/// Completion record for LWW-Register (who submitted the transaction).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CompletionInfo {
-    pub tx_id: TransactionId,
-    pub submitter_peer_id: PeerId,
-    pub timestamp_nanos: u64,
-    pub blue_score: Option<u64>,
-}
-
+/// Completion info stored in the CRDT LWW-register.
+///
+/// This is intentionally the same schema as the persisted completion record so the value can be
+/// round-tripped without conversions.
+pub type CompletionInfo = crate::domain::model::StoredCompletionRecord;

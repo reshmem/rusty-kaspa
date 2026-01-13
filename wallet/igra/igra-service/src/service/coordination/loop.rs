@@ -2,24 +2,12 @@ use crate::service::coordination::crdt_handler::{
     handle_crdt_broadcast, handle_state_sync_request, handle_state_sync_response, run_anti_entropy_loop,
 };
 use crate::service::flow::ServiceFlow;
-use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{day_start_nanos, now_nanos, Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{Transport, TransportMessage};
 use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
-
-fn day_start_nanos(timestamp_nanos: u64) -> u64 {
-    const NANOS_PER_DAY: u64 = 24 * 60 * 60 * 1_000_000_000u64;
-    (timestamp_nanos / NANOS_PER_DAY) * NANOS_PER_DAY
-}
 
 pub async fn run_coordination_loop(
     app_config: Arc<igra_core::infrastructure::config::AppConfig>,
@@ -51,12 +39,7 @@ pub async fn run_coordination_loop(
         }
     }
 
-    let anti_entropy = tokio::spawn(run_anti_entropy_loop(
-        storage.clone(),
-        transport.clone(),
-        local_peer_id.clone(),
-        5,
-    ));
+    let anti_entropy = tokio::spawn(run_anti_entropy_loop(storage.clone(), transport.clone(), local_peer_id.clone(), 5));
     let _anti_entropy_guard = AbortOnDrop(anti_entropy);
 
     let gc_interval_secs = app_config.runtime.crdt_gc_interval_seconds.unwrap_or(600);

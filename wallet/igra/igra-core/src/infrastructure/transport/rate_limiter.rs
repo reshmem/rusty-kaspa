@@ -1,8 +1,10 @@
+use crate::foundation::constants::RATE_LIMIT_CLEANUP_INTERVAL_SECS;
+use crate::foundation::RATE_LIMITER_BUCKET_MAX_AGE_SECS;
+use log::{debug, trace};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use log::{debug, trace};
 
 /// Token bucket rate limiter implementation
 /// Allows burst traffic up to capacity, then enforces a steady rate
@@ -34,11 +36,7 @@ impl TokenBucket {
     /// Try to consume a token. Returns true if allowed, false if rate limited
     pub fn try_consume(&mut self) -> bool {
         self.refill();
-        trace!(
-            "rate limiter try_consume tokens={} capacity={}",
-            self.tokens,
-            self.capacity
-        );
+        trace!("rate limiter try_consume tokens={} capacity={}", self.tokens, self.capacity);
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
             trace!("rate limiter token consumed tokens_remaining={}", self.tokens);
@@ -132,12 +130,7 @@ impl RateLimiter {
         guard.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
         let after = guard.limiters.len();
         guard.last_cleanup = Instant::now();
-        debug!(
-            "rate limiter cleanup_old_entries before={} after={} removed={}",
-            before,
-            after,
-            before.saturating_sub(after)
-        );
+        debug!("rate limiter cleanup_old_entries before={} after={} removed={}", before, after, before.saturating_sub(after));
     }
 
     /// Get the number of tracked peers (for monitoring)
@@ -148,8 +141,8 @@ impl RateLimiter {
 
 impl RateLimiterState {
     fn maybe_cleanup(&mut self) {
-        const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-        const MAX_AGE: Duration = Duration::from_secs(15 * 60);
+        const CLEANUP_INTERVAL: Duration = Duration::from_secs(RATE_LIMIT_CLEANUP_INTERVAL_SECS);
+        const MAX_AGE: Duration = Duration::from_secs(RATE_LIMITER_BUCKET_MAX_AGE_SECS);
 
         let now = Instant::now();
         if now.duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
@@ -160,12 +153,7 @@ impl RateLimiterState {
         let before = self.limiters.len();
         self.limiters.retain(|_, bucket| bucket.last_refill > cutoff);
         let after = self.limiters.len();
-        debug!(
-            "rate limiter periodic cleanup before={} after={} removed={}",
-            before,
-            after,
-            before.saturating_sub(after)
-        );
+        debug!("rate limiter periodic cleanup before={} after={} removed={}", before, after, before.saturating_sub(after));
     }
 }
 
@@ -192,6 +180,7 @@ mod tests {
 
     #[test]
     fn test_token_bucket_refill() {
+        const REFILL_WAIT_MS: u64 = 150;
         let mut bucket = TokenBucket::new(2.0, 10.0); // 10 tokens/sec
 
         // Exhaust tokens
@@ -200,7 +189,7 @@ mod tests {
         assert!(!bucket.try_consume());
 
         // Wait for refill (100ms = 1 token at 10/sec rate)
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(REFILL_WAIT_MS));
 
         // Should have 1 token available
         assert!(bucket.try_consume());

@@ -22,4 +22,3 @@ pub use event_state::{merge_event_states, EventCrdt};
 pub use gset::GSet;
 pub use lww::LWWRegister;
 pub use types::{CompletionInfo, SignatureKey, SignatureRecord};
-

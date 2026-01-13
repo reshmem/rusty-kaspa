@@ -59,6 +59,9 @@ tokio-stream.workspace = true
 default = ["hyperlane", "layerzero"]
 hyperlane = ["dep:hyperlane-core", "dep:uuid"]
 layerzero = []
+test-utils = []
+musig2 = []
+mpc = []
 
 [[bin]]
 name = "devnet-keygen"

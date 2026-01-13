@@ -37,14 +37,16 @@ fn build_rpc(amount: u64, address: &Address) -> TestRpc {
 }
 
 fn base_config(address: &str) -> PsktBuildConfig {
+    const OUTPUT_AMOUNT: u64 = 100_000_000;
+    const FEE: u64 = 10_000;
     PsktBuildConfig {
         node_rpc_url: String::new(),
         source_addresses: vec![address.to_string()],
-        redeem_script_hex: "00".to_string(),
+        redeem_script_hex: "51".to_string(),
         sig_op_count: 2,
-        outputs: vec![PsktOutput { address: address.to_string(), amount_sompi: 1000 }],
+        outputs: vec![PsktOutput { address: address.to_string(), amount_sompi: OUTPUT_AMOUNT }],
         fee_payment_mode: FeePaymentMode::RecipientPays,
-        fee_sompi: Some(100),
+        fee_sompi: Some(FEE),
         change_address: Some(address.to_string()),
     }
 }
@@ -53,37 +55,37 @@ fn base_config(address: &str) -> PsktBuildConfig {
 async fn test_pskt_builder_when_fee_recipient_pays_then_first_output_reduced() {
     let address = "kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m";
     let addr: Address = address.try_into().expect("valid address");
-    let rpc = build_rpc(2000, &addr);
+    let rpc = build_rpc(250_000_000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::RecipientPays;
     let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
     let pskt = build.pskt;
-    assert_eq!(pskt.outputs[0].amount, 900);
-    assert_eq!(pskt.outputs[1].amount, 1100);
+    assert_eq!(pskt.outputs[0].amount, 99_990_000);
+    assert_eq!(pskt.outputs[1].amount, 150_000_000);
 }
 
 #[tokio::test]
 async fn test_pskt_builder_when_fee_signers_pay_then_change_reduced() {
     let address = "kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m";
     let addr: Address = address.try_into().expect("valid address");
-    let rpc = build_rpc(2000, &addr);
+    let rpc = build_rpc(250_000_000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::SignersPay;
     let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
     let pskt = build.pskt;
-    assert_eq!(pskt.outputs[0].amount, 1000);
-    assert_eq!(pskt.outputs[1].amount, 900);
+    assert_eq!(pskt.outputs[0].amount, 100_000_000);
+    assert_eq!(pskt.outputs[1].amount, 149_990_000);
 }
 
 #[tokio::test]
 async fn test_pskt_builder_when_fee_split_then_outputs_adjusted() {
     let address = "kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m";
     let addr: Address = address.try_into().expect("valid address");
-    let rpc = build_rpc(2000, &addr);
+    let rpc = build_rpc(250_000_000, &addr);
     let mut config = base_config(address);
     config.fee_payment_mode = FeePaymentMode::Split { recipient_parts: 1, signer_parts: 1 };
     let (_selection, build) = build_pskt_with_client(&rpc, &config).await.expect("pskt");
     let pskt = build.pskt;
-    assert_eq!(pskt.outputs[0].amount, 950);
-    assert_eq!(pskt.outputs[1].amount, 1000);
+    assert_eq!(pskt.outputs[0].amount, 99_995_000);
+    assert_eq!(pskt.outputs[1].amount, 149_995_000);
 }

@@ -57,7 +57,9 @@ impl RpcFailure {
             RpcFailure::Http { body, .. } | RpcFailure::InvalidJson { body, .. } => {
                 body.contains("event already processed") || body.contains("event replayed") || body.contains("EventReplayed")
             }
-            RpcFailure::Transport(msg) => msg.contains("event already processed") || msg.contains("event replayed") || msg.contains("EventReplayed"),
+            RpcFailure::Transport(msg) => {
+                msg.contains("event already processed") || msg.contains("event replayed") || msg.contains("EventReplayed")
+            }
         }
     }
 }
@@ -194,12 +196,7 @@ async fn submit_mailbox_process(
         }
     });
 
-    let response = client
-        .post(rpc_url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|err| RpcFailure::Transport(err.to_string()))?;
+    let response = client.post(rpc_url).json(&payload).send().await.map_err(|err| RpcFailure::Transport(err.to_string()))?;
 
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -335,13 +332,7 @@ async fn main() -> Result<(), String> {
                     nonce = nonce.saturating_add(1);
                     sleep(Duration::from_secs(interval_secs)).await;
                 } else {
-                    eprintln!(
-                        "[fake-hyperlane] submit failed rpc={} nonce={} mode={} {}",
-                        rpc_url,
-                        nonce,
-                        mode,
-                        err.summary()
-                    );
+                    eprintln!("[fake-hyperlane] submit failed rpc={} nonce={} mode={} {}", rpc_url, nonce, mode, err.summary());
                     sleep(Duration::from_secs(retry_delay_secs.max(1))).await;
                 }
             }

@@ -2,10 +2,10 @@ use super::traits::{
     EventStateBroadcast, MessageEnvelope, SignatureSigner, SignatureVerifier, StateSyncRequest, StateSyncResponse, Transport,
     TransportMessage, TransportSubscription,
 };
-use crate::foundation::util::time;
 use crate::foundation::Hash32;
-use crate::foundation::ThresholdError;
 use crate::foundation::SessionId;
+use crate::foundation::ThresholdError;
+use crate::foundation::GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::iroh::{config::IrohConfig, encoding, subscription};
 use crate::infrastructure::transport::RateLimiter;
@@ -13,18 +13,20 @@ use async_trait::async_trait;
 use iroh::EndpointId;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
+use log::{debug, info, trace, warn};
 use std::str::FromStr;
 use std::sync::Arc;
-use log::{debug, info, trace, warn};
 
 // Maximum message size: 10 MB (allows for PSKT with many inputs)
 // PSKT blob size: ~1KB base + ~200 bytes per input × 100 inputs = ~21KB
 // 10 MB provides comfortable headroom while preventing DoS
-use crate::foundation::constants::MAX_MESSAGE_SIZE_BYTES;
+use crate::foundation::constants::{
+    GOSSIP_PUBLISH_RETRIES, GOSSIP_RETRY_DELAY_MS, MAX_BOOTSTRAP_PEERS, MAX_GOSSIP_TOPIC_LENGTH, MAX_MESSAGE_SIZE_BYTES,
+    RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE,
+};
 const MAX_MESSAGE_SIZE: usize = MAX_MESSAGE_SIZE_BYTES;
-const PUBLISH_RETRY_ATTEMPTS: usize = 3;
-const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
-const PUBLISH_INFO_REPORT_INTERVAL_NANOS: u64 = 30 * 1_000_000_000;
+const PUBLISH_RETRY_ATTEMPTS: usize = GOSSIP_PUBLISH_RETRIES;
+const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(GOSSIP_RETRY_DELAY_MS);
 
 pub struct IrohTransport {
     gossip: Gossip,
@@ -48,6 +50,13 @@ impl IrohTransport {
         storage: Arc<dyn Storage>,
         config: IrohConfig,
     ) -> Result<Self, ThresholdError> {
+        if config.bootstrap_nodes.len() > MAX_BOOTSTRAP_PEERS {
+            return Err(ThresholdError::ConfigError(format!(
+                "iroh.bootstrap has too many peers ({} > max {})",
+                config.bootstrap_nodes.len(),
+                MAX_BOOTSTRAP_PEERS
+            )));
+        }
         info!(
             "creating iroh transport network_id={} group_id={} bootstrap_nodes={}",
             config.network_id,
@@ -71,7 +80,7 @@ impl IrohTransport {
         }
 
         // Create rate limiter: 100 messages burst, 10 messages/sec sustained per peer
-        let rate_limiter = Arc::new(RateLimiter::new(100.0, 10.0));
+        let rate_limiter = Arc::new(RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE));
 
         Ok(Self {
             gossip,
@@ -96,24 +105,15 @@ impl IrohTransport {
         *hasher.finalize().as_bytes()
     }
 
-    fn now_nanos() -> u64 {
-        time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
-    }
-
     fn maybe_report_publish_stats(&self, now_nanos: u64) {
         let last = self.publish_last_report_nanos.load(std::sync::atomic::Ordering::Relaxed);
-        if last != 0 && now_nanos.saturating_sub(last) < PUBLISH_INFO_REPORT_INTERVAL_NANOS {
+        if last != 0 && now_nanos.saturating_sub(last) < GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS {
             return;
         }
 
         if self
             .publish_last_report_nanos
-            .compare_exchange(
-                last,
-                now_nanos,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Relaxed,
-            )
+            .compare_exchange(last, now_nanos, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed)
             .is_err()
         {
             return;
@@ -129,7 +129,7 @@ impl IrohTransport {
             "gossip publish stats ok_msgs={} ok_bytes={} interval_secs={} network_id={} group_id={}",
             ok_msgs,
             ok_bytes,
-            PUBLISH_INFO_REPORT_INTERVAL_NANOS / 1_000_000_000,
+            GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS / crate::foundation::NANOS_PER_SECOND,
             self.config.network_id,
             hex::encode(self.config.group_id)
         );
@@ -142,6 +142,13 @@ impl IrohTransport {
         }
 
         let topic_id = TopicId::from(topic);
+        if topic_id.as_bytes().len() > MAX_GOSSIP_TOPIC_LENGTH {
+            return Err(ThresholdError::ConfigError(format!(
+                "gossip topic too long ({} > max {})",
+                topic_id.as_bytes().len(),
+                MAX_GOSSIP_TOPIC_LENGTH
+            )));
+        }
         let mut last_err: Option<String> = None;
         debug!(
             "publishing gossip message topic={} byte_len={} bootstrap_peers={}",
@@ -150,12 +157,7 @@ impl IrohTransport {
             self.bootstrap.len()
         );
         for attempt in 0..PUBLISH_RETRY_ATTEMPTS {
-            trace!(
-                "publish attempt attempt={} topic={} byte_len={}",
-                attempt + 1,
-                hex::encode(topic_id.as_bytes()),
-                bytes.len()
-            );
+            trace!("publish attempt attempt={} topic={} byte_len={}", attempt + 1, hex::encode(topic_id.as_bytes()), bytes.len());
             let mut topic = match self.gossip.subscribe(topic_id, self.bootstrap.clone()).await {
                 Ok(topic) => topic,
                 Err(err) => {
@@ -195,9 +197,8 @@ impl IrohTransport {
                     }
 
                     self.publish_ok_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    self.publish_ok_bytes
-                        .fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                    self.maybe_report_publish_stats(Self::now_nanos());
+                    self.publish_ok_bytes.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    self.maybe_report_publish_stats(crate::foundation::now_nanos());
                     return Ok(());
                 }
                 Err(err) => {
@@ -226,15 +227,15 @@ impl Transport for IrohTransport {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
         let stream_id = SessionId::from(topic);
         debug!(
-            "publishing CRDT state event_hash={} tx_template_hash={} sig_count={} completed={}",
-            hex::encode(broadcast.event_hash),
+            "publishing CRDT state event_id={} tx_template_hash={} sig_count={} completed={}",
+            hex::encode(broadcast.event_id),
             hex::encode(broadcast.tx_template_hash),
             broadcast.state.signatures.len(),
             broadcast.state.completion.is_some()
         );
         let payload = TransportMessage::EventStateBroadcast(broadcast);
         let payload_hash = encoding::payload_hash(&payload)?;
-        let timestamp_nanos = Self::now_nanos();
+        let timestamp_nanos = crate::foundation::now_nanos();
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
@@ -252,14 +253,10 @@ impl Transport for IrohTransport {
     async fn publish_state_sync_request(&self, request: StateSyncRequest) -> Result<(), ThresholdError> {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
         let stream_id = SessionId::from(topic);
-        debug!(
-            "publishing CRDT sync request event_count={} requester_peer_id={}",
-            request.event_hashes.len(),
-            request.requester_peer_id
-        );
+        debug!("publishing CRDT sync request event_count={} requester_peer_id={}", request.event_ids.len(), request.requester_peer_id);
         let payload = TransportMessage::StateSyncRequest(request);
         let payload_hash = encoding::payload_hash(&payload)?;
-        let timestamp_nanos = Self::now_nanos();
+        let timestamp_nanos = crate::foundation::now_nanos();
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
@@ -280,7 +277,7 @@ impl Transport for IrohTransport {
         debug!("publishing CRDT sync response state_count={}", response.states.len());
         let payload = TransportMessage::StateSyncResponse(response);
         let payload_hash = encoding::payload_hash(&payload)?;
-        let timestamp_nanos = Self::now_nanos();
+        let timestamp_nanos = crate::foundation::now_nanos();
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
@@ -298,11 +295,7 @@ impl Transport for IrohTransport {
     async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
-        info!(
-            "subscribing to group gossip topic={} bootstrap_peers={}",
-            hex::encode(topic),
-            self.bootstrap.len()
-        );
+        info!("subscribing to group gossip topic={} bootstrap_peers={}", hex::encode(topic), self.bootstrap.len());
         let topic =
             self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
         let (sender, receiver) = topic.split();

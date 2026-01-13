@@ -1,6 +1,6 @@
 use crate::domain::signing::results::SigningResult;
 use crate::domain::signing::{SignerBackend, SigningBackendKind};
-use crate::foundation::RequestId;
+use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
 
 pub struct MuSig2Signer;
@@ -22,7 +22,7 @@ impl SignerBackend for MuSig2Signer {
         SigningBackendKind::MuSig2
     }
 
-    fn sign(&self, _kpsbt_blob: &[u8], _request_id: &RequestId) -> Result<SigningResult, ThresholdError> {
-        Err(ThresholdError::Message("MuSig2 backend not implemented".to_string()))
+    fn sign(&self, _kpsbt_blob: &[u8], _event_id: &Hash32) -> Result<SigningResult, ThresholdError> {
+        Err(ThresholdError::Unimplemented("MuSig2 signing backend not yet implemented. Use signing_backend='threshold'.".to_string()))
     }
 }

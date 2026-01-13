@@ -1,62 +1,65 @@
 #![allow(dead_code)]
 
-use crate::fixtures::{TEST_DERIVATION_PATH, TEST_DESTINATION_ADDRESS, TEST_EVENT_ID};
-use igra_core::domain::{EventSource, SigningEvent};
+use crate::fixtures::{TEST_DESTINATION_ADDRESS, TEST_EXTERNAL_ID_RAW};
+use igra_core::domain::{Event, EventAuditData, SourceType, StoredEvent};
+use kaspa_addresses::Address;
+use kaspa_txscript::pay_to_address_script;
 use std::collections::BTreeMap;
 
-pub struct SigningEventBuilder {
-    event_id: String,
-    event_source: EventSource,
-    derivation_path: String,
-    derivation_index: Option<u32>,
-    destination_address: String,
+pub struct StoredEventBuilder {
+    external_id_raw: String,
+    source: SourceType,
+    destination_raw: String,
     amount_sompi: u64,
-    metadata: BTreeMap<String, String>,
-    timestamp_nanos: u64,
+    received_at_nanos: u64,
+    source_data: BTreeMap<String, String>,
 }
 
-impl Default for SigningEventBuilder {
+impl Default for StoredEventBuilder {
     fn default() -> Self {
         Self {
-            event_id: TEST_EVENT_ID.to_string(),
-            event_source: EventSource::Api { issuer: "tests".to_string() },
-            derivation_path: TEST_DERIVATION_PATH.to_string(),
-            derivation_index: Some(0),
-            destination_address: TEST_DESTINATION_ADDRESS.to_string(),
+            external_id_raw: TEST_EXTERNAL_ID_RAW.to_string(),
+            source: SourceType::Api,
+            destination_raw: TEST_DESTINATION_ADDRESS.to_string(),
             amount_sompi: 123,
-            metadata: BTreeMap::new(),
-            timestamp_nanos: 1,
+            received_at_nanos: 1,
+            source_data: BTreeMap::new(),
         }
     }
 }
 
-impl SigningEventBuilder {
+impl StoredEventBuilder {
     pub fn amount_sompi(mut self, amount_sompi: u64) -> Self {
         self.amount_sompi = amount_sompi;
         self
     }
 
     pub fn destination_address(mut self, destination_address: impl Into<String>) -> Self {
-        self.destination_address = destination_address.into();
+        self.destination_raw = destination_address.into();
         self
     }
 
-    pub fn event_source(mut self, event_source: EventSource) -> Self {
-        self.event_source = event_source;
+    pub fn source(mut self, source: SourceType) -> Self {
+        self.source = source;
         self
     }
 
-    pub fn build(self) -> SigningEvent {
-        SigningEvent {
-            event_id: self.event_id,
-            event_source: self.event_source,
-            derivation_path: self.derivation_path,
-            derivation_index: self.derivation_index,
-            destination_address: self.destination_address,
-            amount_sompi: self.amount_sompi,
-            metadata: self.metadata,
-            timestamp_nanos: self.timestamp_nanos,
-            signature: None,
-        }
+    pub fn build(self) -> StoredEvent {
+        let raw = self.destination_raw.trim();
+        let address = Address::try_from(raw).expect("test destination address");
+        let destination = pay_to_address_script(&address);
+        let external_id = hex::decode(self.external_id_raw.trim_start_matches("0x"))
+            .expect("test external id")
+            .as_slice()
+            .try_into()
+            .expect("external id is 32 bytes");
+
+        let event = Event { external_id, source: self.source, destination, amount_sompi: self.amount_sompi };
+        let audit = EventAuditData {
+            external_id_raw: self.external_id_raw,
+            destination_raw: self.destination_raw,
+            source_data: self.source_data,
+        };
+        StoredEvent { event, received_at_nanos: self.received_at_nanos, audit, proof: None }
     }
 }

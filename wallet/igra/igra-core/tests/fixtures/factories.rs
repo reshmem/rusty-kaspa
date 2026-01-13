@@ -1,20 +1,29 @@
 #![allow(dead_code)]
 
-use crate::fixtures::{TEST_COORDINATOR_PEER_ID, TEST_DERIVATION_PATH, TEST_DESTINATION_ADDRESS, TEST_EVENT_ID};
-use igra_core::domain::{EventSource, GroupConfig, GroupMetadata, GroupPolicy, SigningEvent};
+use crate::fixtures::{TEST_COORDINATOR_PEER_ID, TEST_DESTINATION_ADDRESS, TEST_EXTERNAL_ID_RAW};
+use igra_core::domain::{Event, EventAuditData, GroupConfig, GroupMetadata, GroupPolicy, SourceType, StoredEvent};
+use kaspa_addresses::Address;
+use kaspa_txscript::pay_to_address_script;
 use std::collections::BTreeMap;
 
-pub fn signing_event() -> SigningEvent {
-    SigningEvent {
-        event_id: TEST_EVENT_ID.to_string(),
-        event_source: EventSource::Api { issuer: "tests".to_string() },
-        derivation_path: TEST_DERIVATION_PATH.to_string(),
-        derivation_index: Some(0),
-        destination_address: TEST_DESTINATION_ADDRESS.to_string(),
-        amount_sompi: 123,
-        metadata: BTreeMap::new(),
-        timestamp_nanos: 1,
-        signature: None,
+pub fn stored_event() -> StoredEvent {
+    let address = Address::try_from(TEST_DESTINATION_ADDRESS).expect("test destination");
+    let destination = pay_to_address_script(&address);
+    let external_id: [u8; 32] = hex::decode(TEST_EXTERNAL_ID_RAW.trim_start_matches("0x"))
+        .expect("test external id")
+        .as_slice()
+        .try_into()
+        .expect("external id is 32 bytes");
+
+    StoredEvent {
+        event: Event { external_id, source: SourceType::Api, destination, amount_sompi: 123 },
+        received_at_nanos: 1,
+        audit: EventAuditData {
+            external_id_raw: TEST_EXTERNAL_ID_RAW.to_string(),
+            destination_raw: TEST_DESTINATION_ADDRESS.to_string(),
+            source_data: BTreeMap::new(),
+        },
+        proof: None,
     }
 }
 

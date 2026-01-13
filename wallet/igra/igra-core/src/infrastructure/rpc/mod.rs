@@ -91,7 +91,7 @@ pub mod grpc;
 pub mod kaspa_integration;
 pub mod retry;
 
-pub use circuit_breaker::CircuitBreaker;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use grpc::GrpcNodeRpc;
 pub use kaspa_integration::*;
 pub use retry::retry;

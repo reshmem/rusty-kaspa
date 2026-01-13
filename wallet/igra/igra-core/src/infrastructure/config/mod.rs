@@ -19,7 +19,7 @@ pub fn load_app_config() -> Result<AppConfig, ThresholdError> {
     Ok(config)
 }
 
-pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: &str) -> Result<String, ThresholdError> {
+pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: Option<&str>) -> Result<String, ThresholdError> {
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(Secret::from);
     let inputs = HdInputs { key_data: &key_data, xpubs: &hd.xpubs, derivation_path, payment_secret: payment_secret.as_ref() };

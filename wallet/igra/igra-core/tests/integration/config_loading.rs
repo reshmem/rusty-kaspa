@@ -12,7 +12,7 @@ fn config_root() -> PathBuf {
 
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock")
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|err| err.into_inner())
 }
 
 fn load_from_profile(config_path: &Path, profile: &str) -> igra_core::infrastructure::config::AppConfig {

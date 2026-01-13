@@ -1,11 +1,9 @@
-use igra_core::foundation::ThresholdError;
 use igra_core::domain::pskt::multisig::ordered_pubkeys_from_redeem_script;
+use igra_core::foundation::ThresholdError;
 use kaspa_consensus_core::config::params::{DEVNET_PARAMS, MAINNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
 use secp256k1::PublicKey;
 
-pub fn derive_ordered_pubkeys(
-    config: &igra_core::infrastructure::config::ServiceConfig,
-) -> Result<Vec<PublicKey>, ThresholdError> {
+pub fn derive_ordered_pubkeys(config: &igra_core::infrastructure::config::ServiceConfig) -> Result<Vec<PublicKey>, ThresholdError> {
     if config.pskt.redeem_script_hex.trim().is_empty() {
         return Err(ThresholdError::ConfigError("missing pskt.redeem_script_hex".to_string()));
     }

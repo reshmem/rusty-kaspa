@@ -51,10 +51,7 @@ pub fn init_logger(log_dir: Option<&str>, filters: &str) {
     let use_ansi = std::io::stderr().is_terminal();
     let console_pattern = if use_ansi { LOG_LINE_PATTERN_COLORED } else { LOG_LINE_PATTERN };
 
-    let console = ConsoleAppender::builder()
-        .target(Target::Stderr)
-        .encoder(Box::new(PatternEncoder::new(console_pattern)))
-        .build();
+    let console = ConsoleAppender::builder().target(Target::Stderr).encoder(Box::new(PatternEncoder::new(console_pattern))).build();
 
     let mut config_builder = Config::builder().appender(Appender::builder().build(CONSOLE_APPENDER, Box::new(console)));
 
@@ -65,17 +62,28 @@ pub fn init_logger(log_dir: Option<&str>, filters: &str) {
         let log_path = PathBuf::from(dir).join(LOG_FILE_NAME);
         let archive_pattern = PathBuf::from(dir).join(format!("{LOG_FILE_NAME}.{{}}.gz"));
 
-        let roller = FixedWindowRoller::builder()
-            .base(1)
-            .build(archive_pattern.to_str().unwrap_or("igra.log.{}.gz"), LOG_FILE_MAX_ROLLS)
-            .unwrap();
+        let archive_pattern = archive_pattern.to_str().unwrap_or("igra.log.{}.gz");
+        let roller = match FixedWindowRoller::builder().base(1).build(archive_pattern, LOG_FILE_MAX_ROLLS) {
+            Ok(roller) => roller,
+            Err(err) => {
+                eprintln!("[igra] failed to initialize log file rotation ({}): {}", dir, err);
+                // Keep console logging only.
+                return;
+            }
+        };
         let trigger = SizeTrigger::new(LOG_FILE_MAX_SIZE);
         let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
 
-        let file_appender = RollingFileAppender::builder()
+        let file_appender = match RollingFileAppender::builder()
             .encoder(Box::new(PatternEncoder::new(LOG_LINE_PATTERN)))
             .build(log_path, Box::new(policy))
-            .unwrap();
+        {
+            Ok(appender) => appender,
+            Err(err) => {
+                eprintln!("[igra] failed to initialize log file appender ({}): {}", dir, err);
+                return;
+            }
+        };
 
         config_builder = config_builder.appender(Appender::builder().build(LOG_FILE_APPENDER, Box::new(file_appender)));
         root_appenders.push(LOG_FILE_APPENDER);
@@ -83,17 +91,27 @@ pub fn init_logger(log_dir: Option<&str>, filters: &str) {
         let err_log_path = PathBuf::from(dir).join(ERR_LOG_FILE_NAME);
         let err_archive_pattern = PathBuf::from(dir).join(format!("{ERR_LOG_FILE_NAME}.{{}}.gz"));
 
-        let err_roller = FixedWindowRoller::builder()
-            .base(1)
-            .build(err_archive_pattern.to_str().unwrap_or("igra_err.log.{}.gz"), LOG_FILE_MAX_ROLLS)
-            .unwrap();
+        let err_archive_pattern = err_archive_pattern.to_str().unwrap_or("igra_err.log.{}.gz");
+        let err_roller = match FixedWindowRoller::builder().base(1).build(err_archive_pattern, LOG_FILE_MAX_ROLLS) {
+            Ok(roller) => roller,
+            Err(err) => {
+                eprintln!("[igra] failed to initialize err log file rotation ({}): {}", dir, err);
+                return;
+            }
+        };
         let err_trigger = SizeTrigger::new(LOG_FILE_MAX_SIZE);
         let err_policy = CompoundPolicy::new(Box::new(err_trigger), Box::new(err_roller));
 
-        let err_file_appender = RollingFileAppender::builder()
+        let err_file_appender = match RollingFileAppender::builder()
             .encoder(Box::new(PatternEncoder::new(LOG_LINE_PATTERN)))
             .build(err_log_path, Box::new(err_policy))
-            .unwrap();
+        {
+            Ok(appender) => appender,
+            Err(err) => {
+                eprintln!("[igra] failed to initialize err log file appender ({}): {}", dir, err);
+                return;
+            }
+        };
 
         config_builder = config_builder.appender(
             Appender::builder()
@@ -108,27 +126,27 @@ pub fn init_logger(log_dir: Option<&str>, filters: &str) {
     // Whitelist our crates at the requested app level (unless user explicitly set them)
     for crate_name in WHITELISTED_CRATES {
         if !module_levels.iter().any(|(m, _)| m == *crate_name) {
-            config_builder = config_builder.logger(
-                Logger::builder()
-                    .appenders(appender_names.clone())
-                    .additive(false)
-                    .build(*crate_name, app_level),
-            );
+            config_builder = config_builder
+                .logger(Logger::builder().appenders(appender_names.clone()).additive(false).build(*crate_name, app_level));
         }
     }
 
     // Apply user-specified module levels (these override whitelist)
     for (module, level) in &module_levels {
-        config_builder = config_builder.logger(
-            Logger::builder()
-                .appenders(appender_names.clone())
-                .additive(false)
-                .build(module, *level),
-        );
+        config_builder =
+            config_builder.logger(Logger::builder().appenders(appender_names.clone()).additive(false).build(module, *level));
     }
 
-    let config = config_builder.build(Root::builder().appenders(root_appenders).build(root_level)).unwrap();
-    let _ = log4rs::init_config(config);
+    let config = match config_builder.build(Root::builder().appenders(root_appenders).build(root_level)) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("[igra] failed to build logging config: {}", err);
+            return;
+        }
+    };
+    if let Err(err) = log4rs::init_config(config) {
+        eprintln!("[igra] failed to install logging config: {}", err);
+    }
 }
 
 fn parse_app_level(filters: &str) -> LevelFilter {

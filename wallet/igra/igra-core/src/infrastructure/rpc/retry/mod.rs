@@ -1,8 +1,8 @@
 use crate::foundation::ThresholdError;
+use log::debug;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::sleep;
-use log::debug;
 
 /// Retry an async operation with fixed delay/backoff.
 pub async fn retry<F, Fut, T>(mut attempts: usize, delay: Duration, mut op: F) -> Result<T, ThresholdError>
@@ -32,5 +32,7 @@ where
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| ThresholdError::Message("retry exhausted".to_string())))
+    Err(last_err.unwrap_or_else(|| {
+        ThresholdError::Message(format!("retry exhausted after {} attempts", initial_attempts))
+    }))
 }

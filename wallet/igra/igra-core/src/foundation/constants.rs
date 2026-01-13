@@ -8,6 +8,9 @@ pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
 /// Used for volume limit calculations aligned to UTC days.
 pub const NANOS_PER_DAY: u64 = 24 * 60 * 60 * NANOS_PER_SECOND;
 
+/// Environment variable used to override wall-clock time for deterministic tests.
+pub const TEST_NOW_NANOS_ENV_VAR: &str = "KASPA_IGRA_TEST_NOW_NANOS";
+
 /// Minimum session timeout in nanoseconds (10 seconds).
 ///
 /// Sessions shorter than this are rejected to prevent timing attacks
@@ -25,14 +28,33 @@ pub const DEFAULT_SESSION_TIMEOUT_NS: u64 = 5 * 60 * NANOS_PER_SECOND;
 /// Maximum message size for gossip transport (10 MB).
 pub const MAX_MESSAGE_SIZE_BYTES: usize = 10 * 1024 * 1024;
 
+/// Max gRPC message size for kaspad RPC client, in bytes.
+///
+/// This is passed as the `max_message_size`/`max_decoding_message_size` argument to `kaspa_grpc_client::GrpcClient`.
+pub const GRPC_MAX_MESSAGE_SIZE_BYTES: u64 = 500_000;
+
 /// Maximum number of UTXOs/inputs in a single PSKT.
 pub const MAX_PSKT_INPUTS: usize = 1000;
 
 /// Maximum number of outputs in a single PSKT.
 pub const MAX_PSKT_OUTPUTS: usize = 1000;
 
-/// Maximum size of event metadata in bytes (10 KB).
-pub const MAX_EVENT_METADATA_SIZE: usize = 10 * 1024;
+/// Maximum size of event metadata in bytes (16 KiB).
+///
+/// This caps untrusted `metadata` / `source_data` maps to prevent log/DB amplification.
+pub const MAX_EVENT_METADATA_SIZE: usize = 16 * 1024;
+
+/// Maximum length of externally-provided identifiers before canonicalization.
+pub const MAX_EXTERNAL_ID_RAW_LENGTH: usize = 128;
+
+/// Maximum number of key/value pairs allowed in event metadata.
+pub const MAX_EVENT_METADATA_KEYS: usize = 64;
+
+/// Maximum length (bytes) of a single metadata key.
+pub const MAX_EVENT_METADATA_KEY_LENGTH: usize = 64;
+
+/// Maximum length (bytes) of a single metadata value.
+pub const MAX_EVENT_METADATA_VALUE_LENGTH: usize = 2048;
 
 /// Maximum length of event ID string.
 pub const MAX_EVENT_ID_LENGTH: usize = 256;
@@ -93,6 +115,54 @@ pub const MAX_THRESHOLD_N: u16 = 100;
 
 /// Minimum threshold M (required signatures).
 pub const MIN_THRESHOLD_M: u16 = 1;
+
+/// Circuit breaker base backoff duration (seconds).
+pub const CIRCUIT_BREAKER_BASE_BACKOFF_SECS: u64 = 1;
+
+/// How often to emit aggregated gossip publish stats (nanos).
+pub const GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS: u64 = 30 * NANOS_PER_SECOND;
+
+/// How long to retain "seen message" entries for replay protection (nanos).
+pub const SEEN_MESSAGE_TTL_NANOS: u64 = NANOS_PER_DAY;
+
+/// Run seen-message cleanup every N accepted messages.
+pub const SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES: u64 = 500;
+
+/// Max age of per-peer rate limiter buckets (seconds).
+pub const RATE_LIMITER_BUCKET_MAX_AGE_SECS: u64 = 15 * 60;
+
+/// API/RPC rate limiter cleanup interval (seconds).
+pub const RPC_RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 60;
+
+/// API/RPC rate limiter entry TTL (seconds).
+pub const RPC_RATE_LIMIT_ENTRY_TTL_SECS: u64 = 15 * 60;
+
+/// API/RPC fixed-window size for per-IP rate limiting (seconds).
+pub const RPC_RATE_LIMIT_WINDOW_SECS: u64 = 1;
+
+/// Default kaspad gRPC URL (devnet/staging convenience).
+pub const DEFAULT_NODE_RPC_URL: &str = "grpc://127.0.0.1:16110";
+
+/// Default JSON-RPC listen address for igra-service.
+pub const DEFAULT_RPC_ADDR: &str = "127.0.0.1:8088";
+
+/// Default hyperlane polling interval (seconds).
+pub const DEFAULT_POLL_SECS: u64 = 5;
+
+/// Default PSKT sig-op count for standard multisig redeem scripts.
+pub const DEFAULT_SIG_OP_COUNT: u8 = 2;
+
+/// Default session timeout (seconds).
+pub const DEFAULT_SESSION_TIMEOUT_SECS: u64 = 60;
+
+/// Default session expiry (seconds).
+pub const DEFAULT_SESSION_EXPIRY_SECS: u64 = 600;
+
+/// Default CRDT GC interval (seconds).
+pub const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
+
+/// Default CRDT completed-state retention TTL (seconds).
+pub const DEFAULT_CRDT_GC_TTL_SECS: u64 = 24 * 60 * 60;
 
 #[cfg(test)]
 pub mod test {

@@ -1,4 +1,4 @@
-use igra_core::domain::SigningEvent;
+use igra_core::domain::StoredEvent;
 use igra_core::foundation::{Hash32, ThresholdError};
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
@@ -7,15 +7,15 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 struct AuditReport {
-    event_hash_hex: String,
-    event: Option<SigningEvent>,
+    event_id_hex: String,
+    event: Option<StoredEvent>,
     crdts: Vec<AuditCrdtEntry>,
 }
 
 #[derive(Serialize)]
 struct AuditCrdtEntry {
     tx_template_hash_hex: String,
-    has_signing_event: bool,
+    has_signing_material: bool,
     has_kpsbt_blob: bool,
     signature_count: usize,
     signatures: Vec<AuditSignature>,
@@ -41,25 +41,25 @@ struct AuditCompletion {
     blue_score: Option<u64>,
 }
 
-pub fn dump_audit_trail(event_hash_hex: &str, storage: &RocksStorage) -> Result<(), ThresholdError> {
-    info!("Audit mode: dumping CRDT trail for {}", event_hash_hex);
-    let event_hash = parse_hash32_hex(event_hash_hex)?;
-    let report = build_audit_report(storage, &event_hash)?;
+pub fn dump_audit_trail(event_id_hex: &str, storage: &RocksStorage) -> Result<(), ThresholdError> {
+    info!("Audit mode: dumping CRDT trail for {}", event_id_hex);
+    let event_id = parse_hash32_hex(event_id_hex)?;
+    let report = build_audit_report(storage, &event_id)?;
     let json = serde_json::to_string_pretty(&report)?;
     println!("{}", json);
     Ok(())
 }
 
-fn build_audit_report(storage: &RocksStorage, event_hash: &Hash32) -> Result<AuditReport, ThresholdError> {
-    let event = storage.get_event(event_hash)?;
-    let mut crdts = storage.list_event_crdts_for_event(event_hash)?;
+fn build_audit_report(storage: &RocksStorage, event_id: &Hash32) -> Result<AuditReport, ThresholdError> {
+    let event = storage.get_event(event_id)?;
+    let mut crdts = storage.list_event_crdts_for_event(event_id)?;
     crdts.sort_by(|a, b| a.tx_template_hash.cmp(&b.tx_template_hash));
 
     let crdts = crdts
         .into_iter()
         .map(|state| AuditCrdtEntry {
             tx_template_hash_hex: hex::encode(state.tx_template_hash),
-            has_signing_event: state.signing_event.is_some(),
+            has_signing_material: state.signing_material.is_some(),
             has_kpsbt_blob: state.kpsbt_blob.is_some(),
             signature_count: state.signatures.len(),
             signatures: state
@@ -84,7 +84,7 @@ fn build_audit_report(storage: &RocksStorage, event_hash: &Hash32) -> Result<Aud
         })
         .collect();
 
-    Ok(AuditReport { event_hash_hex: hex::encode(event_hash), event, crdts })
+    Ok(AuditReport { event_id_hex: hex::encode(event_id), event, crdts })
 }
 
 fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
@@ -96,4 +96,3 @@ fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
         .map_err(|_| ThresholdError::Message(format!("expected 32-byte hex value, got {} bytes", bytes.len())))?;
     Ok(hash)
 }
-

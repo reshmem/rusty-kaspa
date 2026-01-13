@@ -121,4 +121,3 @@ fn merge_idempotent_for_signatures_and_completion() {
         assert_eq!(before_completion, completion_key(&mutated));
     }
 }
-

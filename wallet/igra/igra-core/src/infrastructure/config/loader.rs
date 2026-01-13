@@ -7,7 +7,10 @@
 //! 4. Environment variables (IGRA_* prefix)
 
 use crate::domain::{GroupConfig, GroupMetadata, GroupPolicy};
-use crate::foundation::ThresholdError;
+use crate::foundation::{
+    ThresholdError, DEFAULT_CRDT_GC_INTERVAL_SECS, DEFAULT_CRDT_GC_TTL_SECS, DEFAULT_NODE_RPC_URL, DEFAULT_POLL_SECS,
+    DEFAULT_RPC_ADDR, DEFAULT_SESSION_EXPIRY_SECS, DEFAULT_SESSION_TIMEOUT_SECS, DEFAULT_SIG_OP_COUNT,
+};
 use crate::infrastructure::config::encryption::encrypt_mnemonics;
 use crate::infrastructure::config::types::AppConfig;
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -17,15 +20,6 @@ use kaspa_wallet_core::prelude::Secret;
 use log::{debug, info};
 use serde::Deserialize;
 use std::path::Path;
-
-const DEFAULT_NODE_RPC_URL: &str = "grpc://127.0.0.1:16110";
-const DEFAULT_RPC_ADDR: &str = "127.0.0.1:8088";
-const DEFAULT_POLL_SECS: u64 = 5;
-const DEFAULT_SIG_OP_COUNT: u8 = 2;
-const DEFAULT_SESSION_TIMEOUT_SECS: u64 = 60;
-const DEFAULT_SESSION_EXPIRY_SECS: u64 = 600;
-const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
-const DEFAULT_CRDT_GC_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// Environment variable prefix for config overrides.
 ///
@@ -115,12 +109,7 @@ pub fn load_config_from_file(path: &Path, data_dir: &Path) -> Result<AppConfig, 
 
 /// Load configuration from a specific file path with profile overrides.
 pub fn load_config_from_file_with_profile(path: &Path, data_dir: &Path, profile: &str) -> Result<AppConfig, ThresholdError> {
-    info!(
-        "loading configuration with profile path={} data_dir={} profile={}",
-        path.display(),
-        data_dir.display(),
-        profile
-    );
+    info!("loading configuration with profile path={} data_dir={} profile={}", path.display(), data_dir.display(), profile);
 
     // Extract once to access `profiles.<name>` overrides from the file.
     let base_config: AppConfigRaw =
@@ -218,6 +207,8 @@ fn postprocess(config: &mut AppConfig, data_dir: &Path) -> Result<(), ThresholdE
         config.service.pskt.node_rpc_url = config.service.node_rpc_url.clone();
     }
 
+    normalize_pskt_change_address(config);
+
     if config.service.pskt.sig_op_count == 0 {
         config.service.pskt.sig_op_count = DEFAULT_SIG_OP_COUNT;
     }
@@ -250,6 +241,31 @@ fn postprocess(config: &mut AppConfig, data_dir: &Path) -> Result<(), ThresholdE
     normalize_group_config(config);
 
     Ok(())
+}
+
+fn normalize_pskt_change_address(config: &mut AppConfig) {
+    fn normalize_optional_string(value: &mut Option<String>) {
+        let Some(current) = value.as_mut() else {
+            return;
+        };
+        let trimmed = current.trim();
+        if trimmed.is_empty() {
+            *value = None;
+            return;
+        }
+        if trimmed.len() != current.len() {
+            *current = trimmed.to_string();
+        }
+    }
+
+    normalize_optional_string(&mut config.service.pskt.change_address);
+
+    // Default change address to the multisig/source address unless explicitly overridden.
+    if config.service.pskt.change_address.is_none() {
+        if let Some(source) = config.service.pskt.source_addresses.iter().find(|s| !s.trim().is_empty()) {
+            config.service.pskt.change_address = Some(source.trim().to_string());
+        }
+    }
 }
 
 fn normalize_group_config(config: &mut AppConfig) {
@@ -384,6 +400,47 @@ mod tests {
 
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.service.pskt.source_addresses, vec!["addr1", "addr2"]);
+    }
+
+    #[test]
+    fn test_pskt_change_address_defaults_to_source_address() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("igra-config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [service.pskt]
+            source_addresses = ["kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m"]
+        "#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(
+            config.service.pskt.change_address.as_deref(),
+            Some("kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m")
+        );
+    }
+
+    #[test]
+    fn test_pskt_change_address_empty_string_is_treated_as_omitted() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("igra-config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [service.pskt]
+            source_addresses = ["kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m"]
+            change_address = ""
+        "#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(
+            config.service.pskt.change_address.as_deref(),
+            Some("kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m")
+        );
     }
 
     #[test]

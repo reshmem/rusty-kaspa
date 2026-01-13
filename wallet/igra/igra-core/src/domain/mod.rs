@@ -6,6 +6,7 @@ pub use crdt::{EventCrdt, GSet, LWWRegister};
 pub mod event;
 pub mod group_id;
 pub mod hashes;
+pub mod normalization;
 pub mod policy;
 pub mod pskt;
 pub mod signing;

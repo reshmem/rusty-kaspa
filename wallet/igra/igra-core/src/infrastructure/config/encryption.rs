@@ -22,11 +22,7 @@ pub fn encrypt_mnemonics(
     payment_secret: Option<&Secret>,
     wallet_secret: &Secret,
 ) -> Result<Encryptable<Vec<PrvKeyData>>, ThresholdError> {
-    info!(
-        "encrypting mnemonics mnemonic_count={} has_payment_secret={}",
-        mnemonics.len(),
-        payment_secret.is_some()
-    );
+    info!("encrypting mnemonics mnemonic_count={} has_payment_secret={}", mnemonics.len(), payment_secret.is_some());
     let mut key_data = Vec::with_capacity(mnemonics.len());
     for mut phrase in mnemonics.drain(..) {
         let mnemonic = Mnemonic::new(phrase.trim(), Language::English)
@@ -52,6 +48,6 @@ impl PsktHdConfig {
             warn!("failed to decrypt hd.mnemonics");
             ThresholdError::ConfigError(format!("failed to decrypt hd.mnemonics: {}", err))
         })?;
-        Ok(decrypted.unwrap())
+        Ok(decrypted.as_ref().clone())
     }
 }

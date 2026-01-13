@@ -1,43 +1,26 @@
 use igra_core::domain::group_id::compute_group_id;
-use igra_core::domain::hashes::{event_hash, event_hash_without_signature, validation_hash};
-use igra_core::domain::{EventSource, GroupConfig, GroupMetadata, GroupPolicy, SigningEvent};
-use std::collections::BTreeMap;
+use igra_core::domain::hashes::{compute_event_id, validation_hash};
+use igra_core::domain::{Event, GroupConfig, GroupMetadata, GroupPolicy, SourceType};
+use kaspa_addresses::Address;
+use kaspa_txscript::pay_to_address_script;
 
-fn sample_event() -> SigningEvent {
-    SigningEvent {
-        event_id: "event-1".to_string(),
-        event_source: EventSource::Api { issuer: "tests".to_string() },
-        derivation_path: "m/45'/111111'/0'/0/0".to_string(),
-        derivation_index: Some(0),
-        destination_address: "kaspatest:qz0000000000000000000000000000000000000000000000000000000000p5x4p".to_string(),
-        amount_sompi: 123,
-        metadata: BTreeMap::new(),
-        timestamp_nanos: 1,
-        signature: None,
-    }
+fn sample_event() -> Event {
+    let address = Address::try_from("kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m").unwrap();
+    let destination = pay_to_address_script(&address);
+    Event { external_id: [7u8; 32], source: SourceType::Api, destination, amount_sompi: 123 }
 }
 
 #[test]
-fn test_event_hashing_when_same_event_then_is_stable() {
+fn test_event_id_when_same_event_then_is_stable() {
     let event = sample_event();
-    let h1 = event_hash(&event).expect("hash");
-    let h2 = event_hash(&event).expect("hash");
+    let h1 = compute_event_id(&event);
+    let h2 = compute_event_id(&event);
     assert_eq!(h1, h2);
 }
 
 #[test]
-fn test_event_hashing_when_signature_changes_then_hash_without_signature_is_stable() {
-    let mut event = sample_event();
-    let base = event_hash_without_signature(&event).expect("hash");
-    event.signature = Some(vec![1, 2, 3]);
-    let updated = event_hash_without_signature(&event).expect("hash");
-    assert_eq!(base, updated);
-}
-
-#[test]
 fn test_validation_hash_when_inputs_change_then_changes() {
-    let ev = sample_event();
-    let ev_hash = event_hash(&ev).expect("hash");
+    let ev_hash = compute_event_id(&sample_event());
     let tx_hash = [9u8; 32];
     let per_input_a = vec![[1u8; 32], [2u8; 32]];
     let per_input_b = vec![[3u8; 32], [4u8; 32]];

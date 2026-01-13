@@ -223,7 +223,8 @@ FAKE_HYPERLANE_DEST="${HYPERLANE_DESTINATION:-kaspadev:qr9ptqk4gcphla6whs5qep9yp
 FAKE_HYPERLANE_DOMAIN="${HYPERLANE_DOMAIN:-5}"
 FAKE_HYPERLANE_SENDER="${HYPERLANE_SENDER:-0x0}"
 FAKE_HYPERLANE_COORDINATOR="${HYPERLANE_COORDINATOR_PEER_ID:-coordinator-1}"
-FAKE_HYPERLANE_PATH="${HYPERLANE_DERIVATION_PATH:-m/45h/111111h/0h/0/0}"
+# Derivation is optional; default is empty (root) unless explicitly provided.
+FAKE_HYPERLANE_PATH="${HYPERLANE_DERIVATION_PATH:-}"
 PROCESS_STOP_TIMEOUT="${PROCESS_STOP_TIMEOUT:-10}"
 KASPAD_STARTUP_TIMEOUT="${KASPAD_STARTUP_TIMEOUT:-30}"
 IGRA_STARTUP_TIMEOUT="${IGRA_STARTUP_TIMEOUT:-20}"
@@ -601,10 +602,8 @@ if (source_addresses[0] or "").strip() != multisig_address:
     die("source_addresses[0] must equal multisig_address")
 
 change_address = (data.get("change_address") or "").strip()
-if not change_address:
-    die("missing change_address")
-if change_address != multisig_address:
-    die("change_address must equal multisig_address for devnet")
+if change_address and change_address != multisig_address:
+    die("change_address must equal multisig_address for devnet (or be omitted to default)")
 
 sys.exit(0)
 PY
@@ -807,19 +806,23 @@ PY
     fi
   fi
 
+  local -a env_kv=(
+    "IGRA_RPC_URL=${rpc_url}"
+    "HYPERLANE_KEYS_PATH=${HYPERLANE_KEYS}"
+    "HYPERLANE_INTERVAL_SECS=${FAKE_HYPERLANE_INTERVAL}"
+    "HYPERLANE_START_EPOCH_SECS=${FAKE_HYPERLANE_START}"
+    "HYPERLANE_AMOUNT_SOMPI=${FAKE_HYPERLANE_AMOUNT}"
+    "HYPERLANE_DESTINATION=${destination}"
+    "HYPERLANE_DOMAIN=${FAKE_HYPERLANE_DOMAIN}"
+    "HYPERLANE_SENDER=${FAKE_HYPERLANE_SENDER}"
+    "HYPERLANE_COORDINATOR_PEER_ID=${FAKE_HYPERLANE_COORDINATOR}"
+  )
+  if [[ -n "${FAKE_HYPERLANE_PATH}" ]]; then
+    env_kv+=("HYPERLANE_DERIVATION_PATH=${FAKE_HYPERLANE_PATH}")
+  fi
+
   start_process "fake-hyperlane-${profile}" \
-    env \
-      IGRA_RPC_URL="${rpc_url}" \
-      HYPERLANE_KEYS_PATH="${HYPERLANE_KEYS}" \
-      HYPERLANE_INTERVAL_SECS="${FAKE_HYPERLANE_INTERVAL}" \
-      HYPERLANE_START_EPOCH_SECS="${FAKE_HYPERLANE_START}" \
-      HYPERLANE_AMOUNT_SOMPI="${FAKE_HYPERLANE_AMOUNT}" \
-      HYPERLANE_DESTINATION="${destination}" \
-      HYPERLANE_DOMAIN="${FAKE_HYPERLANE_DOMAIN}" \
-      HYPERLANE_SENDER="${FAKE_HYPERLANE_SENDER}" \
-      HYPERLANE_COORDINATOR_PEER_ID="${FAKE_HYPERLANE_COORDINATOR}" \
-      HYPERLANE_DERIVATION_PATH="${FAKE_HYPERLANE_PATH}" \
-      "${FAKE_HYPERLANE_BIN}"
+    env "${env_kv[@]}" "${FAKE_HYPERLANE_BIN}"
 
   # Brief liveness check to avoid silent failures.
   sleep 1

@@ -5,11 +5,12 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use igra_core::foundation::{RPC_RATE_LIMIT_CLEANUP_INTERVAL_SECS, RPC_RATE_LIMIT_ENTRY_TTL_SECS, RPC_RATE_LIMIT_WINDOW_SECS};
+use log::{debug, error};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use log::{debug, error};
 
 #[derive(Debug)]
 struct BucketState {
@@ -43,8 +44,8 @@ impl RateLimiterState {
     }
 
     fn cleanup(&mut self, now: Instant) {
-        const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-        const ENTRY_TTL: Duration = Duration::from_secs(15 * 60);
+        const CLEANUP_INTERVAL: Duration = Duration::from_secs(RPC_RATE_LIMIT_CLEANUP_INTERVAL_SECS);
+        const ENTRY_TTL: Duration = Duration::from_secs(RPC_RATE_LIMIT_ENTRY_TTL_SECS);
 
         if now.duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
             return;
@@ -72,7 +73,7 @@ impl RateLimiter {
                 let bucket = state.per_ip.entry(client_ip).or_insert_with(|| BucketState::new(now));
                 bucket.last_seen = now;
 
-                if now.duration_since(bucket.window_start) >= Duration::from_secs(1) {
+                if now.duration_since(bucket.window_start) >= Duration::from_secs(RPC_RATE_LIMIT_WINDOW_SECS) {
                     bucket.reset_window(now);
                 }
 

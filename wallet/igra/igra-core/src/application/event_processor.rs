@@ -1,17 +1,18 @@
 // Shared ingestion pipeline for event providers (JSON-RPC, file watcher, etc.).
-use crate::domain::event::decode_session_and_request_ids;
-use crate::domain::hashes::event_hash;
+use crate::domain::event::decode_session_and_coordinator_ids;
+use crate::domain::normalization::{hyperlane::normalize_hyperlane, normalize_generic, ExpectedNetwork};
 use crate::domain::policy::enforcement::{DefaultPolicyEnforcer, PolicyEnforcer};
 use crate::domain::validation::{MessageVerifier, ValidationSource};
-use crate::domain::SigningEvent;
+use crate::domain::{CrdtSigningMaterial, StoredEvent};
 use crate::foundation::Hash32;
-use crate::foundation::{PeerId, RequestId, SessionId, ThresholdError};
+use crate::foundation::{PeerId, SessionId, ThresholdError};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::config::{PsktBuildConfig, PsktOutput, ServiceConfig};
 use crate::infrastructure::rpc::kaspa_integration::build_pskt_from_rpc;
 use crate::infrastructure::rpc::NodeRpc;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::iroh::traits::{CrdtSignature, EventCrdtState, EventStateBroadcast, Transport};
+use kaspa_addresses::Address;
 use log::{debug, info, trace, warn};
 use std::sync::Arc;
 
@@ -29,26 +30,51 @@ pub struct EventContext {
 }
 
 pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams) -> Result<SigningEventResult, ThresholdError> {
-    let (session_id, request_id, coordinator_peer_id) = decode_session_and_request_ids(&params)?;
-    debug!(
-        "decoded signing event ids session_id={} request_id={} coordinator_peer_id={}",
-        hex::encode(session_id.as_hash()),
-        request_id,
-        coordinator_peer_id
-    );
-    let parsed = params.signing_event.into_signing_event()?;
-    debug!(
-        "signing event parsed event_id={} derivation_source={:?} signature_source={:?}",
-        parsed.event.event_id, parsed.derivation_path_source, parsed.signature_source
-    );
-    let signing_event = parsed.event;
-    trace!("signing event details signing_event={:?}", signing_event);
-    let event_hash = event_hash(&signing_event)?;
-    debug!("computed signing event hash event_hash={}", hex::encode(event_hash));
-    crate::audit_event_received!(event_hash, signing_event);
-    info!("signing event received request_id={} event_id={}", params.request_id, signing_event.event_id);
+    let (session_id, coordinator_peer_id) = decode_session_and_coordinator_ids(&params)?;
+    debug!("decoded signing event ids session_id={} coordinator_peer_id={}", hex::encode(session_id.as_hash()), coordinator_peer_id);
+    let SigningEventParams { session_id_hex, external_request_id, expires_at_nanos, event: wire, .. } = params;
+    trace!("signing event wire={:?}", wire);
 
-    let report = ctx.message_verifier.verify(&signing_event)?;
+    let expected_network = ctx
+        .config
+        .pskt
+        .source_addresses
+        .first()
+        .map(|addr| ExpectedNetwork::Prefix(Address::constructor(addr).prefix))
+        .unwrap_or(ExpectedNetwork::Any);
+
+    let crate::domain::event::SigningEventWire { external_id, source, destination_address, amount_sompi, metadata, proof_hex, proof } =
+        wire;
+
+    let proof = if let Some(hex_value) = proof_hex.as_deref() { Some(hex::decode(hex_value.trim())?) } else { proof };
+    let normalized = match source {
+        crate::domain::SourceType::Hyperlane { origin_domain } => normalize_hyperlane(
+            expected_network,
+            &external_id,
+            origin_domain,
+            &destination_address,
+            amount_sompi,
+            metadata.clone(),
+            proof,
+        )?,
+        source => {
+            normalize_generic(expected_network, source, &external_id, &destination_address, amount_sompi, metadata.clone(), proof)?
+        }
+    };
+    let event_id = normalized.event_id;
+    let stored_event = normalized.into_stored(crate::foundation::now_nanos());
+    let external_request_id_for_audit = external_request_id.clone();
+    ctx.storage.insert_event(event_id, stored_event.clone())?;
+    audit(AuditEvent::EventReceived {
+        event_id: hex::encode(event_id),
+        external_request_id: external_request_id.clone(),
+        source: format!("{:?}", stored_event.event.source),
+        recipient: stored_event.audit.destination_raw.clone(),
+        amount_sompi: stored_event.event.amount_sompi,
+        timestamp_nanos: crate::foundation::now_nanos(),
+    });
+
+    let report = ctx.message_verifier.verify(&stored_event)?;
     if report.valid {
         info!(
             "message verification passed source={:?} validator_count={} valid_signatures={} threshold={}",
@@ -56,11 +82,11 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         );
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) {
             audit(AuditEvent::EventSignatureValidated {
-                event_hash: hex::encode(event_hash),
+                event_id: hex::encode(event_id),
                 validator_count: report.validator_count,
                 valid: true,
                 reason: None,
-                timestamp_ns: crate::infrastructure::audit::now_nanos(),
+                timestamp_nanos: crate::foundation::now_nanos(),
             });
         }
     } else {
@@ -70,11 +96,11 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         );
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) {
             audit(AuditEvent::EventSignatureValidated {
-                event_hash: hex::encode(event_hash),
+                event_id: hex::encode(event_id),
                 validator_count: report.validator_count,
                 valid: false,
                 reason: report.failure_reason.clone(),
-                timestamp_ns: crate::infrastructure::audit::now_nanos(),
+                timestamp_nanos: crate::foundation::now_nanos(),
             });
         }
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) && report.validator_count == 0 {
@@ -88,13 +114,13 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         return Err(ThresholdError::EventSignatureInvalid);
     }
 
-    let now_nanos = crate::infrastructure::audit::now_nanos();
+    let now_nanos = crate::foundation::now_nanos();
     let current_daily_volume = ctx.storage.get_volume_since(now_nanos)?;
-    match DefaultPolicyEnforcer::new().enforce_policy(&signing_event, &ctx.policy, current_daily_volume) {
+    match DefaultPolicyEnforcer::new().enforce_policy(&stored_event, &ctx.policy, current_daily_volume) {
         Ok(()) => {
             crate::audit_policy_enforced!(
-                request_id,
-                event_hash,
+                external_request_id_for_audit,
+                event_id,
                 "group_policy",
                 crate::domain::audit::types::PolicyDecision::Allowed,
                 "ok"
@@ -102,8 +128,8 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         }
         Err(err) => {
             crate::audit_policy_enforced!(
-                request_id,
-                event_hash,
+                external_request_id_for_audit,
+                event_id,
                 "group_policy",
                 crate::domain::audit::types::PolicyDecision::Rejected,
                 err.to_string()
@@ -112,107 +138,97 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         }
     }
 
-    // Idempotent: do not treat replays as fatal in CRDT mode.
-    ctx.storage.insert_event(event_hash, signing_event.clone())?;
-    debug!("signing event stored event_hash={}", hex::encode(event_hash));
+    // Fast-path idempotency: if the event is already completed, reject early.
+    if ctx.storage.get_event_completion(&event_id)?.is_some() {
+        return Err(ThresholdError::EventReplayed(hex::encode(event_id)));
+    }
 
-    // If we already have a CRDT state for this event, reuse it and avoid generating a new tx template.
-    let mut existing_crdts = ctx.storage.list_event_crdts_for_event(&event_hash)?;
-    if !existing_crdts.is_empty() {
-        if existing_crdts.iter().any(|s| s.completion.is_some()) {
-            return Err(ThresholdError::EventReplayed(hex::encode(event_hash)));
-        }
-        existing_crdts.sort_by(|a, b| a.tx_template_hash.cmp(&b.tx_template_hash));
-        let canonical = &existing_crdts[0];
-        if let (Some(stored_event), Some(stored_kpsbt)) = (canonical.signing_event.as_ref(), canonical.kpsbt_blob.as_deref()) {
-            debug!(
-                "reusing existing CRDT template for event_hash={} tx_template_hash={}",
-                hex::encode(event_hash),
-                hex::encode(canonical.tx_template_hash)
-            );
+    // If we already have an active tx template for this event, reuse it and avoid generating a new tx template.
+    if let Some(active_hash) = ctx.storage.get_event_active_template_hash(&event_id)? {
+        if let Some(stored) = ctx.storage.get_event_crdt(&event_id, &active_hash)? {
+            if let (Some(stored_material), Some(stored_kpsbt)) = (stored.signing_material.as_ref(), stored.kpsbt_blob.as_deref()) {
+                debug!(
+                    "reusing active CRDT template for event_id={} tx_template_hash={}",
+                    hex::encode(event_id),
+                    hex::encode(active_hash)
+                );
 
-            sign_and_broadcast(
-                ctx,
-                stored_event,
-                &event_hash,
-                &canonical.tx_template_hash,
-                stored_kpsbt,
-                session_id,
-                request_id,
-                coordinator_peer_id,
-                params.expires_at_nanos,
-            )
-            .await?;
+                sign_and_broadcast(
+                    ctx,
+                    stored_material,
+                    &event_id,
+                    &active_hash,
+                    stored_kpsbt,
+                    session_id,
+                    external_request_id_for_audit.clone().unwrap_or_else(|| hex::encode(event_id)),
+                    coordinator_peer_id,
+                    expires_at_nanos,
+                )
+                .await?;
 
-            return Ok(SigningEventResult {
-                session_id_hex: params.session_id_hex,
-                event_hash_hex: hex::encode(event_hash),
-                // Backwards compatible field: now carries tx_template_hash in CRDT mode.
-                validation_hash_hex: hex::encode(canonical.tx_template_hash),
-            });
+                return Ok(SigningEventResult {
+                    session_id_hex,
+                    event_id_hex: hex::encode(event_id),
+                    tx_template_hash_hex: hex::encode(active_hash),
+                });
+            }
         }
     }
 
     // Deterministically build the transaction template via RPC.
-    let pskt_config = resolve_pskt_config(&ctx.config, &signing_event)?;
+    let pskt_config = resolve_pskt_config(&ctx.config, &stored_event)?;
     let (_selection, build) = build_pskt_from_rpc(ctx.rpc.as_ref(), &pskt_config).await?;
     let signer_pskt = crate::domain::pskt::multisig::to_signer(build.pskt);
     let kpsbt_blob = crate::domain::pskt::multisig::serialize_pskt(&signer_pskt)?;
     let tx_template_hash = crate::domain::pskt::multisig::tx_template_hash(&signer_pskt)?;
 
-    if !existing_crdts.is_empty() {
-        let expected = existing_crdts[0].tx_template_hash;
-        if tx_template_hash != expected {
-            warn!(
-                "tx_template_hash mismatch for existing event_hash={} expected={} computed={} (refusing to create a second template)",
-                hex::encode(event_hash),
-                hex::encode(expected),
-                hex::encode(tx_template_hash)
-            );
-            return Err(ThresholdError::PsktMismatch { expected: hex::encode(expected), actual: hex::encode(tx_template_hash) });
-        }
-    }
+    // Persist / enforce the single active template for this event.
+    // If another signer already selected a different template, this returns PsktMismatch.
+    ctx.storage.set_event_active_template_hash(&event_id, &tx_template_hash)?;
 
-    // Initialize CRDT state for (event_hash, tx_template_hash), storing the event and KPSBT locally.
-    let empty_state = EventCrdtState { signatures: vec![], completion: None, signing_event: None, kpsbt_blob: None, version: 0 };
-    ctx.storage.merge_event_crdt(&event_hash, &tx_template_hash, &empty_state, Some(&signing_event), Some(&kpsbt_blob))?;
+    // Initialize CRDT state for (event_id, tx_template_hash), storing the event and KPSBT locally.
+    let signing_material = CrdtSigningMaterial {
+        event: stored_event.event.clone(),
+        audit: stored_event.audit.clone(),
+        proof: stored_event.proof.clone(),
+    };
+    let empty_state = EventCrdtState { signatures: vec![], completion: None, signing_material: None, kpsbt_blob: None, version: 0 };
+    ctx.storage.merge_event_crdt(&event_id, &tx_template_hash, &empty_state, Some(&signing_material), Some(&kpsbt_blob))?;
 
     // Sign locally and broadcast.
     sign_and_broadcast(
         ctx,
-        &signing_event,
-        &event_hash,
+        &signing_material,
+        &event_id,
         &tx_template_hash,
         &kpsbt_blob,
         session_id,
-        request_id,
+        external_request_id_for_audit.unwrap_or_else(|| hex::encode(event_id)),
         coordinator_peer_id,
-        params.expires_at_nanos,
+        expires_at_nanos,
     )
     .await?;
 
-    Ok(SigningEventResult {
-        session_id_hex: params.session_id_hex,
-        event_hash_hex: hex::encode(event_hash),
-        // Backwards compatible field: now carries tx_template_hash in CRDT mode.
-        validation_hash_hex: hex::encode(tx_template_hash),
-    })
+    Ok(SigningEventResult { session_id_hex, event_id_hex: hex::encode(event_id), tx_template_hash_hex: hex::encode(tx_template_hash) })
 }
 
-fn resolve_pskt_config(config: &ServiceConfig, signing_event: &SigningEvent) -> Result<PsktBuildConfig, ThresholdError> {
-    if signing_event.destination_address.trim().is_empty() || signing_event.amount_sompi == 0 {
-        return Err(ThresholdError::Message("signing_event missing destination_address or amount".to_string()));
+pub fn resolve_pskt_config(config: &ServiceConfig, event: &StoredEvent) -> Result<PsktBuildConfig, ThresholdError> {
+    if event.audit.destination_raw.trim().is_empty() || event.event.amount_sompi == 0 {
+        return Err(ThresholdError::Message(format!(
+            "signing_event missing destination_address or amount external_id={}",
+            event.audit.external_id_raw
+        )));
     }
 
     let mut pskt = config.pskt.clone();
     if pskt.node_rpc_url.trim().is_empty() {
         pskt.node_rpc_url = config.node_rpc_url.clone();
     }
-    pskt.outputs = vec![PsktOutput { address: signing_event.destination_address.clone(), amount_sompi: signing_event.amount_sompi }];
+    pskt.outputs = vec![PsktOutput { address: event.audit.destination_raw.clone(), amount_sompi: event.event.amount_sompi }];
 
     if pskt.redeem_script_hex.trim().is_empty() {
         let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::Message("missing redeem script or HD config".to_string()))?;
-        pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(hd, &signing_event.derivation_path)?;
+        pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(hd, hd.derivation_path.as_deref())?;
     }
 
     Ok(pskt)
@@ -220,12 +236,12 @@ fn resolve_pskt_config(config: &ServiceConfig, signing_event: &SigningEvent) -> 
 
 async fn sign_and_broadcast(
     ctx: &EventContext,
-    signing_event: &SigningEvent,
-    event_hash: &Hash32,
+    _signing_material: &CrdtSigningMaterial,
+    event_id: &Hash32,
     tx_template_hash: &Hash32,
     kpsbt_blob: &[u8],
     session_id: SessionId,
-    request_id: RequestId,
+    request_id: String,
     coordinator_peer_id: PeerId,
     expires_at_nanos: u64,
 ) -> Result<(), ThresholdError> {
@@ -238,20 +254,13 @@ async fn sign_and_broadcast(
         expires_at_nanos
     );
 
-    let hd = ctx
-        .config
-        .hd
-        .as_ref()
-        .ok_or_else(|| ThresholdError::ConfigError("missing HD config".to_string()))?;
+    let hd = ctx.config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config".to_string()))?;
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(kaspa_wallet_core::prelude::Secret::from);
     let signing_key_data = key_data.first().ok_or_else(|| ThresholdError::ConfigError("missing mnemonic".to_string()))?;
 
-    let signing_keypair = crate::foundation::hd::derive_keypair_from_key_data(
-        signing_key_data,
-        &signing_event.derivation_path,
-        payment_secret.as_ref(),
-    )?;
+    let signing_keypair =
+        crate::foundation::hd::derive_keypair_from_key_data(signing_key_data, hd.derivation_path.as_deref(), payment_secret.as_ref())?;
     let keypair = signing_keypair.to_secp256k1()?;
 
     let signer_pskt = crate::domain::pskt::multisig::deserialize_pskt_signer(kpsbt_blob)?;
@@ -263,42 +272,45 @@ async fn sign_and_broadcast(
         return Err(ThresholdError::SigningFailed("no signatures produced".to_string()));
     }
 
-    let now_nanos = crate::infrastructure::audit::now_nanos();
+    let now_nanos = crate::foundation::now_nanos();
     let pubkey = canonical_pubkey.serialize().to_vec();
     for (input_index, signature) in partials {
-        ctx.storage.add_signature_to_crdt(event_hash, tx_template_hash, input_index, &pubkey, &signature, &ctx.local_peer_id, now_nanos)?;
+        ctx.storage.add_signature_to_crdt(
+            event_id,
+            tx_template_hash,
+            input_index,
+            &pubkey,
+            &signature,
+            &ctx.local_peer_id,
+            now_nanos,
+        )?;
     }
 
     // Broadcast updated CRDT state.
     let stored = ctx
         .storage
-        .get_event_crdt(event_hash, tx_template_hash)?
+        .get_event_crdt(event_id, tx_template_hash)?
         .ok_or_else(|| ThresholdError::Message("missing CRDT state after signing".to_string()))?;
     let state = to_transport_state(&stored);
-    let broadcast =
-        EventStateBroadcast { event_hash: *event_hash, tx_template_hash: *tx_template_hash, state, sender_peer_id: ctx.local_peer_id.clone() };
+    let broadcast = EventStateBroadcast {
+        event_id: *event_id,
+        tx_template_hash: *tx_template_hash,
+        state,
+        sender_peer_id: ctx.local_peer_id.clone(),
+    };
     ctx.transport.publish_event_state(broadcast).await?;
     Ok(())
 }
 
 fn to_transport_state(stored: &crate::domain::StoredEventCrdt) -> EventCrdtState {
-    let signatures = stored
-        .signatures
-        .iter()
-        .map(|s| CrdtSignature {
-            input_index: s.input_index,
-            pubkey: s.pubkey.clone(),
-            signature: s.signature.clone(),
-            signer_peer_id: Some(s.signer_peer_id.clone()),
-            timestamp_nanos: s.timestamp_nanos,
-        })
-        .collect::<Vec<_>>();
-    let completion = stored.completion.as_ref().map(|c| crate::infrastructure::transport::iroh::messages::CompletionRecord {
-        tx_id: *c.tx_id.as_hash(),
-        submitter_peer_id: c.submitter_peer_id.clone(),
-        timestamp_nanos: c.timestamp_nanos,
-        blue_score: c.blue_score,
-    });
+    let signatures = stored.signatures.iter().map(CrdtSignature::from).collect::<Vec<_>>();
+    let completion = stored.completion.as_ref().map(crate::infrastructure::transport::iroh::messages::CompletionRecord::from);
 
-    EventCrdtState { signatures, completion, signing_event: stored.signing_event.clone(), kpsbt_blob: stored.kpsbt_blob.clone(), version: 0 }
+    EventCrdtState {
+        signatures,
+        completion,
+        signing_material: stored.signing_material.clone(),
+        kpsbt_blob: stored.kpsbt_blob.clone(),
+        version: 0,
+    }
 }

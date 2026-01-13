@@ -1,10 +1,10 @@
 //! Rich result types for signing operations (no logging in domain).
 
-use crate::foundation::RequestId;
+use crate::foundation::Hash32;
 
 #[derive(Debug, Clone)]
 pub struct SigningResult {
-    pub request_id: RequestId,
+    pub event_id: Hash32,
     pub input_count: usize,
     pub signatures_produced: Vec<SignatureOutput>,
     pub signer_pubkey: Vec<u8>,

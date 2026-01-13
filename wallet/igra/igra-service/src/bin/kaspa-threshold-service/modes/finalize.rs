@@ -13,7 +13,8 @@ use std::path::Path;
 
 #[derive(Deserialize)]
 struct FinalizePayload {
-    request_id: String,
+    #[serde(alias = "request_id")]
+    event_id: String,
     pskt_blob: String,
 }
 
@@ -28,14 +29,14 @@ pub async fn finalize_from_json(
     let json = std::fs::read_to_string(json_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let payload: FinalizePayload = serde_json::from_str(&json)?;
 
-    let event_hash = parse_hash32_hex(&payload.request_id)?;
+    let event_id = parse_hash32_hex(&payload.event_id)?;
     let pskt_blob = hex::decode(payload.pskt_blob.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let signer_pskt = pskt_multisig::deserialize_pskt_signer(&pskt_blob)?;
     let tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
 
     let state = storage
-        .get_event_crdt(&event_hash, &tx_template_hash)?
-        .ok_or_else(|| ThresholdError::KeyNotFound(format!("missing CRDT state for event_hash={}", hex::encode(event_hash))))?;
+        .get_event_crdt(&event_id, &tx_template_hash)?
+        .ok_or_else(|| ThresholdError::KeyNotFound(format!("missing CRDT state for event_id={}", hex::encode(event_id))))?;
 
     let partial_sigs = state
         .signatures
@@ -62,15 +63,8 @@ pub async fn finalize_from_json(
     let tx_id = rpc.submit_transaction(tx).await?;
     let blue_score = rpc.get_virtual_selected_parent_blue_score().await.ok();
     let submitter_peer_id = PeerId::from("manual-finalize");
-    let now = igra_core::infrastructure::audit::now_nanos();
-    storage.mark_crdt_completed(
-        &event_hash,
-        &tx_template_hash,
-        TransactionId::from(tx_id),
-        &submitter_peer_id,
-        now,
-        blue_score,
-    )?;
+    let now = igra_core::foundation::now_nanos();
+    storage.mark_crdt_completed(&event_id, &tx_template_hash, TransactionId::from(tx_id), &submitter_peer_id, now, blue_score)?;
 
     info!("Transaction submitted: {}", tx_id);
     println!("Transaction ID: {}", tx_id);

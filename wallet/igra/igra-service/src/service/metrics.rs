@@ -1,7 +1,7 @@
 use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::storage::CrdtStorageStats;
-use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder};
 use log::debug;
+use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -72,15 +72,12 @@ impl Metrics {
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
 
-        let crdt_event_crdts_total =
-            IntGauge::new("crdt_event_states_total", "Total CRDT event states (exact scan)") //
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let crdt_event_crdts_pending =
-            IntGauge::new("crdt_event_states_pending", "Pending CRDT event states (exact scan)") //
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let crdt_event_crdts_completed =
-            IntGauge::new("crdt_event_states_completed", "Completed CRDT event states (exact scan)") //
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_event_crdts_total = IntGauge::new("crdt_event_states_total", "Total CRDT event states (exact scan)") //
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_event_crdts_pending = IntGauge::new("crdt_event_states_pending", "Pending CRDT event states (exact scan)") //
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_event_crdts_completed = IntGauge::new("crdt_event_states_completed", "Completed CRDT event states (exact scan)") //
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
         let crdt_cf_estimated_num_keys =
             IntGauge::new("crdt_cf_estimated_num_keys", "RocksDB estimate-num-keys for CRDT CF (0 if unknown)") //
                 .map_err(|err| ThresholdError::Message(err.to_string()))?;
@@ -89,14 +86,10 @@ impl Metrics {
             "RocksDB estimate-live-data-size for CRDT CF in bytes (0 if unknown)",
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let crdt_gc_deleted_total =
-            IntCounter::new("crdt_gc_deleted_total", "Total CRDT event states deleted by GC") //
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let crdt_gc_deleted_total = IntCounter::new("crdt_gc_deleted_total", "Total CRDT event states deleted by GC") //
+            .map_err(|err| ThresholdError::Message(err.to_string()))?;
         let tx_template_hash_mismatches_total = IntCounterVec::new(
-            prometheus::Opts::new(
-                "tx_template_hash_mismatches_total",
-                "Tx template hash mismatches detected (by kind)",
-            ),
+            prometheus::Opts::new("tx_template_hash_mismatches_total", "Tx template hash mismatches detected (by kind)"),
             &["kind"],
         )
         .map_err(|err| ThresholdError::Message(err.to_string()))?;
@@ -210,8 +203,7 @@ impl Metrics {
         let estimated_live_bytes = stats.cf_estimated_live_data_size_bytes.unwrap_or(0);
         self.crdt_cf_estimated_num_keys.set(estimated_num_keys as i64);
         self.crdt_cf_estimated_live_data_size_bytes.set(estimated_live_bytes as i64);
-        self.crdt_cf_estimated_live_data_size_bytes_value
-            .store(estimated_live_bytes, Ordering::Relaxed);
+        self.crdt_cf_estimated_live_data_size_bytes_value.store(estimated_live_bytes, Ordering::Relaxed);
     }
 
     pub fn inc_crdt_gc_deleted_total(&self, deleted: u64) {
@@ -238,9 +230,7 @@ impl Metrics {
             crdt_total: self.crdt_total.load(Ordering::Relaxed),
             crdt_pending: self.crdt_pending.load(Ordering::Relaxed),
             crdt_completed: self.crdt_completed.load(Ordering::Relaxed),
-            crdt_cf_estimated_live_data_size_bytes: self
-                .crdt_cf_estimated_live_data_size_bytes_value
-                .load(Ordering::Relaxed),
+            crdt_cf_estimated_live_data_size_bytes: self.crdt_cf_estimated_live_data_size_bytes_value.load(Ordering::Relaxed),
             crdt_gc_deleted_total: self.crdt_gc_deleted_total_value.load(Ordering::Relaxed),
             tx_template_hash_mismatches_total: self.tx_template_hash_mismatches_total_value.load(Ordering::Relaxed),
         }

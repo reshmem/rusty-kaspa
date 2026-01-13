@@ -1,49 +1,47 @@
-use crate::domain::hashes::event_hash_without_signature;
+use crate::domain::hashes::compute_event_id;
 use crate::domain::validation::types::{LayerZeroVerificationFailure, LayerZeroVerificationResult};
-use crate::domain::{EventSource, SigningEvent};
+use crate::domain::{SourceType, StoredEvent};
 use crate::foundation::ThresholdError;
 use secp256k1::ecdsa::Signature as SecpSignature;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
-pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<LayerZeroVerificationResult, ThresholdError> {
-    if !matches!(event.event_source, EventSource::LayerZero { .. }) {
+pub fn verify_event(event: &StoredEvent, validators: &[PublicKey]) -> Result<LayerZeroVerificationResult, ThresholdError> {
+    let event_id = compute_event_id(&event.event);
+    if !matches!(event.event.source, SourceType::LayerZero { .. }) {
         return Ok(LayerZeroVerificationResult {
             valid: true,
-            event_hash: [0u8; 32],
+            event_id,
             validator_count: 0,
             matching_validator_index: None,
             failure_reason: None,
         });
     }
     if validators.is_empty() {
-        let event_hash = event_hash_without_signature(event)?;
         return Ok(LayerZeroVerificationResult {
             valid: false,
-            event_hash,
+            event_id,
             validator_count: 0,
             matching_validator_index: None,
             failure_reason: Some(LayerZeroVerificationFailure::NoValidatorsConfigured),
         });
     }
-    let Some(signature) = event.signature.as_ref() else {
-        let event_hash = event_hash_without_signature(event)?;
+    let Some(signature) = event.proof.as_ref() else {
         return Ok(LayerZeroVerificationResult {
             valid: false,
-            event_hash,
+            event_id,
             validator_count: validators.len(),
             matching_validator_index: None,
             failure_reason: Some(LayerZeroVerificationFailure::NoSignatureProvided),
         });
     };
-    let hash = event_hash_without_signature(event)?;
-    let message = Message::from_digest_slice(&hash)?;
+    let message = Message::from_digest_slice(&event_id)?;
     let sig = match signature.len() {
         64 => match SecpSignature::from_compact(signature) {
             Ok(sig) => sig,
             Err(_) => {
                 return Ok(LayerZeroVerificationResult {
                     valid: false,
-                    event_hash: hash,
+                    event_id,
                     validator_count: validators.len(),
                     matching_validator_index: None,
                     failure_reason: Some(LayerZeroVerificationFailure::InvalidSignatureFormat),
@@ -55,7 +53,7 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<La
             Err(_) => {
                 return Ok(LayerZeroVerificationResult {
                     valid: false,
-                    event_hash: hash,
+                    event_id,
                     validator_count: validators.len(),
                     matching_validator_index: None,
                     failure_reason: Some(LayerZeroVerificationFailure::InvalidSignatureFormat),
@@ -68,7 +66,7 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<La
         if secp.verify_ecdsa(&message, &sig, validator).is_ok() {
             return Ok(LayerZeroVerificationResult {
                 valid: true,
-                event_hash: hash,
+                event_id,
                 validator_count: validators.len(),
                 matching_validator_index: Some(idx),
                 failure_reason: None,
@@ -77,7 +75,7 @@ pub fn verify_event(event: &SigningEvent, validators: &[PublicKey]) -> Result<La
     }
     Ok(LayerZeroVerificationResult {
         valid: false,
-        event_hash: hash,
+        event_id,
         validator_count: validators.len(),
         matching_validator_index: None,
         failure_reason: Some(LayerZeroVerificationFailure::NoMatchingValidator),

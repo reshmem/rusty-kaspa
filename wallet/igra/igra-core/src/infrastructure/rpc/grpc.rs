@@ -1,4 +1,6 @@
 use crate::foundation::ThresholdError;
+use crate::foundation::GRPC_MAX_MESSAGE_SIZE_BYTES;
+use crate::infrastructure::rpc::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::infrastructure::rpc::{NodeRpc, UtxoWithOutpoint};
 use async_trait::async_trait;
 use kaspa_addresses::Address;
@@ -7,26 +9,46 @@ use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::notify::mode::NotificationMode;
 use kaspa_rpc_core::RpcTransaction;
-use std::time::Instant;
 use log::{debug, error, info, trace, warn};
+use std::time::Instant;
 
 pub struct GrpcNodeRpc {
     client: GrpcClient,
+    breaker_get_utxos: CircuitBreaker,
+    breaker_submit_transaction: CircuitBreaker,
+    breaker_get_blue_score: CircuitBreaker,
 }
 
 impl GrpcNodeRpc {
     pub async fn connect(url: String) -> Result<Self, ThresholdError> {
+        Self::connect_with_config(url, CircuitBreakerConfig::default()).await
+    }
+
+    pub async fn connect_with_config(url: String, breaker_cfg: CircuitBreakerConfig) -> Result<Self, ThresholdError> {
         let redacted_url = redact_url(&url);
         info!("connecting grpc rpc url={}", redacted_url);
-        let client =
-            GrpcClient::connect_with_args(NotificationMode::Direct, url, None, false, None, false, Some(500_000), Default::default())
-                .await
-                .map_err(|err| {
-                    error!("grpc rpc connect failed error={}", err);
-                    ThresholdError::Message(err.to_string())
-                })?;
+        let client = GrpcClient::connect_with_args(
+            NotificationMode::Direct,
+            url,
+            None,
+            false,
+            None,
+            false,
+            Some(GRPC_MAX_MESSAGE_SIZE_BYTES),
+            Default::default(),
+        )
+        .await
+        .map_err(|err| {
+            error!("grpc rpc connect failed error={}", err);
+            ThresholdError::Message(err.to_string())
+        })?;
         info!("grpc rpc connected");
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            breaker_get_utxos: CircuitBreaker::new(breaker_cfg),
+            breaker_submit_transaction: CircuitBreaker::new(breaker_cfg),
+            breaker_get_blue_score: CircuitBreaker::new(breaker_cfg),
+        })
     }
 
     fn to_rpc_transaction(tx: Transaction) -> RpcTransaction {
@@ -49,19 +71,20 @@ impl GrpcNodeRpc {
 #[async_trait]
 impl NodeRpc for GrpcNodeRpc {
     async fn get_utxos_by_addresses(&self, addresses: &[Address]) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
+        if !self.breaker_get_utxos.allow() {
+            return Err(ThresholdError::NodeRpcError("get_utxos_by_addresses circuit breaker open".to_string()));
+        }
         let started = Instant::now();
         trace!("grpc get_utxos_by_addresses request addresses={:?}", addresses);
         let entries = match self.client.get_utxos_by_addresses(addresses.to_vec()).await {
             Ok(entries) => entries,
             Err(err) => {
-                warn!(
-                    "grpc get_utxos_by_addresses failed address_count={} error={}",
-                    addresses.len(),
-                    err
-                );
+                self.breaker_get_utxos.record_failure();
+                warn!("grpc get_utxos_by_addresses failed address_count={} error={}", addresses.len(), err);
                 return Err(ThresholdError::Message(err.to_string()));
             }
         };
+        self.breaker_get_utxos.record_success();
         debug!(
             "grpc get_utxos_by_addresses address_count={} utxo_count={} elapsed_ms={}",
             addresses.len(),
@@ -80,6 +103,9 @@ impl NodeRpc for GrpcNodeRpc {
     }
 
     async fn submit_transaction(&self, tx: Transaction) -> Result<TransactionId, ThresholdError> {
+        if !self.breaker_submit_transaction.allow() {
+            return Err(ThresholdError::NodeRpcError("submit_transaction circuit breaker open".to_string()));
+        }
         let started = Instant::now();
         let mass = tx.mass();
         info!("grpc submit_transaction start mass={}", mass);
@@ -89,33 +115,41 @@ impl NodeRpc for GrpcNodeRpc {
             // Duplicate submissions are expected in a leaderless / CRDT-based design:
             // multiple signers may race to submit the same final tx.
             let is_acceptable_duplicate = msg.contains("already in the mempool")
+                || msg.contains("is already in the mempool")
                 || msg.contains("already accepted by the consensus")
                 || msg.contains("known transaction")
                 || msg.contains("already known");
+            // Rejected transactions still indicate connectivity; don't trip breaker.
+            let is_validation_error = msg.contains("rejected transaction") || msg.contains("not standard");
             if is_acceptable_duplicate {
+                self.breaker_submit_transaction.record_success();
                 debug!("grpc submit_transaction duplicate mass={} error={}", mass, err);
+            } else if is_validation_error {
+                self.breaker_submit_transaction.record_success();
+                warn!("grpc submit_transaction rejected mass={} error={}", mass, err);
             } else {
+                self.breaker_submit_transaction.record_failure();
                 error!("grpc submit_transaction failed mass={} error={}", mass, err);
             }
             ThresholdError::Message(err.to_string())
         })?;
-        debug!(
-            "grpc submit_transaction tx_id={} elapsed_ms={}",
-            id,
-            started.elapsed().as_millis()
-        );
+        self.breaker_submit_transaction.record_success();
+        debug!("grpc submit_transaction tx_id={} elapsed_ms={}", id, started.elapsed().as_millis());
         Ok(id)
     }
 
     async fn get_virtual_selected_parent_blue_score(&self) -> Result<u64, ThresholdError> {
+        if !self.breaker_get_blue_score.allow() {
+            return Err(ThresholdError::NodeRpcError("get_sink_blue_score circuit breaker open".to_string()));
+        }
         let started = Instant::now();
         trace!("grpc get_sink_blue_score request");
-        let score = self.client.get_sink_blue_score().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
-        debug!(
-            "grpc get_sink_blue_score blue_score={} elapsed_ms={}",
-            score,
-            started.elapsed().as_millis()
-        );
+        let score = self.client.get_sink_blue_score().await.map_err(|err| {
+            self.breaker_get_blue_score.record_failure();
+            ThresholdError::Message(err.to_string())
+        })?;
+        self.breaker_get_blue_score.record_success();
+        debug!("grpc get_sink_blue_score blue_score={} elapsed_ms={}", score, started.elapsed().as_millis());
         Ok(score)
     }
 }

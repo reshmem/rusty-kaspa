@@ -1,4 +1,5 @@
 use crate::domain::pskt::params::PsktParams;
+use crate::foundation::constants::MAX_PSKT_OUTPUTS;
 
 #[derive(Debug, Clone)]
 pub struct PsktValidationResult {
@@ -16,6 +17,7 @@ pub enum PsktValidationError {
     ZeroSigOpCount,
     NoSourceAddresses,
     NoOutputParams,
+    TooManyOutputs { count: usize, max: usize },
 }
 
 pub fn validate_params(params: &PsktParams) -> PsktValidationResult {
@@ -29,6 +31,9 @@ pub fn validate_params(params: &PsktParams) -> PsktValidationResult {
     }
     if params.outputs.is_empty() {
         errors.push(PsktValidationError::NoOutputParams);
+    }
+    if params.outputs.len() > MAX_PSKT_OUTPUTS {
+        errors.push(PsktValidationError::TooManyOutputs { count: params.outputs.len(), max: MAX_PSKT_OUTPUTS });
     }
 
     PsktValidationResult {

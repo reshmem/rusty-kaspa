@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex, OnceLock};
 use log::{debug, info, trace, warn};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub use crate::domain::audit::types::{AuditEvent, PolicyDecision};
 
@@ -83,10 +83,6 @@ pub fn audit(event: AuditEvent) {
     }
 }
 
-pub fn now_nanos() -> u64 {
-    current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
-}
-
 fn short_id(value: &str) -> String {
     let trimmed = value.trim_start_matches("0x");
     if trimmed.len() <= 16 {
@@ -98,58 +94,72 @@ fn short_id(value: &str) -> String {
 
 fn human_summary(event: &AuditEvent) -> String {
     match event {
-        AuditEvent::EventReceived { event_hash, source, recipient, amount_sompi, .. } => format!(
+        AuditEvent::EventReceived { event_id, source, recipient, amount_sompi, .. } => format!(
             "AUDIT: signing event received - {} KAS to {} (hash: {}, source: {})",
             *amount_sompi as f64 / 100_000_000.0,
             recipient,
-            short_id(event_hash),
+            short_id(event_id),
             source
         ),
-        AuditEvent::EventSignatureValidated { event_hash, validator_count, valid, reason, .. } => format!(
+        AuditEvent::EventSignatureValidated { event_id, validator_count, valid, reason, .. } => format!(
             "AUDIT: event signature validated - valid={} validators={} (hash: {}, reason: {})",
             valid,
             validator_count,
-            short_id(event_hash),
+            short_id(event_id),
             reason.clone().unwrap_or_else(|| "-".to_string())
         ),
-        AuditEvent::PolicyEnforced { request_id, event_hash, policy_type, decision, reason, .. } => format!(
-            "AUDIT: policy enforced - decision={:?} policy={} reason={} (request: {}, hash: {})",
+        AuditEvent::PolicyEnforced { event_id, external_request_id, policy_type, decision, reason, .. } => format!(
+            "AUDIT: policy enforced - decision={:?} policy={} reason={} (external_request: {}, event_id: {})",
             decision,
             policy_type,
             reason,
-            short_id(request_id),
-            short_id(event_hash)
+            external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+            short_id(event_id)
         ),
-        AuditEvent::ProposalValidated { request_id, signer_peer_id, accepted, reason, validation_hash, .. } => format!(
-            "AUDIT: proposal validated - accepted={} signer={} (request: {}, validation: {}, reason: {})",
-            accepted,
-            signer_peer_id,
-            short_id(request_id),
-            short_id(validation_hash),
-            reason.clone().unwrap_or_else(|| "-".to_string())
-        ),
-        AuditEvent::PartialSignatureCreated { request_id, signer_peer_id, input_count, .. } => format!(
-            "AUDIT: partial signatures created - signer={} inputs={} (request: {})",
+        AuditEvent::ProposalValidated { event_id, external_request_id, signer_peer_id, accepted, reason, validation_hash, .. } => {
+            format!(
+                "AUDIT: proposal validated - accepted={} signer={} (external_request: {}, event_id: {}, validation: {}, reason: {})",
+                accepted,
+                signer_peer_id,
+                external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+                short_id(event_id),
+                short_id(validation_hash),
+                reason.clone().unwrap_or_else(|| "-".to_string())
+            )
+        }
+        AuditEvent::PartialSignatureCreated { event_id, external_request_id, signer_peer_id, input_count, .. } => format!(
+            "AUDIT: partial signatures created - signer={} inputs={} (external_request: {}, event_id: {})",
             signer_peer_id,
             input_count,
-            short_id(request_id)
+            external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+            short_id(event_id)
         ),
-        AuditEvent::TransactionFinalized { request_id, tx_id, signature_count, threshold_required, .. } => format!(
-            "AUDIT: transaction finalized - tx={} sigs={}/{} (request: {})",
+        AuditEvent::TransactionFinalized { event_id, external_request_id, tx_id, signature_count, threshold_required, .. } => format!(
+            "AUDIT: transaction finalized - tx={} sigs={}/{} (external_request: {}, event_id: {})",
             tx_id,
             signature_count,
             threshold_required,
-            short_id(request_id)
+            external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+            short_id(event_id)
         ),
-        AuditEvent::TransactionSubmitted { request_id, tx_id, blue_score, .. } => {
-            format!("AUDIT: transaction submitted - tx={} blue_score={} (request: {})", tx_id, blue_score, short_id(request_id))
+        AuditEvent::TransactionSubmitted { event_id, external_request_id, tx_id, blue_score, .. } => {
+            format!(
+                "AUDIT: transaction submitted - tx={} blue_score={} (external_request: {}, event_id: {})",
+                tx_id,
+                blue_score,
+                external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+                short_id(event_id)
+            )
         }
-        AuditEvent::SessionTimedOut { request_id, signature_count, threshold_required, duration_seconds, .. } => format!(
-            "AUDIT: session timed out - sigs={}/{} duration_s={} (request: {})",
+        AuditEvent::SessionTimedOut {
+            event_id, external_request_id, signature_count, threshold_required, duration_seconds, ..
+        } => format!(
+            "AUDIT: session timed out - sigs={}/{} duration_s={} (external_request: {}, event_id: {})",
             signature_count,
             threshold_required,
             duration_seconds,
-            short_id(request_id)
+            external_request_id.as_deref().map(short_id).unwrap_or_else(|| "-".to_string()),
+            short_id(event_id)
         ),
         AuditEvent::ConfigurationChanged { change_type, changed_by, .. } => {
             format!("AUDIT: configuration changed - type={} by={}", change_type, changed_by)
@@ -163,29 +173,28 @@ fn human_summary(event: &AuditEvent) -> String {
 
 #[macro_export]
 macro_rules! audit_event_received {
-    ($event_hash:expr, $event:expr) => {
+    ($event_id:expr, $event:expr) => {
         $crate::infrastructure::audit::audit($crate::infrastructure::audit::AuditEvent::EventReceived {
-            event_hash: hex::encode($event_hash),
-            source: format!("{:?}", $event.event_source),
-            recipient: $event.destination_address.clone(),
-            amount_sompi: $event.amount_sompi,
-            timestamp_ns: $crate::infrastructure::audit::now_nanos(),
+            event_id: hex::encode($event_id),
+            external_request_id: None,
+            source: format!("{:?}", $event.event.source),
+            recipient: $event.audit.destination_raw.clone(),
+            amount_sompi: $event.event.amount_sompi,
+            timestamp_nanos: $crate::foundation::now_nanos(),
         })
     };
 }
 
 #[macro_export]
 macro_rules! audit_policy_enforced {
-    ($request_id:expr, $event_hash:expr, $policy_type:expr, $decision:expr, $reason:expr) => {
+    ($external_request_id:expr, $event_id:expr, $policy_type:expr, $decision:expr, $reason:expr) => {
         $crate::infrastructure::audit::audit($crate::infrastructure::audit::AuditEvent::PolicyEnforced {
-            request_id: $request_id.to_string(),
-            event_hash: hex::encode($event_hash),
+            event_id: hex::encode($event_id),
+            external_request_id: $external_request_id.clone(),
             policy_type: $policy_type.to_string(),
             decision: $decision,
             reason: $reason.to_string(),
-            timestamp_ns: $crate::infrastructure::audit::now_nanos(),
+            timestamp_nanos: $crate::foundation::now_nanos(),
         })
     };
 }
-
-use crate::foundation::util::time::current_timestamp_nanos_env;

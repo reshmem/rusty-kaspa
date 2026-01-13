@@ -1,20 +1,21 @@
-use crate::domain::hashes::event_hash_without_signature;
+use crate::domain::hashes::compute_event_id;
 use crate::domain::validation::types::{HyperlaneVerificationFailure, HyperlaneVerificationResult};
-use crate::domain::{EventSource, SigningEvent};
+use crate::domain::{SourceType, StoredEvent};
 use crate::foundation::ThresholdError;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
 use secp256k1::ecdsa::Signature as SecpSignature;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 pub fn verify_event(
-    event: &SigningEvent,
+    event: &StoredEvent,
     validators: &[PublicKey],
     threshold: usize,
 ) -> Result<HyperlaneVerificationResult, ThresholdError> {
-    if !matches!(event.event_source, EventSource::Hyperlane { .. }) {
+    let event_id = compute_event_id(&event.event);
+    if !matches!(event.event.source, SourceType::Hyperlane { .. }) {
         return Ok(HyperlaneVerificationResult {
             valid: true,
-            event_hash: [0u8; 32],
+            event_id,
             validator_count: 0,
             signatures_checked: 0,
             valid_signatures: 0,
@@ -23,10 +24,9 @@ pub fn verify_event(
         });
     }
     if validators.is_empty() {
-        let event_hash = event_hash_without_signature(event)?;
         return Ok(HyperlaneVerificationResult {
             valid: false,
-            event_hash,
+            event_id,
             validator_count: 0,
             signatures_checked: 0,
             valid_signatures: 0,
@@ -34,11 +34,10 @@ pub fn verify_event(
             failure_reason: Some(HyperlaneVerificationFailure::NoValidatorsConfigured),
         });
     }
-    let Some(signature) = event.signature.as_ref() else {
-        let event_hash = event_hash_without_signature(event)?;
+    let Some(signature) = event.proof.as_ref() else {
         return Ok(HyperlaneVerificationResult {
             valid: false,
-            event_hash,
+            event_id,
             validator_count: validators.len(),
             signatures_checked: 0,
             valid_signatures: 0,
@@ -46,13 +45,12 @@ pub fn verify_event(
             failure_reason: Some(HyperlaneVerificationFailure::NoSignatureProvided),
         });
     };
-    let event_hash = event_hash_without_signature(event)?;
     let signing_hash = match hyperlane_signing_hash(event) {
         Ok(hash) => hash,
         Err(failure_reason) => {
             return Ok(HyperlaneVerificationResult {
                 valid: false,
-                event_hash,
+                event_id,
                 validator_count: validators.len(),
                 signatures_checked: 0,
                 valid_signatures: 0,
@@ -68,7 +66,7 @@ pub fn verify_event(
             Err(_) => {
                 return Ok(HyperlaneVerificationResult {
                     valid: false,
-                    event_hash,
+                    event_id,
                     validator_count: validators.len(),
                     signatures_checked: 1,
                     valid_signatures: 0,
@@ -83,7 +81,7 @@ pub fn verify_event(
             if chunk_count > MAX_SIGNATURE_CHUNKS {
                 return Ok(HyperlaneVerificationResult {
                     valid: false,
-                    event_hash,
+                    event_id,
                     validator_count: validators.len(),
                     signatures_checked: 0,
                     valid_signatures: 0,
@@ -101,7 +99,7 @@ pub fn verify_event(
                     Err(_) => {
                         return Ok(HyperlaneVerificationResult {
                             valid: false,
-                            event_hash,
+                            event_id,
                             validator_count: validators.len(),
                             signatures_checked: chunk_index.saturating_add(1),
                             valid_signatures: 0,
@@ -118,7 +116,7 @@ pub fn verify_event(
             Err(_) => {
                 return Ok(HyperlaneVerificationResult {
                     valid: false,
-                    event_hash,
+                    event_id,
                     validator_count: validators.len(),
                     signatures_checked: 1,
                     valid_signatures: 0,
@@ -148,7 +146,7 @@ pub fn verify_event(
         if matched >= threshold {
             return Ok(HyperlaneVerificationResult {
                 valid: true,
-                event_hash,
+                event_id,
                 validator_count: validators.len(),
                 signatures_checked: signature_chunks,
                 valid_signatures: matched,
@@ -160,7 +158,7 @@ pub fn verify_event(
 
     Ok(HyperlaneVerificationResult {
         valid: false,
-        event_hash,
+        event_id,
         validator_count: validators.len(),
         signatures_checked: signature_chunks,
         valid_signatures: matched,
@@ -169,12 +167,8 @@ pub fn verify_event(
     })
 }
 
-fn require_meta<'a>(event: &'a SigningEvent, key: &'static str) -> Result<&'a str, HyperlaneVerificationFailure> {
-    event
-        .metadata
-        .get(key)
-        .map(|v| v.as_str())
-        .ok_or(HyperlaneVerificationFailure::MissingMetadataField { field: key })
+fn require_meta<'a>(event: &'a StoredEvent, key: &'static str) -> Result<&'a str, HyperlaneVerificationFailure> {
+    event.audit.source_data.get(key).map(String::as_str).ok_or(HyperlaneVerificationFailure::MissingMetadataField { field: key })
 }
 
 fn parse_u8(value: &str, field: &'static str) -> Result<u8, HyperlaneVerificationFailure> {
@@ -196,15 +190,11 @@ fn parse_h256(value: &str, field: &'static str) -> Result<H256, HyperlaneVerific
     Ok(H256::from(arr))
 }
 
-fn matches_event_id(event: &SigningEvent, message_id: H256) -> bool {
-    let parsed = event.event_id.trim().trim_start_matches("0x").trim_start_matches("0X");
-    match hex::decode(parsed) {
-        Ok(bytes) if bytes.len() == 32 => bytes.as_slice() == message_id.as_bytes(),
-        _ => false,
-    }
+fn matches_external_id(event: &StoredEvent, message_id: H256) -> bool {
+    event.event.external_id.as_slice() == message_id.as_bytes()
 }
 
-fn recompute_message_id(event: &SigningEvent) -> Result<H256, HyperlaneVerificationFailure> {
+fn recompute_message_id(event: &StoredEvent) -> Result<H256, HyperlaneVerificationFailure> {
     let version = parse_u8(require_meta(event, "hyperlane.msg.version")?, "hyperlane.msg.version")?;
     let nonce = parse_u32(require_meta(event, "hyperlane.msg.nonce")?, "hyperlane.msg.nonce")?;
     let origin = parse_u32(require_meta(event, "hyperlane.msg.origin")?, "hyperlane.msg.origin")?;
@@ -219,10 +209,10 @@ fn recompute_message_id(event: &SigningEvent) -> Result<H256, HyperlaneVerificat
     Ok(message.id())
 }
 
-fn hyperlane_signing_hash(event: &SigningEvent) -> Result<H256, HyperlaneVerificationFailure> {
+fn hyperlane_signing_hash(event: &StoredEvent) -> Result<H256, HyperlaneVerificationFailure> {
     let message_id = recompute_message_id(event)?;
 
-    if !matches_event_id(event, message_id) {
+    if !matches_external_id(event, message_id) {
         return Err(HyperlaneVerificationFailure::MessageIdMismatch);
     }
 
@@ -242,9 +232,7 @@ fn hyperlane_signing_hash(event: &SigningEvent) -> Result<H256, HyperlaneVerific
     let root = parse_h256(require_meta(event, "hyperlane.root")?, "hyperlane.root")?;
     let index = parse_u32(require_meta(event, "hyperlane.index")?, "hyperlane.index")?;
 
-    let checkpoint = CheckpointWithMessageId {
-        checkpoint: Checkpoint { merkle_tree_hook_address, mailbox_domain, root, index },
-        message_id,
-    };
+    let checkpoint =
+        CheckpointWithMessageId { checkpoint: Checkpoint { merkle_tree_hook_address, mailbox_domain, root, index }, message_id };
     Ok(checkpoint.signing_hash())
 }

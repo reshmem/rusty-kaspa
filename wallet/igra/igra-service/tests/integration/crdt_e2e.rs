@@ -1,6 +1,6 @@
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
 use igra_core::domain::validation::NoopVerifier;
-use igra_core::domain::{EventSource, GroupPolicy};
+use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
 use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
@@ -45,9 +45,8 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
         }
     }
 
-    let encrypted = Encryptable::from(ordered)
-        .into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305)
-        .expect("encrypt mnemonics");
+    let encrypted =
+        Encryptable::from(ordered).into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305).expect("encrypt mnemonics");
 
     PsktHdConfig {
         mnemonics: Vec::new(),
@@ -55,6 +54,7 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
         xpubs: Vec::new(),
         required_sigs,
         passphrase: None,
+        derivation_path: Some("m/45'/111111'/0'/0/0".to_string()),
     }
 }
 
@@ -62,7 +62,7 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
     let mut service = ServiceConfig::default();
     service.pskt = PsktBuildConfig {
         node_rpc_url: String::new(),
-        source_addresses: Vec::new(),
+        source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
         redeem_script_hex,
         sig_op_count: 2,
         outputs: Vec::new(),
@@ -79,18 +79,16 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
     }
 }
 
-fn signing_event(event_id: &str) -> SigningEventWire {
+fn signing_event(label: &str) -> SigningEventWire {
+    let external_id = hex::encode(blake3::hash(label.as_bytes()).as_bytes());
     SigningEventWire {
-        event_id: event_id.to_string(),
-        event_source: EventSource::Api { issuer: "tests".to_string() },
-        derivation_path: "m/45'/111111'/0'/0/0".to_string(),
-        derivation_index: Some(0),
+        external_id,
+        source: SourceType::Api,
         destination_address: "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string(),
-        amount_sompi: 10_000_000,
+        amount_sompi: 25_000_000,
         metadata: BTreeMap::new(),
-        timestamp_nanos: 1,
-        signature_hex: None,
-        signature: None,
+        proof_hex: None,
+        proof: None,
     }
 }
 
@@ -112,7 +110,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     let pubkeys = key_data
         .iter()
         .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, "m/45'/111111'/0'/0/0", None)
+            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
                 .public_key()
         })
@@ -148,15 +146,36 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     }
 
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone())?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone())?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
     let loops = [
-        tokio::spawn(run_coordination_loop(configs[0].clone(), flows[0].clone(), transports[0].clone(), storages[0].clone(), PeerId::from("signer-1"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[1].clone(), flows[1].clone(), transports[1].clone(), storages[1].clone(), PeerId::from("signer-2"), group_id)),
-        tokio::spawn(run_coordination_loop(configs[2].clone(), flows[2].clone(), transports[2].clone(), storages[2].clone(), PeerId::from("signer-3"), group_id)),
+        tokio::spawn(run_coordination_loop(
+            configs[0].clone(),
+            flows[0].clone(),
+            transports[0].clone(),
+            storages[0].clone(),
+            PeerId::from("signer-1"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[1].clone(),
+            flows[1].clone(),
+            transports[1].clone(),
+            storages[1].clone(),
+            PeerId::from("signer-2"),
+            group_id,
+        )),
+        tokio::spawn(run_coordination_loop(
+            configs[2].clone(),
+            flows[2].clone(),
+            transports[2].clone(),
+            storages[2].clone(),
+            PeerId::from("signer-3"),
+            group_id,
+        )),
     ];
 
     // Ingest the same event on all 3 nodes (as if each had its own watcher).
@@ -173,10 +192,10 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([1u8; 32]),
-            request_id: format!("req-{}", i + 1),
+            external_request_id: Some(format!("req-{}", i + 1)),
             coordinator_peer_id: format!("signer-{}", i + 1),
             expires_at_nanos: 0,
-            signing_event: signing_event("event-1"),
+            event: signing_event("event-1"),
         };
 
         submit_signing_event(&ctx, params).await?;

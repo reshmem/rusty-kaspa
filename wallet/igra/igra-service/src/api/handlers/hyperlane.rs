@@ -3,9 +3,9 @@ use crate::api::state::RpcState;
 use blake3::Hasher;
 use hyperlane_core::accumulator::{merkle::Proof as HyperlaneProof, TREE_DEPTH};
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signature, H256, U256};
-use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
-use igra_core::domain::EventSource;
-use igra_core::infrastructure::audit;
+use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventResult, SigningEventWire};
+use igra_core::domain::SourceType;
+use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::hyperlane::{IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
 use kaspa_addresses::Address;
 use log::{debug, info, warn};
@@ -236,11 +236,9 @@ fn ism_mode_str(mode: &IsmMode) -> &'static str {
 struct SigningPayload {
     destination_address: String,
     amount_sompi: u64,
-    derivation_path: String,
-    derivation_index: Option<u32>,
 }
 
-fn extract_signing_payload(message: &HyperlaneMessage, default_derivation_path: &str) -> Result<SigningPayload, String> {
+fn extract_signing_payload(message: &HyperlaneMessage) -> Result<SigningPayload, String> {
     let body = &message.body;
     if body.len() < 8 {
         return Err("hyperlane message body too short".to_string());
@@ -251,22 +249,14 @@ fn extract_signing_payload(message: &HyperlaneMessage, default_derivation_path: 
 
     let _ = Address::try_from(recipient.as_str()).map_err(|_| "invalid recipient address".to_string())?;
 
-    Ok(SigningPayload {
-        destination_address: recipient,
-        amount_sompi,
-        derivation_path: default_derivation_path.to_string(),
-        derivation_index: None,
-    })
+    Ok(SigningPayload { destination_address: recipient, amount_sompi })
 }
 
 fn metadata_to_map(meta: &ProofMetadata, mode: &IsmMode) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert("hyperlane.mode".to_string(), ism_mode_str(mode).to_string());
     map.insert("hyperlane.mailbox_domain".to_string(), meta.checkpoint.checkpoint.mailbox_domain.to_string());
-    map.insert(
-        "hyperlane.merkle_tree_hook_address".to_string(),
-        format_h256(meta.checkpoint.checkpoint.merkle_tree_hook_address),
-    );
+    map.insert("hyperlane.merkle_tree_hook_address".to_string(), format_h256(meta.checkpoint.checkpoint.merkle_tree_hook_address));
     map.insert("hyperlane.root".to_string(), format_h256(meta.checkpoint.checkpoint.root));
     map.insert("hyperlane.index".to_string(), meta.checkpoint.checkpoint.index.to_string());
     map.insert("hyperlane.message_id".to_string(), format_h256(meta.checkpoint.message_id));
@@ -299,13 +289,13 @@ async fn submit_signing_from_hyperlane(
     set: &ValidatorSet,
     coordinator_peer_id: &str,
     session_expiry_seconds: u64,
-    default_derivation_path: &str,
-) -> Result<bool, String> {
-    let payload = extract_signing_payload(message, default_derivation_path)?;
+    external_request_id: Option<String>,
+) -> Result<SigningEventResult, ThresholdError> {
+    let payload = extract_signing_payload(message).map_err(ThresholdError::Message)?;
     if payload.destination_address.trim().is_empty() || payload.amount_sompi == 0 {
-        return Err("destination_address and amount_sompi are required to submit signing event".to_string());
+        return Err(ThresholdError::Message("destination_address and amount_sompi are required to submit signing event".to_string()));
     }
-    let event_id = format_h256(message.id());
+    let external_id = format_h256(message.id());
     let mut meta = metadata_to_map(metadata, &set.mode);
     meta.insert("hyperlane.quorum".to_string(), set.threshold.to_string());
     // Persist the canonical Hyperlane message fields so the core verifier can recompute `message_id`
@@ -333,26 +323,22 @@ async fn submit_signing_from_hyperlane(
     };
 
     let signing_event = SigningEventWire {
-        event_id: event_id.clone(),
-        event_source: EventSource::Hyperlane { domain: message.destination.to_string(), sender: format_h256(message.sender) },
-        derivation_path: payload.derivation_path,
-        derivation_index: payload.derivation_index,
+        external_id: external_id.clone(),
+        source: SourceType::Hyperlane { origin_domain: message.origin },
         destination_address: payload.destination_address,
         amount_sompi: payload.amount_sompi,
         metadata: meta,
-        timestamp_nanos: audit::now_nanos(),
-        signature_hex: None,
-        signature,
+        proof_hex: None,
+        proof: signature,
     };
     let params = SigningEventParams {
         session_id_hex: session_id_hex.to_string(),
-        request_id: event_id.clone(),
+        external_request_id,
         coordinator_peer_id: coordinator_peer_id.to_string(),
-        expires_at_nanos: audit::now_nanos().saturating_add(session_expiry_seconds.saturating_mul(1_000_000_000)),
-        signing_event,
+        expires_at_nanos: igra_core::foundation::now_nanos().saturating_add(session_expiry_seconds.saturating_mul(1_000_000_000)),
+        event: signing_event,
     };
-    submit_signing_event(ctx, params).await.map_err(|e| e.to_string())?;
-    Ok(true)
+    submit_signing_event(ctx, params).await
 }
 
 pub async fn handle_validators_and_threshold(
@@ -452,12 +438,7 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
         return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
     };
     let mode = params.mode.unwrap_or(set.mode.clone());
-    debug!(
-        "selected ism mode mode={:?} threshold={} validator_count={}",
-        mode,
-        set.threshold,
-        set.validators.len()
-    );
+    debug!("selected ism mode mode={:?} threshold={} validator_count={}", mode, set.threshold, set.validators.len());
     let metadata = match params.metadata.into_core(message.id(), mode.clone()) {
         Ok(meta) => meta,
         Err(err) => {
@@ -490,49 +471,50 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
                 &set,
                 &state.coordinator_peer_id,
                 state.session_expiry_seconds,
-                &state.hyperlane_default_derivation_path,
+                Some(format_h256(report.message_id)),
             )
             .await
             {
-                Ok(flag) => flag,
+                Ok(result) => result,
                 Err(err) => {
                     state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
                     // Log validation errors at debug to avoid spam from repeated requests
                     // Real errors (RPC failures, storage errors) stay at warn
-                    let is_validation_error = err.contains("invalid recipient")
-                        || err.contains("destination_address")
-                        || err.contains("amount_sompi")
-                        || err.contains("body too short")
-                        || err.contains("event already processed");
+                    let err_string = err.to_string();
+                    let is_validation_error = err_string.contains("invalid recipient")
+                        || err_string.contains("destination_address")
+                        || err_string.contains("amount_sompi")
+                        || err_string.contains("body too short")
+                        || err_string.contains("event already processed");
                     if is_validation_error {
-                        debug!("hyperlane signing event rejected message_id={} error={}", format_h256(message.id()), err);
+                        debug!("hyperlane signing event rejected message_id={} error={}", format_h256(message.id()), err_string);
                     } else {
                         warn!(
                             "failed to submit signing event from hyperlane message_id={} session_id={} error={}",
                             format_h256(message.id()),
                             session_id,
-                            err
+                            err_string
                         );
                     }
-                    return json_err(id, RpcErrorCode::SigningFailed, err);
+                    return json_err(id, RpcErrorCode::SigningFailed, err_string);
                 }
             };
             info!(
-                "hyperlane signing event submitted session_id={} signing_submitted={}",
-                session_id, signing_submitted
+                "hyperlane signing event submitted session_id={} event_id={} tx_template_hash={}",
+                session_id, signing_submitted.event_id_hex, signing_submitted.tx_template_hash_hex
             );
 
             let result = MailboxProcessResult {
                 status: "proven",
                 message_id: format_h256(report.message_id),
-                event_id: format_h256(report.message_id),
+                event_id: format!("0x{}", signing_submitted.event_id_hex),
                 root: format_h256(report.root),
                 quorum: report.quorum,
                 validators_used: report.validators_used.iter().map(format_pubkey).collect(),
                 config_hash: format_config_hash(&set),
                 mode,
                 session_id,
-                signing_submitted,
+                signing_submitted: true,
             };
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "ok");
             json_ok(id, result)
@@ -572,7 +554,10 @@ mod tests {
 
     #[async_trait]
     impl Transport for NoopTransport {
-        async fn publish_event_state(&self, _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast) -> Result<(), ThresholdError> {
+        async fn publish_event_state(
+            &self,
+            _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast,
+        ) -> Result<(), ThresholdError> {
             Ok(())
         }
 
@@ -611,7 +596,6 @@ mod tests {
             hyperlane_ism: None,
             group_id_hex: None,
             coordinator_peer_id: "test-peer".to_string(),
-            hyperlane_default_derivation_path: "m/45h/111111h/0h/0/0".to_string(),
             rate_limit_rps: 30,
             rate_limit_burst: 60,
             session_expiry_seconds: 600,

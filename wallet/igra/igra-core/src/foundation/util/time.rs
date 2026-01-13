@@ -11,7 +11,15 @@ pub fn current_timestamp_nanos_env(env_var: Option<&str>) -> Result<u64, Thresho
     Ok(now.as_secs().saturating_mul(1_000_000_000).saturating_add(u64::from(now.subsec_nanos())))
 }
 
+/// Returns the current wall-clock timestamp in nanoseconds.
+///
+/// For test determinism, this respects `TEST_NOW_NANOS_ENV_VAR` when set.
+pub fn now_nanos() -> u64 {
+    current_timestamp_nanos_env(Some(crate::foundation::constants::TEST_NOW_NANOS_ENV_VAR))
+        .or_else(|_| current_timestamp_nanos_env(None))
+        .unwrap_or(0)
+}
+
 pub fn day_start_nanos(timestamp_nanos: u64) -> u64 {
-    const NANOS_PER_DAY: u64 = 24 * 60 * 60 * 1_000_000_000;
-    (timestamp_nanos / NANOS_PER_DAY) * NANOS_PER_DAY
+    (timestamp_nanos / crate::foundation::constants::NANOS_PER_DAY) * crate::foundation::constants::NANOS_PER_DAY
 }

@@ -54,6 +54,7 @@ pub const CF_METADATA: &str = "metadata";
 pub const CF_DEFAULT: &str = "default";
 pub const CF_GROUP: &str = "group";
 pub const CF_EVENT: &str = "event";
+pub const CF_EVENT_INDEX: &str = "event_index";
 pub const CF_EVENT_CRDT: &str = "event_crdt";
 pub const CF_VOLUME: &str = "volume";
 pub const CF_SEEN: &str = "seen";

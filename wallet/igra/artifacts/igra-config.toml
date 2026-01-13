@@ -54,9 +54,9 @@ require_reason = false
 threshold_m = 2
 threshold_n = 3
 member_pubkeys = [
-    "02a4ebef8e3553bd9bf9212c8c66c356d4beee198580cf9e85dc20a9305e5daba9",
-    "02b93ff1c2c3c89b5284e7e62c090032a3dac67a62b8b0372f9417ee5ee58b6d7b",
-    "02ca1582d546037ff74ebc280c84a40d7118c0959b7885b94eba69a578b273deec"
+    "a4ebef8e3553bd9bf9212c8c66c356d4beee198580cf9e85dc20a9305e5daba9",
+    "b93ff1c2c3c89b5284e7e62c090032a3dac67a62b8b0372f9417ee5ee58b6d7b",
+    "ca1582d546037ff74ebc280c84a40d7118c0959b7885b94eba69a578b273deec"
 ]
 fee_rate_sompi_per_gram = 0
 finality_blue_score_threshold = 0
@@ -73,7 +73,7 @@ threshold = 2
 poll_secs = 10
 
 [iroh]
-group_id = "d44bf35c6f6f52b1c245fb85ef1ae2178e4f621c9e6d53f6a36acd03aa25b81c"
+group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 verifier_keys = ["coordinator-1:02a4ebef8e3553bd9bf9212c8c66c356d4beee198580cf9e85dc20a9305e5daba9"]
 
 # =============================================================================
@@ -96,7 +96,7 @@ addr = "127.0.0.1:8088"
 [profiles.signer-1.iroh]
 peer_id = "signer-1"
 signer_seed_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-group_id = "d44bf35c6f6f52b1c245fb85ef1ae2178e4f621c9e6d53f6a36acd03aa25b81c"
+group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
     "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
@@ -118,7 +118,7 @@ addr = "127.0.0.1:8089"
 [profiles.signer-2.iroh]
 peer_id = "signer-2"
 signer_seed_hex = "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-group_id = "d44bf35c6f6f52b1c245fb85ef1ae2178e4f621c9e6d53f6a36acd03aa25b81c"
+group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
     "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
@@ -140,7 +140,7 @@ addr = "127.0.0.1:8090"
 [profiles.signer-3.iroh]
 peer_id = "signer-3"
 signer_seed_hex = "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
-group_id = "d44bf35c6f6f52b1c245fb85ef1ae2178e4f621c9e6d53f6a36acd03aa25b81c"
+group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
     "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",

@@ -1,6 +1,6 @@
 use crate::domain::signing::results::SigningResult;
 use crate::domain::signing::{SignerBackend, SigningBackendKind};
-use crate::foundation::RequestId;
+use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
 
 pub struct MpcSigner;
@@ -22,7 +22,7 @@ impl SignerBackend for MpcSigner {
         SigningBackendKind::Mpc
     }
 
-    fn sign(&self, _kpsbt_blob: &[u8], _request_id: &RequestId) -> Result<SigningResult, ThresholdError> {
-        Err(ThresholdError::Message("MPC backend not implemented".to_string()))
+    fn sign(&self, _kpsbt_blob: &[u8], _event_id: &Hash32) -> Result<SigningResult, ThresholdError> {
+        Err(ThresholdError::Unimplemented("MPC signing backend not yet implemented. Use signing_backend='threshold'.".to_string()))
     }
 }

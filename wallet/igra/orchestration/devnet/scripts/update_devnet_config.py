@@ -362,11 +362,15 @@ def rewrite_toml(
     multisig_address = data.get("multisig_address") or ""
     if multisig_address:
         config["service"]["pskt"]["source_addresses"] = [multisig_address]
-        config["service"]["pskt"]["change_address"] = multisig_address
     else:
         config["service"]["pskt"]["source_addresses"] = data.get("source_addresses", [])
-        config["service"]["pskt"]["change_address"] = data.get("change_address", "")
     config["service"]["pskt"]["redeem_script_hex"] = data.get("redeem_script_hex", "")
+    change_address = (data.get("change_address") or "").strip()
+    if change_address:
+        config["service"]["pskt"]["change_address"] = change_address
+    else:
+        # Default change address to the multisig/source address in the Rust config loader.
+        config["service"]["pskt"].pop("change_address", None)
 
     # Update hd section
     config["service"]["hd"]["mnemonics"] = [s.get("mnemonic", "") for s in data.get("signers", []) if s.get("mnemonic")]
@@ -384,13 +388,6 @@ def rewrite_toml(
     # Update hyperlane section
     config["hyperlane"]["validators"] = [k.get("public_key_hex", "") for k in data.get("hyperlane_keys", []) if k.get("public_key_hex")]
     config["hyperlane"]["threshold"] = 2
-
-    # Keep a deterministic derivation path default for Hyperlane event ingestion (devnet convenience).
-    signers = data.get("signers", [])
-    if isinstance(signers, list) and signers:
-        default_path = (signers[0] or {}).get("derivation_path") or ""
-        if default_path:
-            config["hyperlane"]["default_derivation_path"] = default_path
 
     # Enable ISM-style mailbox processing for devnet by generating `hyperlane.domains`.
     # NOTE: the mailbox_process handler selects the set by `message.origin`.
@@ -455,13 +452,15 @@ def rewrite_toml(
             f"{endpoint_map[p]}@127.0.0.1:{port_map[p]}" for p in endpoint_map if p != profile and p in port_map
         ]
 
-        config["profiles"][profile] = {
-            "service": {
-                "data_dir": str(igra_data / profile),
-            },
+        profile_service = {
+            "data_dir": str(igra_data / profile),
             "hd": {
                 "mnemonics": [signer.get("mnemonic", "")] if signer.get("mnemonic") else [],
             },
+        }
+
+        config["profiles"][profile] = {
+            "service": profile_service,
             "rpc": {
                 "addr": f"0.0.0.0:{8087 + profile_num}",
             },

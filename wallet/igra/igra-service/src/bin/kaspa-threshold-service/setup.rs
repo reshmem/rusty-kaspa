@@ -6,13 +6,13 @@ use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
+use log::{info, warn};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use log::{info, warn};
 
 use iroh_base::{EndpointAddr, EndpointId, SecretKey as IrohSecretKey, TransportAddr};
 
@@ -36,11 +36,7 @@ pub fn load_app_config() -> Result<Arc<AppConfig>, ThresholdError> {
 }
 
 pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<Arc<AppConfig>, ThresholdError> {
-    info!(
-        "loading application config profile path={} profile={}",
-        path.display(),
-        profile
-    );
+    info!("loading application config profile path={} profile={}", path.display(), profile);
     let app_config = Arc::new(igra_core::infrastructure::config::load_app_config_from_profile_path(path, profile)?);
     if let Err(errors) = app_config.validate() {
         for err in errors {
@@ -73,9 +69,11 @@ pub fn warn_test_mode(app_config: &AppConfig) {
     }
 }
 
-pub fn init_storage(data_dir: &str) -> Result<Arc<RocksStorage>, ThresholdError> {
-    info!("initializing storage data_dir={}", data_dir);
-    RocksStorage::open_in_dir(data_dir).map(Arc::new).map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
+pub fn init_storage(data_dir: &str, allow_schema_wipe: bool) -> Result<Arc<RocksStorage>, ThresholdError> {
+    info!("initializing storage data_dir={} allow_schema_wipe={}", data_dir, allow_schema_wipe);
+    RocksStorage::open_in_dir_with_options(data_dir, allow_schema_wipe)
+        .map(Arc::new)
+        .map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
 }
 
 pub struct SignerIdentity {
@@ -152,11 +150,7 @@ pub async fn init_iroh_gossip(
     static_addrs: Vec<EndpointAddr>,
     secret_key: IrohSecretKey,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    info!(
-        "initializing iroh gossip bind_port={:?} static_addr_count={}",
-        bind_port,
-        static_addrs.len()
-    );
+    info!("initializing iroh gossip bind_port={:?} static_addr_count={}", bind_port, static_addrs.len());
     let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
     let static_provider = iroh::discovery::static_provider::StaticProvider::new();
     if !static_addrs.is_empty() {

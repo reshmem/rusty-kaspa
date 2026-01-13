@@ -1,3 +1,4 @@
+use crate::domain::signing::SigningBackendKind;
 use crate::infrastructure::config::types::AppConfig;
 use kaspa_addresses::Address;
 
@@ -110,6 +111,10 @@ impl AppConfig {
                 Ok(_) => errors.push("layerzero.endpoint_pubkeys must be 33 or 65-byte secp256k1 keys".to_string()),
                 Err(err) => errors.push(format!("invalid layerzero.endpoint_pubkeys entry: {}", err)),
             }
+        }
+
+        if self.signing.backend.parse::<SigningBackendKind>().is_err() {
+            errors.push(format!("invalid signing.backend '{}'; valid options: threshold, musig2, mpc", self.signing.backend));
         }
 
         if errors.is_empty() {

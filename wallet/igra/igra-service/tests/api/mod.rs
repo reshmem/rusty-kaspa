@@ -91,7 +91,6 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
         hyperlane_ism: None,
         group_id_hex: None,
         coordinator_peer_id: "test-peer".to_string(),
-        hyperlane_default_derivation_path: "m/45h/111111h/0h/0/0".to_string(),
         rate_limit_rps: 30,
         rate_limit_burst: 60,
         session_expiry_seconds: 600,

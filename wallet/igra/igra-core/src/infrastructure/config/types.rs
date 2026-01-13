@@ -1,4 +1,5 @@
 use crate::domain::{FeePaymentMode, GroupConfig, GroupPolicy};
+use crate::infrastructure::rpc::CircuitBreakerConfig;
 use figment::value::{Dict, Map};
 use kaspa_wallet_core::encryption::Encryptable;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
@@ -11,6 +12,12 @@ pub struct ServiceConfig {
     pub node_rpc_url: String,
     #[serde(default)]
     pub data_dir: String,
+    /// Devnet-only escape hatch: wipe RocksDB if schema version mismatches.
+    #[serde(default)]
+    pub allow_schema_wipe: bool,
+    /// Circuit breaker settings for node RPC calls.
+    #[serde(default)]
+    pub node_rpc_circuit_breaker: CircuitBreakerConfig,
     #[serde(default)]
     pub pskt: PsktBuildConfig,
     #[serde(default)]
@@ -29,6 +36,10 @@ pub struct PsktHdConfig {
     pub required_sigs: usize,
     #[serde(default)]
     pub passphrase: Option<String>,
+    /// Derivation path used to derive per-signer pubkeys for the multisig redeem script.
+    /// This is signer policy and must not be provided per-event.
+    #[serde(default)]
+    pub derivation_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -107,10 +118,20 @@ pub struct RuntimeConfig {
     pub crdt_gc_ttl_seconds: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SigningConfig {
-    #[serde(default)]
+    #[serde(default = "default_signing_backend")]
     pub backend: String,
+}
+
+fn default_signing_backend() -> String {
+    "threshold".to_string()
+}
+
+impl Default for SigningConfig {
+    fn default() -> Self {
+        Self { backend: default_signing_backend() }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -136,8 +157,6 @@ pub struct HyperlaneConfig {
     pub threshold: Option<u8>,
     #[serde(default)]
     pub events_dir: Option<String>,
-    #[serde(default)]
-    pub default_derivation_path: Option<String>,
     #[serde(default)]
     pub poll_secs: u64,
     /// Optional per-destination-domain validator sets (preferred for ISM parity).

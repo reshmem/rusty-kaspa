@@ -1,16 +1,14 @@
 use super::traits::{MessageEnvelope, SignatureVerifier, TransportSubscription};
 use crate::foundation::ThresholdError;
+use crate::foundation::{now_nanos, SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES, SEEN_MESSAGE_TTL_NANOS};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
+use log::{debug, trace, warn};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use log::{debug, trace, warn};
 
 use super::encoding;
-
-const SEEN_MESSAGE_TTL_NANOS: u64 = 24 * 60 * 60 * 1_000_000_000;
-const SEEN_MESSAGE_CLEANUP_INTERVAL: u64 = 500;
 
 pub fn filter_stream(
     verifier: Arc<dyn SignatureVerifier>,
@@ -40,7 +38,7 @@ pub fn filter_stream(
                 );
                 audit(AuditEvent::RateLimitExceeded {
                     peer_id: envelope.sender_peer_id.to_string(),
-                    timestamp_ns: envelope.timestamp_nanos,
+                    timestamp_nanos: envelope.timestamp_nanos,
                 });
                 yield Err(ThresholdError::Message(format!(
                     "rate limit exceeded for peer {}",
@@ -64,7 +62,12 @@ pub fn filter_stream(
                     hex::encode(expected),
                     hex::encode(envelope.payload_hash)
                 );
-                yield Err(ThresholdError::Message("payload hash mismatch".to_string()));
+                yield Err(ThresholdError::Message(format!(
+                    "payload hash mismatch peer_id={} expected_hash={} actual_hash={}",
+                    envelope.sender_peer_id,
+                    hex::encode(expected),
+                    hex::encode(envelope.payload_hash)
+                )));
                 continue;
             }
             if !verifier.verify(&envelope.sender_peer_id, &envelope.payload_hash, envelope.signature.as_slice()) {
@@ -73,7 +76,11 @@ pub fn filter_stream(
                     envelope.sender_peer_id,
                     hex::encode(envelope.payload_hash)
                 );
-                yield Err(ThresholdError::Message("invalid signature".to_string()));
+                yield Err(ThresholdError::Message(format!(
+                    "invalid signature peer_id={} payload_hash={}",
+                    envelope.sender_peer_id,
+                    hex::encode(envelope.payload_hash)
+                )));
                 continue;
             }
 
@@ -90,13 +97,8 @@ pub fn filter_stream(
                         hex::encode(envelope.session_id.as_hash()),
                         envelope.seq_no
                     );
-                    if cleanup_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SEEN_MESSAGE_CLEANUP_INTERVAL == 0 {
-                        let local_now_nanos: u64 = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_err(|_| ThresholdError::Message("system time before unix epoch".to_string()))?
-                            .as_nanos()
-                            .try_into()
-                            .unwrap_or(u64::MAX);
+                    if cleanup_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES == 0 {
+                        let local_now_nanos = now_nanos();
                         let cutoff = local_now_nanos.saturating_sub(SEEN_MESSAGE_TTL_NANOS);
                         trace!("cleanup_seen_messages tick cutoff={}", cutoff);
                         match storage.cleanup_seen_messages(cutoff) {

@@ -24,10 +24,17 @@ pub enum ErrorCode {
     SignatureVerificationFailed,
     InvalidPeerIdentity,
     StorageError,
+    SerializationError,
+    CryptoError,
+    PsktError,
+    TransportError,
     KeyNotFound,
     ConfigError,
     InvalidStateTransition,
     InvalidDerivationPath,
+    InvalidExternalId,
+    InvalidDestination,
+    SchemaMismatch,
     NodeRpcError,
     NodeNotSynced,
     Unimplemented,
@@ -100,8 +107,8 @@ pub enum ThresholdError {
     #[error("invalid peer identity")]
     InvalidPeerIdentity,
 
-    #[error("storage error: {0}")]
-    StorageError(String),
+    #[error("storage error during {operation}: {details}")]
+    StorageError { operation: String, details: String },
 
     #[error("key not found: {0}")]
     KeyNotFound(String),
@@ -114,6 +121,15 @@ pub enum ThresholdError {
 
     #[error("invalid derivation path: {0}")]
     InvalidDerivationPath(String),
+
+    #[error("invalid external id: {0}")]
+    InvalidExternalId(String),
+
+    #[error("invalid destination: {0}")]
+    InvalidDestination(String),
+
+    #[error("schema mismatch: stored={stored} current={current}")]
+    SchemaMismatch { stored: u32, current: u32 },
 
     #[error("node RPC error: {0}")]
     NodeRpcError(String),
@@ -135,6 +151,18 @@ pub enum ThresholdError {
 
     #[error("network error: {0}")]
     NetworkError(String),
+
+    #[error("{format} serialization error: {details}")]
+    SerializationError { format: String, details: String },
+
+    #[error("crypto error during {operation}: {details}")]
+    CryptoError { operation: String, details: String },
+
+    #[error("PSKT error during {operation}: {details}")]
+    PsktError { operation: String, details: String },
+
+    #[error("transport error during {operation}: {details}")]
+    TransportError { operation: String, details: String },
 
     #[error("{0}")]
     Message(String),
@@ -163,11 +191,14 @@ impl ThresholdError {
             ThresholdError::MessageReplayed => ErrorCode::MessageReplayed,
             ThresholdError::SignatureVerificationFailed => ErrorCode::SignatureVerificationFailed,
             ThresholdError::InvalidPeerIdentity => ErrorCode::InvalidPeerIdentity,
-            ThresholdError::StorageError(_) => ErrorCode::StorageError,
+            ThresholdError::StorageError { .. } => ErrorCode::StorageError,
             ThresholdError::KeyNotFound(_) => ErrorCode::KeyNotFound,
             ThresholdError::ConfigError(_) => ErrorCode::ConfigError,
             ThresholdError::InvalidStateTransition { .. } => ErrorCode::InvalidStateTransition,
             ThresholdError::InvalidDerivationPath(_) => ErrorCode::InvalidDerivationPath,
+            ThresholdError::InvalidExternalId(_) => ErrorCode::InvalidExternalId,
+            ThresholdError::InvalidDestination(_) => ErrorCode::InvalidDestination,
+            ThresholdError::SchemaMismatch { .. } => ErrorCode::SchemaMismatch,
             ThresholdError::NodeRpcError(_) => ErrorCode::NodeRpcError,
             ThresholdError::NodeNotSynced => ErrorCode::NodeNotSynced,
             ThresholdError::Unimplemented(_) => ErrorCode::Unimplemented,
@@ -175,6 +206,10 @@ impl ThresholdError {
             ThresholdError::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
             ThresholdError::EncodingError(_) => ErrorCode::EncodingError,
             ThresholdError::NetworkError(_) => ErrorCode::NetworkError,
+            ThresholdError::SerializationError { .. } => ErrorCode::SerializationError,
+            ThresholdError::CryptoError { .. } => ErrorCode::CryptoError,
+            ThresholdError::PsktError { .. } => ErrorCode::PsktError,
+            ThresholdError::TransportError { .. } => ErrorCode::TransportError,
             ThresholdError::Message(_) => ErrorCode::Message,
         }
     }
@@ -198,14 +233,40 @@ impl From<toml::de::Error> for ThresholdError {
 
 impl From<rocksdb::Error> for ThresholdError {
     fn from(err: rocksdb::Error) -> Self {
-        ThresholdError::StorageError(err.to_string())
+        ThresholdError::StorageError {
+            operation: "rocksdb".to_string(),
+            details: err.to_string(),
+        }
     }
 }
 
 impl From<bincode::Error> for ThresholdError {
     fn from(err: bincode::Error) -> Self {
-        ThresholdError::StorageError(format!("serialization error: {}", err))
+        ThresholdError::SerializationError {
+            format: "bincode".to_string(),
+            details: err.to_string(),
+        }
     }
+}
+
+#[macro_export]
+macro_rules! storage_err {
+    ($op:expr, $err:expr) => {
+        crate::foundation::ThresholdError::StorageError {
+            operation: $op.into(),
+            details: $err.to_string(),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! serde_err {
+    ($fmt:expr, $err:expr) => {
+        crate::foundation::ThresholdError::SerializationError {
+            format: $fmt.into(),
+            details: $err.to_string(),
+        }
+    };
 }
 
 impl From<io::Error> for ThresholdError {

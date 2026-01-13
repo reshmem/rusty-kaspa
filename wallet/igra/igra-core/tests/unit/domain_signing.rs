@@ -1,5 +1,6 @@
 use igra_core::domain::pskt::multisig::{
-    build_pskt, canonical_schnorr_pubkey_for_keypair, combine_pskts, extract_tx, finalize_multisig, sign_pskt, MultisigInput, MultisigOutput,
+    build_pskt, canonical_schnorr_pubkey_for_keypair, combine_pskts, extract_tx, finalize_multisig, sign_pskt, MultisigInput,
+    MultisigOutput,
 };
 use kaspa_consensus_core::config::params::TESTNET_PARAMS;
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
@@ -45,16 +46,10 @@ fn test_threshold_signing_when_all_sigs_present_then_finalizes_and_extracts_tx()
     let combined = combine_pskts(pskt.combiner(), signer1).expect("combine1");
     let combined = combine_pskts(combined, signer2).expect("combine2");
 
-    let finalized = finalize_multisig(
-        combined,
-        2,
-        &[
-            canonical_schnorr_pubkey_for_keypair(&kp1),
-            canonical_schnorr_pubkey_for_keypair(&kp2),
-        ],
-    )
-    .expect("finalize")
-    .pskt;
+    let finalized =
+        finalize_multisig(combined, 2, &[canonical_schnorr_pubkey_for_keypair(&kp1), canonical_schnorr_pubkey_for_keypair(&kp2)])
+            .expect("finalize")
+            .pskt;
     let tx = extract_tx(finalized, &TESTNET_PARAMS).expect("extract tx");
     assert!(!tx.tx.inputs.is_empty());
     assert!(tx.tx.inputs.iter().all(|input| !input.signature_script.is_empty()));

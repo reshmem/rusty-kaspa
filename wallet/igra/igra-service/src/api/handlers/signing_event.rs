@@ -29,16 +29,16 @@ pub async fn handle_signing_event_submit(
     };
 
     debug!(
-        "rpc signing_event.submit parsed request_id={} session_id={} event_id={} expires_at_nanos={}",
-        params.request_id, params.session_id_hex, params.signing_event.event_id, params.expires_at_nanos
+        "rpc signing_event.submit parsed session_id={} external_request_id={:?} coordinator_peer_id={} expires_at_nanos={}",
+        params.session_id_hex, params.external_request_id, params.coordinator_peer_id, params.expires_at_nanos
     );
 
     match submit_signing_event(&state.event_ctx, params).await {
         Ok(result) => {
             state.metrics.inc_rpc_request("signing_event.submit", "ok");
             info!(
-                "rpc signing_event.submit ok session_id={} event_hash={} validation_hash={}",
-                result.session_id_hex, result.event_hash_hex, result.validation_hash_hex
+                "rpc signing_event.submit ok session_id={} event_id={} tx_template_hash={}",
+                result.session_id_hex, result.event_id_hex, result.tx_template_hash_hex
             );
             json_ok(id, result)
         }
@@ -81,7 +81,10 @@ mod tests {
 
     #[async_trait]
     impl Transport for NoopTransport {
-        async fn publish_event_state(&self, _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast) -> Result<(), ThresholdError> {
+        async fn publish_event_state(
+            &self,
+            _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast,
+        ) -> Result<(), ThresholdError> {
             Ok(())
         }
 
@@ -120,7 +123,6 @@ mod tests {
             hyperlane_ism: None,
             group_id_hex: None,
             coordinator_peer_id: "test-peer".to_string(),
-            hyperlane_default_derivation_path: "m/45h/111111h/0h/0/0".to_string(),
             rate_limit_rps: 30,
             rate_limit_burst: 60,
             session_expiry_seconds: 600,

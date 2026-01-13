@@ -1,25 +1,21 @@
 use crate::domain::policy::types::{PolicyCheck, PolicyCheckFailure, PolicyCheckType, PolicyEvaluationResult, PolicyFailureContext};
-use crate::domain::{GroupPolicy, SigningEvent};
+use crate::domain::{GroupPolicy, StoredEvent};
 use crate::foundation::error::ThresholdError;
 use kaspa_addresses::Address;
+use kaspa_txscript::pay_to_address_script;
 
 pub trait PolicyEnforcer: Send + Sync {
     /// Evaluate policy rules using the caller-provided current daily volume (sompi) since day start.
-    fn evaluate_policy(
-        &self,
-        signing_event: &SigningEvent,
-        policy: &GroupPolicy,
-        current_daily_volume_sompi: u64,
-    ) -> PolicyEvaluationResult;
+    fn evaluate_policy(&self, event: &StoredEvent, policy: &GroupPolicy, current_daily_volume_sompi: u64) -> PolicyEvaluationResult;
 
     /// Convenience wrapper for legacy call sites that still expect `ThresholdError` failures.
     fn enforce_policy(
         &self,
-        signing_event: &SigningEvent,
+        event: &StoredEvent,
         policy: &GroupPolicy,
         current_daily_volume_sompi: u64,
     ) -> Result<(), ThresholdError> {
-        let result = self.evaluate_policy(signing_event, policy, current_daily_volume_sompi);
+        let result = self.evaluate_policy(event, policy, current_daily_volume_sompi);
         if result.allowed {
             return Ok(());
         }
@@ -45,15 +41,10 @@ impl Default for DefaultPolicyEnforcer {
 }
 
 impl PolicyEnforcer for DefaultPolicyEnforcer {
-    fn evaluate_policy(
-        &self,
-        signing_event: &SigningEvent,
-        policy: &GroupPolicy,
-        current_daily_volume_sompi: u64,
-    ) -> PolicyEvaluationResult {
+    fn evaluate_policy(&self, event: &StoredEvent, policy: &GroupPolicy, current_daily_volume_sompi: u64) -> PolicyEvaluationResult {
         let mut checks = Vec::new();
 
-        if signing_event.amount_sompi == 0 {
+        if event.event.amount_sompi == 0 {
             let check = PolicyCheck { check_type: PolicyCheckType::AmountNonZero, passed: false, details: "amount=0".to_string() };
             checks.push(check);
             return PolicyEvaluationResult {
@@ -69,11 +60,11 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
         checks.push(PolicyCheck {
             check_type: PolicyCheckType::AmountNonZero,
             passed: true,
-            details: format!("amount={}", signing_event.amount_sompi),
+            details: format!("amount={}", event.event.amount_sompi),
         });
 
-        if Address::try_from(signing_event.destination_address.as_str()).is_err() {
-            let destination = signing_event.destination_address.clone();
+        if Address::try_from(event.audit.destination_raw.as_str()).is_err() {
+            let destination = event.audit.destination_raw.clone();
             let check = PolicyCheck {
                 check_type: PolicyCheckType::DestinationValid,
                 passed: false,
@@ -93,37 +84,57 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
         checks.push(PolicyCheck {
             check_type: PolicyCheckType::DestinationValid,
             passed: true,
-            details: format!("destination={}", signing_event.destination_address),
+            details: format!("destination={}", event.audit.destination_raw),
         });
 
-        if !policy.allowed_destinations.is_empty() && !policy.allowed_destinations.contains(&signing_event.destination_address) {
-            let destination = signing_event.destination_address.clone();
-            let whitelist_size = policy.allowed_destinations.len();
-            let check = PolicyCheck {
-                check_type: PolicyCheckType::DestinationWhitelisted,
-                passed: false,
-                details: format!("destination={}, whitelist_size={}", destination, whitelist_size),
-            };
-            checks.push(check);
-            return PolicyEvaluationResult {
-                allowed: false,
-                checks_performed: checks,
-                failed_check: Some(PolicyCheckFailure {
+        if !policy.allowed_destinations.is_empty() {
+            let mut allowed = false;
+            for allowed_dest in &policy.allowed_destinations {
+                if let Ok(addr) = Address::try_from(allowed_dest.as_str()) {
+                    let script = pay_to_address_script(&addr);
+                    if script == event.event.destination {
+                        allowed = true;
+                        break;
+                    }
+                }
+            }
+            if !allowed {
+                let destination = event.audit.destination_raw.clone();
+                let whitelist_size = policy.allowed_destinations.len();
+                let check = PolicyCheck {
                     check_type: PolicyCheckType::DestinationWhitelisted,
-                    reason: "destination not in whitelist".to_string(),
-                    context: PolicyFailureContext::DestinationNotAllowed { destination, whitelist_size },
-                }),
-            };
+                    passed: false,
+                    details: format!("destination={}, whitelist_size={}", destination, whitelist_size),
+                };
+                checks.push(check);
+                return PolicyEvaluationResult {
+                    allowed: false,
+                    checks_performed: checks,
+                    failed_check: Some(PolicyCheckFailure {
+                        check_type: PolicyCheckType::DestinationWhitelisted,
+                        reason: "destination not in whitelist".to_string(),
+                        context: PolicyFailureContext::DestinationNotAllowed { destination, whitelist_size },
+                    }),
+                };
+            }
         }
-        checks.push(PolicyCheck {
-            check_type: PolicyCheckType::DestinationWhitelisted,
-            passed: true,
-            details: format!("whitelist_size={}", policy.allowed_destinations.len()),
-        });
+        if !policy.allowed_destinations.is_empty() {
+            checks.push(PolicyCheck {
+                check_type: PolicyCheckType::DestinationWhitelisted,
+                passed: true,
+                details: format!("whitelist_size={}", policy.allowed_destinations.len()),
+            });
+        } else {
+            checks.push(PolicyCheck {
+                check_type: PolicyCheckType::DestinationWhitelisted,
+                passed: true,
+                details: "whitelist_size=0".to_string(),
+            });
+        }
 
         if let Some(min_amount) = policy.min_amount_sompi {
-            if signing_event.amount_sompi < min_amount {
-                let amount = signing_event.amount_sompi;
+            if event.event.amount_sompi < min_amount {
+                let amount = event.event.amount_sompi;
                 let check = PolicyCheck {
                     check_type: PolicyCheckType::AmountAboveMinimum,
                     passed: false,
@@ -143,7 +154,7 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
             checks.push(PolicyCheck {
                 check_type: PolicyCheckType::AmountAboveMinimum,
                 passed: true,
-                details: format!("amount={}, min={}", signing_event.amount_sompi, min_amount),
+                details: format!("amount={}, min={}", event.event.amount_sompi, min_amount),
             });
         } else {
             checks.push(PolicyCheck {
@@ -154,8 +165,8 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
         }
 
         if let Some(max_amount) = policy.max_amount_sompi {
-            if signing_event.amount_sompi > max_amount {
-                let amount = signing_event.amount_sompi;
+            if event.event.amount_sompi > max_amount {
+                let amount = event.event.amount_sompi;
                 let check = PolicyCheck {
                     check_type: PolicyCheckType::AmountBelowMaximum,
                     passed: false,
@@ -175,7 +186,7 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
             checks.push(PolicyCheck {
                 check_type: PolicyCheckType::AmountBelowMaximum,
                 passed: true,
-                details: format!("amount={}, max={}", signing_event.amount_sompi, max_amount),
+                details: format!("amount={}, max={}", event.event.amount_sompi, max_amount),
             });
         } else {
             checks.push(PolicyCheck {
@@ -185,7 +196,7 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
             });
         }
 
-        if policy.require_reason && !signing_event.metadata.contains_key("reason") {
+        if policy.require_reason && !event.audit.source_data.contains_key("reason") {
             let check =
                 PolicyCheck { check_type: PolicyCheckType::ReasonProvided, passed: false, details: "reason=missing".to_string() };
             checks.push(check);
@@ -207,8 +218,8 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
 
         if let Some(limit) = policy.max_daily_volume_sompi {
             let total = current_daily_volume_sompi;
-            if total.saturating_add(signing_event.amount_sompi) > limit {
-                let amount = signing_event.amount_sompi;
+            if total.saturating_add(event.event.amount_sompi) > limit {
+                let amount = event.event.amount_sompi;
                 let check = PolicyCheck {
                     check_type: PolicyCheckType::VelocityLimit,
                     passed: false,
@@ -228,7 +239,7 @@ impl PolicyEnforcer for DefaultPolicyEnforcer {
             checks.push(PolicyCheck {
                 check_type: PolicyCheckType::VelocityLimit,
                 passed: true,
-                details: format!("current_volume={}, amount={}, limit={}", total, signing_event.amount_sompi, limit),
+                details: format!("current_volume={}, amount={}, limit={}", total, event.event.amount_sompi, limit),
             });
         } else {
             checks.push(PolicyCheck {

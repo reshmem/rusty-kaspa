@@ -43,6 +43,7 @@ pub fn open_db_with_cfs(path: impl AsRef<Path>) -> Result<DB, ThresholdError> {
         ColumnFamilyDescriptor::new(CF_METADATA, RocksOptions::default()),
         ColumnFamilyDescriptor::new(CF_GROUP, RocksOptions::default()),
         ColumnFamilyDescriptor::new(CF_EVENT, RocksOptions::default()),
+        ColumnFamilyDescriptor::new(CF_EVENT_INDEX, RocksOptions::default()),
         ColumnFamilyDescriptor::new(CF_EVENT_CRDT, RocksOptions::default()),
         ColumnFamilyDescriptor::new(CF_VOLUME, volume_options),
         ColumnFamilyDescriptor::new(CF_SEEN, RocksOptions::default()),

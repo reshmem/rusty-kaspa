@@ -55,6 +55,7 @@ sysinfo = "0.30"
 tower = "0.4"
 hyper = "1"
 hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo.git", branch = "main" }
+igra-core = { path = "../igra-core", features = ["test-utils"] }
 
 [[bench]]
 name = "integration_perf"

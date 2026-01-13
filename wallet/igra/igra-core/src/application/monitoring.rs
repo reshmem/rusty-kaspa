@@ -1,8 +1,8 @@
 use crate::foundation::ThresholdError;
 use crate::infrastructure::rpc::NodeRpc;
+use log::{debug, info, trace};
 use std::sync::Arc;
 use std::time::Duration;
-use log::{debug, info, trace};
 
 pub struct TransactionMonitor {
     rpc: Arc<dyn NodeRpc>,
@@ -20,9 +20,7 @@ impl TransactionMonitor {
             let current = self.rpc.get_virtual_selected_parent_blue_score().await?;
             debug!(
                 "checked blue score current_blue_score={} accepted_blue_score={} min_confirmations={}",
-                current,
-                accepted_blue_score,
-                self.min_confirmations
+                current, accepted_blue_score, self.min_confirmations
             );
             trace!(
                 "monitor loop tick current_blue_score={} accepted_blue_score={} min_confirmations={}",
@@ -33,16 +31,11 @@ impl TransactionMonitor {
             if current.saturating_sub(accepted_blue_score) >= self.min_confirmations {
                 info!(
                     "confirmation threshold reached current_blue_score={} accepted_blue_score={} min_confirmations={}",
-                    current,
-                    accepted_blue_score,
-                    self.min_confirmations
+                    current, accepted_blue_score, self.min_confirmations
                 );
                 return Ok(current);
             }
-            trace!(
-                "sleeping before next blue score poll sleep_ms={}",
-                self.poll_interval.as_millis()
-            );
+            trace!("sleeping before next blue score poll sleep_ms={}", self.poll_interval.as_millis());
             tokio::time::sleep(self.poll_interval).await;
         }
     }

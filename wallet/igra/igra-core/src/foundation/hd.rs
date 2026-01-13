@@ -10,7 +10,10 @@ use zeroize::Zeroize;
 pub struct HdInputs<'a> {
     pub key_data: &'a [PrvKeyData],
     pub xpubs: &'a [String],
-    pub derivation_path: &'a str,
+    /// Optional derivation path.
+    ///
+    /// Default policy: no derivation. `None`, `""`, or `"m"` means "use the root key directly".
+    pub derivation_path: Option<&'a str>,
     pub payment_secret: Option<&'a Secret>,
 }
 
@@ -50,23 +53,27 @@ impl Zeroize for SigningKeypair {
 
 pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdError> {
     let mut pubkeys = Vec::new();
-    let path = DerivationPath::from_str(inputs.derivation_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let path = match inputs.derivation_path.map(str::trim).unwrap_or("") {
+        "" | "m" => None,
+        p => Some(DerivationPath::from_str(p).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?),
+    };
 
     for key_data in inputs.key_data {
-        let xprv = key_data
-            .get_xprv(inputs.payment_secret)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?
-            .derive_path(&path)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        pubkeys.push(xprv.private_key().get_public_key());
+        let xprv = key_data.get_xprv(inputs.payment_secret).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let derived = match &path {
+            Some(path) => xprv.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
+            None => xprv,
+        };
+        pubkeys.push(derived.private_key().get_public_key());
     }
 
     for xpub in inputs.xpubs {
-        let xpub = ExtendedPublicKey::<PublicKey>::from_str(xpub)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?
-            .derive_path(&path)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        pubkeys.push(*xpub.public_key());
+        let xpub = ExtendedPublicKey::<PublicKey>::from_str(xpub).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let derived = match &path {
+            Some(path) => xpub.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
+            None => xpub,
+        };
+        pubkeys.push(*derived.public_key());
     }
 
     Ok(pubkeys)
@@ -74,15 +81,19 @@ pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdE
 
 pub fn derive_keypair_from_key_data(
     key_data: &PrvKeyData,
-    derivation_path: &str,
+    derivation_path: Option<&str>,
     payment_secret: Option<&Secret>,
 ) -> Result<SigningKeypair, ThresholdError> {
-    let path = DerivationPath::from_str(derivation_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let xprv = key_data
-        .get_xprv(payment_secret)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?
-        .derive_path(&path)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let path = match derivation_path.map(str::trim).unwrap_or("") {
+        "" | "m" => None,
+        p => Some(DerivationPath::from_str(p).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?),
+    };
+
+    let xprv = key_data.get_xprv(payment_secret).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let xprv = match &path {
+        Some(path) => xprv.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
+        None => xprv,
+    };
     let secret = xprv.private_key();
     let secret_bytes = secret.secret_bytes();
     let secp = Secp256k1::new();

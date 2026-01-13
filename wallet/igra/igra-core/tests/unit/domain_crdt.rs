@@ -83,4 +83,3 @@ fn test_event_crdt_threshold_and_merge() {
     let merged = merge_event_states(&crdt_a, &crdt_b);
     assert!(merged.is_completed());
 }
-
