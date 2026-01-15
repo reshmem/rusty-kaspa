@@ -67,11 +67,13 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::stream;
     use igra_core::application::EventContext;
+    use igra_core::domain::coordination::TwoPhaseConfig;
     use igra_core::domain::validation::NoopVerifier;
     use igra_core::domain::GroupPolicy;
     use igra_core::foundation::{Hash32, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
+    use igra_core::infrastructure::storage::phase::PhaseStorage;
     use igra_core::infrastructure::storage::RocksStorage;
     use igra_core::infrastructure::transport::iroh::traits::{StateSyncRequest, StateSyncResponse, Transport, TransportSubscription};
     use std::sync::Arc;
@@ -85,6 +87,10 @@ mod tests {
             &self,
             _broadcast: igra_core::infrastructure::transport::iroh::traits::EventStateBroadcast,
         ) -> Result<(), ThresholdError> {
+            Ok(())
+        }
+
+        async fn publish_proposal(&self, _proposal: igra_core::domain::coordination::ProposalBroadcast) -> Result<(), ThresholdError> {
             Ok(())
         }
 
@@ -105,12 +111,15 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let dir_path = temp_dir.into_path();
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
+        let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
         let ctx = EventContext {
             config: ServiceConfig::default(),
             policy: GroupPolicy::default(),
+            two_phase: TwoPhaseConfig::default(),
             local_peer_id: PeerId::from("test-peer"),
             message_verifier: Arc::new(NoopVerifier),
             storage,
+            phase_storage,
             transport: Arc::new(NoopTransport),
             rpc: Arc::new(UnimplementedRpc::new()),
         };

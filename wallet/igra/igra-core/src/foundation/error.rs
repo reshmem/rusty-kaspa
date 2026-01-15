@@ -1,5 +1,4 @@
 use secp256k1::Error as SecpError;
-use std::fmt;
 use std::io;
 use thiserror::Error;
 
@@ -42,6 +41,15 @@ pub enum ErrorCode {
     MessageTooLarge,
     EncodingError,
     NetworkError,
+    SignedHashConflict,
+    MetricsError,
+    MissingCrdtState,
+    MissingKpsbtBlob,
+    ProposalValidationFailed,
+    ProposalEventIdMismatch,
+    UtxoBelowMinDepth,
+    UtxoMissing,
+    PolicyEvaluationFailed,
     Message,
 }
 
@@ -152,6 +160,12 @@ pub enum ThresholdError {
     #[error("network error: {0}")]
     NetworkError(String),
 
+    #[error("signed hash conflict: event_id={event_id} existing={existing} attempted={attempted}")]
+    SignedHashConflict { event_id: String, existing: String, attempted: String },
+
+    #[error("metrics error during {operation}: {details}")]
+    MetricsError { operation: String, details: String },
+
     #[error("{format} serialization error: {details}")]
     SerializationError { format: String, details: String },
 
@@ -163,6 +177,27 @@ pub enum ThresholdError {
 
     #[error("transport error during {operation}: {details}")]
     TransportError { operation: String, details: String },
+
+    #[error("missing CRDT state event_id={event_id} tx_template_hash={tx_template_hash} context={context}")]
+    MissingCrdtState { event_id: String, tx_template_hash: String, context: String },
+
+    #[error("missing kpsbt_blob event_id={event_id} tx_template_hash={tx_template_hash} context={context}")]
+    MissingKpsbtBlob { event_id: String, tx_template_hash: String, context: String },
+
+    #[error("proposal validation failed: {details}")]
+    ProposalValidationFailed { details: String },
+
+    #[error("proposal event_id mismatch: claimed={claimed} computed={computed}")]
+    ProposalEventIdMismatch { claimed: String, computed: String },
+
+    #[error("UTXO below min depth outpoint={outpoint} depth={depth} min_required={min_required}")]
+    UtxoBelowMinDepth { outpoint: String, depth: u64, min_required: u64 },
+
+    #[error("UTXO missing at commit time outpoint={outpoint}")]
+    UtxoMissing { outpoint: String },
+
+    #[error("policy evaluation failed: {details}")]
+    PolicyEvaluationFailed { details: String },
 
     #[error("{0}")]
     Message(String),
@@ -206,10 +241,19 @@ impl ThresholdError {
             ThresholdError::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
             ThresholdError::EncodingError(_) => ErrorCode::EncodingError,
             ThresholdError::NetworkError(_) => ErrorCode::NetworkError,
+            ThresholdError::SignedHashConflict { .. } => ErrorCode::SignedHashConflict,
+            ThresholdError::MetricsError { .. } => ErrorCode::MetricsError,
             ThresholdError::SerializationError { .. } => ErrorCode::SerializationError,
             ThresholdError::CryptoError { .. } => ErrorCode::CryptoError,
             ThresholdError::PsktError { .. } => ErrorCode::PsktError,
             ThresholdError::TransportError { .. } => ErrorCode::TransportError,
+            ThresholdError::MissingCrdtState { .. } => ErrorCode::MissingCrdtState,
+            ThresholdError::MissingKpsbtBlob { .. } => ErrorCode::MissingKpsbtBlob,
+            ThresholdError::ProposalValidationFailed { .. } => ErrorCode::ProposalValidationFailed,
+            ThresholdError::ProposalEventIdMismatch { .. } => ErrorCode::ProposalEventIdMismatch,
+            ThresholdError::UtxoBelowMinDepth { .. } => ErrorCode::UtxoBelowMinDepth,
+            ThresholdError::UtxoMissing { .. } => ErrorCode::UtxoMissing,
+            ThresholdError::PolicyEvaluationFailed { .. } => ErrorCode::PolicyEvaluationFailed,
             ThresholdError::Message(_) => ErrorCode::Message,
         }
     }
@@ -221,7 +265,7 @@ impl ThresholdError {
 
 impl From<hex::FromHexError> for ThresholdError {
     fn from(err: hex::FromHexError) -> Self {
-        ThresholdError::Message(format!("hex decode error: {}", err))
+        ThresholdError::EncodingError(format!("hex decode error: {}", err))
     }
 }
 
@@ -233,72 +277,53 @@ impl From<toml::de::Error> for ThresholdError {
 
 impl From<rocksdb::Error> for ThresholdError {
     fn from(err: rocksdb::Error) -> Self {
-        ThresholdError::StorageError {
-            operation: "rocksdb".to_string(),
-            details: err.to_string(),
-        }
+        ThresholdError::StorageError { operation: "rocksdb".to_string(), details: err.to_string() }
     }
 }
 
 impl From<bincode::Error> for ThresholdError {
     fn from(err: bincode::Error) -> Self {
-        ThresholdError::SerializationError {
-            format: "bincode".to_string(),
-            details: err.to_string(),
-        }
+        ThresholdError::SerializationError { format: "bincode".to_string(), details: err.to_string() }
     }
 }
 
 #[macro_export]
 macro_rules! storage_err {
     ($op:expr, $err:expr) => {
-        crate::foundation::ThresholdError::StorageError {
-            operation: $op.into(),
-            details: $err.to_string(),
-        }
+        $crate::foundation::ThresholdError::StorageError { operation: $op.into(), details: $err.to_string() }
     };
 }
 
 #[macro_export]
 macro_rules! serde_err {
     ($fmt:expr, $err:expr) => {
-        crate::foundation::ThresholdError::SerializationError {
-            format: $fmt.into(),
-            details: $err.to_string(),
-        }
+        $crate::foundation::ThresholdError::SerializationError { format: $fmt.into(), details: $err.to_string() }
     };
 }
 
 impl From<io::Error> for ThresholdError {
     fn from(err: io::Error) -> Self {
-        ThresholdError::Message(format!("IO error: {}", err))
+        ThresholdError::StorageError { operation: "io".to_string(), details: err.to_string() }
     }
 }
 
 impl From<serde_json::Error> for ThresholdError {
     fn from(err: serde_json::Error) -> Self {
-        ThresholdError::Message(format!("JSON error: {}", err))
+        ThresholdError::SerializationError { format: "json".to_string(), details: err.to_string() }
     }
 }
 
 impl From<kaspa_addresses::AddressError> for ThresholdError {
     fn from(err: kaspa_addresses::AddressError) -> Self {
-        ThresholdError::Message(format!("address error: {}", err))
+        ThresholdError::InvalidDestination(err.to_string())
     }
 }
 
 impl From<SecpError> for ThresholdError {
     fn from(err: SecpError) -> Self {
-        ThresholdError::Message(format!("secp256k1 error: {}", err))
+        ThresholdError::CryptoError { operation: "secp256k1".to_string(), details: err.to_string() }
     }
 }
 
-pub trait IntoThresholdError {
-    fn into_threshold_error(self) -> ThresholdError;
-}
-
-impl<E: fmt::Display> IntoThresholdError for E {
-    fn into_threshold_error(self) -> ThresholdError {
-        ThresholdError::Message(self.to_string())
-    }
-}
+// NOTE: Avoid adding generic "stringly" error conversions here.
+// Use structured `ThresholdError` variants at the call site to preserve context.

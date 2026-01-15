@@ -107,18 +107,16 @@ pub fn validate_source_data(source_data: &BTreeMap<String, String>) -> Result<()
     let mut total_bytes = 0usize;
     for (key, value) in source_data {
         if key.len() > crate::foundation::constants::MAX_EVENT_METADATA_KEY_LENGTH {
-            return Err(ThresholdError::Message(format!(
-                "metadata key too long: {} > {}",
-                key.len(),
-                crate::foundation::constants::MAX_EVENT_METADATA_KEY_LENGTH
-            )));
+            return Err(ThresholdError::MessageTooLarge {
+                size: key.len(),
+                max: crate::foundation::constants::MAX_EVENT_METADATA_KEY_LENGTH,
+            });
         }
         if value.len() > crate::foundation::constants::MAX_EVENT_METADATA_VALUE_LENGTH {
-            return Err(ThresholdError::Message(format!(
-                "metadata value too long: {} > {}",
-                value.len(),
-                crate::foundation::constants::MAX_EVENT_METADATA_VALUE_LENGTH
-            )));
+            return Err(ThresholdError::MessageTooLarge {
+                size: value.len(),
+                max: crate::foundation::constants::MAX_EVENT_METADATA_VALUE_LENGTH,
+            });
         }
         total_bytes = total_bytes.saturating_add(key.len().saturating_add(value.len()));
         if total_bytes > crate::foundation::constants::MAX_EVENT_METADATA_SIZE {

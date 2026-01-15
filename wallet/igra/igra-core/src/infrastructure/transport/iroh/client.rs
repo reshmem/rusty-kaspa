@@ -1,6 +1,6 @@
 use super::traits::{
-    EventStateBroadcast, MessageEnvelope, SignatureSigner, SignatureVerifier, StateSyncRequest, StateSyncResponse, Transport,
-    TransportMessage, TransportSubscription,
+    EventStateBroadcast, MessageEnvelope, ProposalBroadcast, SignatureSigner, SignatureVerifier, StateSyncRequest, StateSyncResponse,
+    Transport, TransportMessage, TransportSubscription,
 };
 use crate::foundation::Hash32;
 use crate::foundation::SessionId;
@@ -36,6 +36,7 @@ pub struct IrohTransport {
     rate_limiter: Arc<RateLimiter>,
     config: IrohConfig,
     bootstrap: Vec<EndpointId>,
+    session_id: SessionId,
     seq: std::sync::atomic::AtomicU64,
     publish_ok_count: std::sync::atomic::AtomicU64,
     publish_ok_bytes: std::sync::atomic::AtomicU64,
@@ -82,6 +83,20 @@ impl IrohTransport {
         // Create rate limiter: 100 messages burst, 10 messages/sec sustained per peer
         let rate_limiter = Arc::new(RateLimiter::new(RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE));
 
+        // Session id must be unique across restarts for the same peer id. Receivers use
+        // (sender_peer_id, session_id, seq_no) to suppress replays; if `session_id` were stable
+        // across runs and `seq_no` restarted at 0/1, a reboot would look like a replay and would
+        // drop all gossip messages for up to `SEEN_MESSAGE_TTL_NANOS`.
+        let topic = Self::group_topic_id(&config.group_id, config.network_id);
+        let now = crate::foundation::now_nanos();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"igra:transport:session_id:v1:");
+        hasher.update(&topic);
+        hasher.update(signer.sender_peer_id().as_str().as_bytes());
+        hasher.update(&now.to_le_bytes());
+        hasher.update(&std::process::id().to_le_bytes());
+        let session_id = SessionId::from(*hasher.finalize().as_bytes());
+
         Ok(Self {
             gossip,
             signer,
@@ -90,6 +105,7 @@ impl IrohTransport {
             rate_limiter,
             config,
             bootstrap,
+            session_id,
             seq: std::sync::atomic::AtomicU64::new(1),
             publish_ok_count: std::sync::atomic::AtomicU64::new(0),
             publish_ok_bytes: std::sync::atomic::AtomicU64::new(0),
@@ -217,7 +233,10 @@ impl IrohTransport {
                 }
             }
         }
-        Err(ThresholdError::Message(last_err.unwrap_or_else(|| "failed to publish gossip message".to_string())))
+        Err(ThresholdError::TransportError {
+            operation: "publish gossip message".to_string(),
+            details: last_err.unwrap_or_else(|| "failed to publish gossip message".to_string()),
+        })
     }
 }
 
@@ -225,7 +244,6 @@ impl IrohTransport {
 impl Transport for IrohTransport {
     async fn publish_event_state(&self, broadcast: EventStateBroadcast) -> Result<(), ThresholdError> {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
-        let stream_id = SessionId::from(topic);
         debug!(
             "publishing CRDT state event_id={} tx_template_hash={} sig_count={} completed={}",
             hex::encode(broadcast.event_id),
@@ -239,7 +257,7 @@ impl Transport for IrohTransport {
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
-            session_id: stream_id,
+            session_id: self.session_id,
             seq_no: self.seq.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
             timestamp_nanos,
             payload,
@@ -250,9 +268,27 @@ impl Transport for IrohTransport {
         self.publish_bytes(topic, bytes, "event_state").await
     }
 
+    async fn publish_proposal(&self, proposal: ProposalBroadcast) -> Result<(), ThresholdError> {
+        let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
+        let payload = TransportMessage::ProposalBroadcast(proposal);
+        let payload_hash = encoding::payload_hash(&payload)?;
+        let timestamp_nanos = crate::foundation::now_nanos();
+        let envelope = MessageEnvelope {
+            sender_peer_id: self.signer.sender_peer_id().clone(),
+            group_id: self.config.group_id,
+            session_id: self.session_id,
+            seq_no: self.seq.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
+            timestamp_nanos,
+            payload,
+            payload_hash,
+            signature: self.signer.sign(&payload_hash),
+        };
+        let bytes = encoding::encode_envelope(&envelope)?;
+        self.publish_bytes(topic, bytes, "proposal").await
+    }
+
     async fn publish_state_sync_request(&self, request: StateSyncRequest) -> Result<(), ThresholdError> {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
-        let stream_id = SessionId::from(topic);
         debug!("publishing CRDT sync request event_count={} requester_peer_id={}", request.event_ids.len(), request.requester_peer_id);
         let payload = TransportMessage::StateSyncRequest(request);
         let payload_hash = encoding::payload_hash(&payload)?;
@@ -260,7 +296,7 @@ impl Transport for IrohTransport {
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
-            session_id: stream_id,
+            session_id: self.session_id,
             seq_no: self.seq.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
             timestamp_nanos,
             payload,
@@ -273,7 +309,6 @@ impl Transport for IrohTransport {
 
     async fn publish_state_sync_response(&self, response: StateSyncResponse) -> Result<(), ThresholdError> {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
-        let stream_id = SessionId::from(topic);
         debug!("publishing CRDT sync response state_count={}", response.states.len());
         let payload = TransportMessage::StateSyncResponse(response);
         let payload_hash = encoding::payload_hash(&payload)?;
@@ -281,7 +316,7 @@ impl Transport for IrohTransport {
         let envelope = MessageEnvelope {
             sender_peer_id: self.signer.sender_peer_id().clone(),
             group_id: self.config.group_id,
-            session_id: stream_id,
+            session_id: self.session_id,
             seq_no: self.seq.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
             timestamp_nanos,
             payload,
@@ -296,8 +331,10 @@ impl Transport for IrohTransport {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
         info!("subscribing to group gossip topic={} bootstrap_peers={}", hex::encode(topic), self.bootstrap.len());
-        let topic =
-            self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let topic = self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::TransportError {
+            operation: "iroh gossip subscribe".to_string(),
+            details: err.to_string(),
+        })?;
         let (sender, receiver) = topic.split();
         let keepalive: Box<dyn std::any::Any + Send> = Box::new(sender);
         Ok(subscription::subscribe_stream(self.verifier.clone(), self.storage.clone(), self.rate_limiter.clone(), receiver, keepalive))

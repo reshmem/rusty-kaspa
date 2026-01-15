@@ -45,7 +45,7 @@ impl PsktHdConfig {
         };
         let wallet_secret = load_wallet_secret()?;
         let decrypted = encrypted.decrypt(Some(&wallet_secret)).map_err(|err| {
-            warn!("failed to decrypt hd.mnemonics");
+            warn!("failed to decrypt hd.mnemonics error={}", err);
             ThresholdError::ConfigError(format!("failed to decrypt hd.mnemonics: {}", err))
         })?;
         Ok(decrypted.as_ref().clone())

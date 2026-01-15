@@ -34,7 +34,10 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
         return Ok(None);
     }
     let db = open_config_db(&db_path, false)?;
-    let value = db.get(CONFIG_KEY).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let value = db.get(CONFIG_KEY).map_err(|err| ThresholdError::StorageError {
+        operation: "rocksdb get config".to_string(),
+        details: err.to_string(),
+    })?;
     match value {
         Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
         None => Ok(None),
@@ -44,11 +47,17 @@ pub fn load_config_from_db(data_dir: &Path) -> Result<Option<AppConfig>, Thresho
 pub fn store_config_in_db(data_dir: &Path, config: &AppConfig) -> Result<(), ThresholdError> {
     let db_path = rocksdb_path(data_dir);
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|err| ThresholdError::StorageError {
+            operation: "create config db dir".to_string(),
+            details: err.to_string(),
+        })?;
     }
     let db = open_config_db(&db_path, true)?;
     let bytes = serde_json::to_vec_pretty(config)?;
-    db.put(CONFIG_KEY, bytes).map_err(|err| ThresholdError::Message(err.to_string()))
+    db.put(CONFIG_KEY, bytes).map_err(|err| ThresholdError::StorageError {
+        operation: "rocksdb put config".to_string(),
+        details: err.to_string(),
+    })
 }
 
 fn rocksdb_path(data_dir: &Path) -> PathBuf {
@@ -60,7 +69,10 @@ fn open_config_db(path: &Path, create_if_missing: bool) -> Result<DB, ThresholdE
     options.create_if_missing(create_if_missing);
 
     let cf_names = if path.exists() {
-        DB::list_cf(&options, path).map_err(|err| ThresholdError::Message(err.to_string()))?
+        DB::list_cf(&options, path).map_err(|err| ThresholdError::StorageError {
+            operation: "rocksdb list_cf".to_string(),
+            details: err.to_string(),
+        })?
     } else {
         vec![CF_DEFAULT.to_string()]
     };
@@ -74,5 +86,8 @@ fn open_config_db(path: &Path, create_if_missing: bool) -> Result<DB, ThresholdE
         descriptors.push(ColumnFamilyDescriptor::new(name, cf_options));
     }
 
-    DB::open_cf_descriptors(&options, path, descriptors).map_err(|err| ThresholdError::Message(err.to_string()))
+    DB::open_cf_descriptors(&options, path, descriptors).map_err(|err| ThresholdError::StorageError {
+        operation: "rocksdb open_cf_descriptors config".to_string(),
+        details: err.to_string(),
+    })
 }

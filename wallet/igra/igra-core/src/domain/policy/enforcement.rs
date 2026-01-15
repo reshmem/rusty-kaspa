@@ -20,7 +20,7 @@ pub trait PolicyEnforcer: Send + Sync {
             return Ok(());
         }
         let Some(failure) = result.failed_check else {
-            return Err(ThresholdError::Message("policy evaluation failed without a failed_check".to_string()));
+            return Err(ThresholdError::PolicyEvaluationFailed { details: "missing failed_check".to_string() });
         };
         Err(map_policy_failure_to_error(&failure.context))
     }

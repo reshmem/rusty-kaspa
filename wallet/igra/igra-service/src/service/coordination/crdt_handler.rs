@@ -1,32 +1,159 @@
 use crate::service::coordination::{derive_ordered_pubkeys, params_for_network_id};
 use crate::service::flow::ServiceFlow;
-use igra_core::application::event_processor::resolve_pskt_config;
 use igra_core::domain::policy::enforcement::{DefaultPolicyEnforcer, PolicyEnforcer};
 use igra_core::domain::pskt::multisig as pskt_multisig;
 use igra_core::domain::{PartialSigRecord, StoredEvent};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError, TransactionId};
 use igra_core::infrastructure::config::AppConfig;
-use igra_core::infrastructure::rpc::kaspa_integration::build_pskt_from_rpc;
+use igra_core::infrastructure::storage::phase::PhaseStorage;
+use igra_core::infrastructure::storage::RecordSignedHashResult;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::Transport;
-use igra_core::infrastructure::transport::messages::{
-    EventCrdtState, EventStateBroadcast, StateSyncRequest, StateSyncResponse,
-};
+use igra_core::infrastructure::transport::messages::{EventCrdtState, EventStateBroadcast, StateSyncRequest, StateSyncResponse};
 use kaspa_wallet_core::prelude::Secret;
 use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+async fn validate_commit_candidate(
+    app_config: &AppConfig,
+    flow: &ServiceFlow,
+    storage: &Arc<dyn Storage>,
+    event_id: &Hash32,
+    tx_template_hash: &Hash32,
+    signing_material: &igra_core::domain::CrdtSigningMaterial,
+    kpsbt_blob: &[u8],
+) -> Result<(), ThresholdError> {
+    let now = now_nanos();
+
+    let policy_event = StoredEvent {
+        event: signing_material.event.clone(),
+        received_at_nanos: now,
+        audit: signing_material.audit.clone(),
+        proof: signing_material.proof.clone(),
+    };
+
+    // Verify source proof before accepting any commit fast-forward.
+    let report = flow.message_verifier().verify(&policy_event)?;
+    if !report.valid {
+        return Err(ThresholdError::EventSignatureInvalid);
+    }
+
+    validate_before_signing(flow, &app_config.policy, &policy_event).await?;
+
+    // Verify the sender's PSKT matches the claimed tx_template_hash.
+    //
+    // NOTE: We intentionally do NOT rebuild the PSKT from local RPC state here, since UTXO
+    // selection can diverge between nodes. Two-phase ensures we converge by accepting a
+    // canonical proposal (including its PSKT), not by independently rebuilding it.
+    let pskt = pskt_multisig::deserialize_pskt_signer(kpsbt_blob)?;
+    let computed = pskt_multisig::tx_template_hash(&pskt)?;
+    if computed != *tx_template_hash {
+        return Err(ThresholdError::PsktMismatch { expected: hex::encode(tx_template_hash), actual: hex::encode(computed) });
+    }
+
+    storage.insert_event_if_not_exists(*event_id, policy_event)?;
+    Ok(())
+}
+
+fn signed_hash_conflict(event_id: &Hash32, existing: Hash32, attempted: Hash32) -> ThresholdError {
+    ThresholdError::SignedHashConflict {
+        event_id: hex::encode(event_id),
+        existing: hex::encode(existing),
+        attempted: hex::encode(attempted),
+    }
+}
+
+fn record_signed_hash_or_conflict(
+    phase_storage: &Arc<dyn PhaseStorage>,
+    event_id: &Hash32,
+    tx_template_hash: Hash32,
+    now: u64,
+) -> Result<(), ThresholdError> {
+    match phase_storage.record_signed_hash(event_id, tx_template_hash, now)? {
+        RecordSignedHashResult::Set | RecordSignedHashResult::AlreadySame => Ok(()),
+        RecordSignedHashResult::Conflict { existing, attempted } => Err(signed_hash_conflict(event_id, existing, attempted)),
+    }
+}
 
 pub async fn handle_crdt_broadcast(
     app_config: &AppConfig,
     flow: &ServiceFlow,
     transport: &Arc<dyn Transport>,
     storage: &Arc<dyn Storage>,
+    phase_storage: &Arc<dyn PhaseStorage>,
     local_peer_id: &PeerId,
     broadcast: EventStateBroadcast,
 ) -> Result<(), ThresholdError> {
     let event_id = broadcast.event_id;
     let tx_template_hash = broadcast.tx_template_hash;
+
+    // Fast-forward to committed if sender included phase context.
+    if let Some(ctx) = broadcast.phase_context {
+        match ctx.phase {
+            igra_core::domain::coordination::EventPhase::Committed | igra_core::domain::coordination::EventPhase::Completed => {
+                let Some(signing_material) = broadcast.state.signing_material.as_ref() else {
+                    return Ok(());
+                };
+                let Some(kpsbt_blob) = broadcast.state.kpsbt_blob.as_deref() else {
+                    let now = now_nanos();
+                    let policy_event = StoredEvent {
+                        event: signing_material.event.clone(),
+                        received_at_nanos: now,
+                        audit: signing_material.audit.clone(),
+                        proof: signing_material.proof.clone(),
+                    };
+                    let report = flow.message_verifier().verify(&policy_event)?;
+                    if !report.valid {
+                        return Err(ThresholdError::EventSignatureInvalid);
+                    }
+                    validate_before_signing(flow, &app_config.policy, &policy_event).await?;
+
+                    return Err(ThresholdError::PsktMismatch {
+                        expected: hex::encode(tx_template_hash),
+                        actual: "missing kpsbt_blob".to_string(),
+                    });
+                };
+
+                validate_commit_candidate(app_config, flow, storage, &event_id, &tx_template_hash, signing_material, kpsbt_blob)
+                    .await?;
+
+                if let Some(active) = storage.get_event_active_template_hash(&event_id)? {
+                    if active != tx_template_hash {
+                        flow.metrics().inc_tx_template_hash_mismatch("two_phase_fast_forward_active_mismatch");
+                        return Ok(());
+                    }
+                } else {
+                    storage.set_event_active_template_hash(&event_id, &tx_template_hash)?;
+                }
+
+                let now = now_nanos();
+                let _ = phase_storage.mark_committed(&event_id, ctx.round, tx_template_hash, now)?;
+                if ctx.phase == igra_core::domain::coordination::EventPhase::Completed {
+                    phase_storage.mark_completed(&event_id, now)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let phase = phase_storage.get_phase(&event_id)?;
+    match phase.as_ref().map(|p| p.phase) {
+        Some(igra_core::domain::coordination::EventPhase::Committed) => {
+            if phase.as_ref().and_then(|p| p.canonical_hash) != Some(tx_template_hash) {
+                flow.metrics().inc_tx_template_hash_mismatch("two_phase_non_canonical");
+                return Ok(());
+            }
+        }
+        Some(igra_core::domain::coordination::EventPhase::Completed)
+        | Some(igra_core::domain::coordination::EventPhase::Abandoned) => {
+            return Ok(());
+        }
+        _ => {
+            // Pre-commit: do not merge CRDT state (avoids early active-template lock).
+            return Ok(());
+        }
+    }
 
     if let Ok(existing) = storage.list_event_crdts_for_event(&event_id) {
         let mut other_hashes =
@@ -41,7 +168,7 @@ pub async fn handle_crdt_broadcast(
                 other_hashes
                     .iter()
                     .take(3)
-                    .map(|h| hex::encode(h))
+                    .map(hex::encode)
                     .collect::<Vec<_>>()
                     .join(",")
             );
@@ -79,26 +206,44 @@ pub async fn handle_crdt_broadcast(
     );
 
     if local_state.completion.is_some() {
+        let now = igra_core::foundation::now_nanos();
+        phase_storage.mark_completed(&event_id, now)?;
         return Ok(());
     }
 
-    maybe_sign_and_broadcast(app_config, flow, transport, storage, local_peer_id, &local_state).await?;
-    maybe_submit_and_broadcast(app_config, flow, transport, storage, local_peer_id, &event_id, &tx_template_hash).await?;
+    maybe_sign_and_broadcast(app_config, flow, transport, storage, phase_storage, local_peer_id, &local_state).await?;
+    maybe_submit_and_broadcast(app_config, flow, transport, storage, phase_storage, local_peer_id, &event_id, &tx_template_hash)
+        .await?;
     Ok(())
 }
 
 pub async fn broadcast_local_state(
     transport: &Arc<dyn Transport>,
     storage: &Arc<dyn Storage>,
+    phase_storage: &Arc<dyn PhaseStorage>,
     local_peer_id: &PeerId,
     event_id: &Hash32,
     tx_template_hash: &Hash32,
 ) -> Result<(), ThresholdError> {
     let state = storage
         .get_event_crdt(event_id, tx_template_hash)?
-        .ok_or_else(|| ThresholdError::Message("missing CRDT state".to_string()))?;
+        .ok_or_else(|| ThresholdError::MissingCrdtState {
+            event_id: hex::encode(event_id),
+            tx_template_hash: hex::encode(tx_template_hash),
+            context: "broadcast_local_state".to_string(),
+        })?;
 
     let crdt_state = EventCrdtState::from(&state);
+    let phase_context = phase_storage.get_phase(event_id)?.and_then(|phase| {
+        if phase.canonical_hash == Some(*tx_template_hash) && phase.phase == igra_core::domain::coordination::EventPhase::Committed {
+            Some(igra_core::domain::coordination::PhaseContext {
+                round: phase.round,
+                phase: igra_core::domain::coordination::EventPhase::Committed,
+            })
+        } else {
+            None
+        }
+    });
 
     transport
         .publish_event_state(EventStateBroadcast {
@@ -106,6 +251,7 @@ pub async fn broadcast_local_state(
             tx_template_hash: *tx_template_hash,
             state: crdt_state,
             sender_peer_id: local_peer_id.clone(),
+            phase_context,
         })
         .await
 }
@@ -148,12 +294,7 @@ pub async fn handle_state_sync_request(
         "sending state sync response requester_peer_id={} state_count={} event_ids={}",
         request.requester_peer_id,
         states_out.len(),
-        states_out
-            .iter()
-            .take(3)
-            .map(|(eid, _, _)| hex::encode(eid))
-            .collect::<Vec<_>>()
-            .join(",")
+        states_out.iter().take(3).map(|(eid, _, _)| hex::encode(eid)).collect::<Vec<_>>().join(",")
     );
     transport.publish_state_sync_response(StateSyncResponse { states: states_out }).await
 }
@@ -163,6 +304,7 @@ pub async fn handle_state_sync_response(
     flow: &ServiceFlow,
     transport: &Arc<dyn Transport>,
     storage: &Arc<dyn Storage>,
+    phase_storage: &Arc<dyn PhaseStorage>,
     local_peer_id: &PeerId,
     response: StateSyncResponse,
 ) -> Result<(), ThresholdError> {
@@ -173,16 +315,52 @@ pub async fn handle_state_sync_response(
     debug!(
         "state sync response received state_count={} event_ids={}",
         response.states.len(),
-        response
-            .states
-            .iter()
-            .take(3)
-            .map(|(eid, _, _)| hex::encode(eid))
-            .collect::<Vec<_>>()
-            .join(",")
+        response.states.iter().take(3).map(|(eid, _, _)| hex::encode(eid)).collect::<Vec<_>>().join(",")
     );
 
     for (event_id, tx_template_hash, incoming) in response.states {
+        let mut phase = phase_storage.get_phase(&event_id)?;
+
+        // State sync can be the first thing a lagging node sees. If we have enough data to validate,
+        // use it to fast-forward into Committed so we can merge and sign.
+        if !matches!(
+            phase.as_ref().map(|p| p.phase),
+            Some(igra_core::domain::coordination::EventPhase::Committed)
+                | Some(igra_core::domain::coordination::EventPhase::Completed)
+                | Some(igra_core::domain::coordination::EventPhase::Abandoned)
+        ) {
+            if let Some(signing_material) = incoming.signing_material.as_ref() {
+                let Some(kpsbt_blob) = incoming.kpsbt_blob.as_deref() else {
+                    continue;
+                };
+                validate_commit_candidate(app_config, flow, storage, &event_id, &tx_template_hash, signing_material, kpsbt_blob)
+                    .await?;
+                if let Some(active) = storage.get_event_active_template_hash(&event_id)? {
+                    if active != tx_template_hash {
+                        continue;
+                    }
+                } else {
+                    storage.set_event_active_template_hash(&event_id, &tx_template_hash)?;
+                }
+
+                let now = now_nanos();
+                let round = phase.as_ref().map(|p| p.round).unwrap_or(0);
+                let _ = phase_storage.mark_committed(&event_id, round, tx_template_hash, now)?;
+                phase = phase_storage.get_phase(&event_id)?;
+            }
+        }
+
+        match phase.as_ref().map(|p| p.phase) {
+            Some(igra_core::domain::coordination::EventPhase::Committed) => {
+                if phase.as_ref().and_then(|p| p.canonical_hash) != Some(tx_template_hash) {
+                    continue;
+                }
+            }
+            Some(igra_core::domain::coordination::EventPhase::Completed)
+            | Some(igra_core::domain::coordination::EventPhase::Abandoned) => continue,
+            _ => continue,
+        }
+
         let (local_state, changed) = storage.merge_event_crdt(
             &event_id,
             &tx_template_hash,
@@ -203,11 +381,14 @@ pub async fn handle_state_sync_response(
         );
 
         if local_state.completion.is_some() {
+            let now = igra_core::foundation::now_nanos();
+            phase_storage.mark_completed(&event_id, now)?;
             continue;
         }
 
-        maybe_sign_and_broadcast(app_config, flow, transport, storage, local_peer_id, &local_state).await?;
-        maybe_submit_and_broadcast(app_config, flow, transport, storage, local_peer_id, &event_id, &tx_template_hash).await?;
+        maybe_sign_and_broadcast(app_config, flow, transport, storage, phase_storage, local_peer_id, &local_state).await?;
+        maybe_submit_and_broadcast(app_config, flow, transport, storage, phase_storage, local_peer_id, &event_id, &tx_template_hash)
+            .await?;
     }
 
     Ok(())
@@ -215,6 +396,7 @@ pub async fn handle_state_sync_response(
 
 pub async fn run_anti_entropy_loop(
     storage: Arc<dyn Storage>,
+    phase_storage: Arc<dyn PhaseStorage>,
     transport: Arc<dyn Transport>,
     local_peer_id: PeerId,
     interval_secs: u64,
@@ -240,18 +422,21 @@ pub async fn run_anti_entropy_loop(
                             .publish_state_sync_request(StateSyncRequest { event_ids, requester_peer_id: local_peer_id.clone() })
                             .await
                         {
-                            debug!(
-                                "anti-entropy state sync request failed error={} pending_count={}",
-                                err,
-                                pending.len()
-                            );
+                            debug!("anti-entropy state sync request failed error={} pending_count={}", err, pending.len());
                         }
                     }
                 }
 
                 for state in pending {
-                    if let Err(err) =
-                        broadcast_local_state(&transport, &storage, &local_peer_id, &state.event_id, &state.tx_template_hash).await
+                    if let Err(err) = broadcast_local_state(
+                        &transport,
+                        &storage,
+                        &phase_storage,
+                        &local_peer_id,
+                        &state.event_id,
+                        &state.tx_template_hash,
+                    )
+                    .await
                     {
                         debug!(
                             "anti-entropy broadcast failed event_id={} tx_template_hash={} error={}",
@@ -264,14 +449,60 @@ pub async fn run_anti_entropy_loop(
             }
             Err(err) => warn!("failed to list pending CRDT events: {}", err),
         }
+
+        // Proposal anti-entropy (two-phase): rebroadcast our own proposal while the event is in `Proposing`.
+        //
+        // This improves liveness under message loss / late joiners, without requiring relays (we only broadcast
+        // proposals where `proposer_peer_id == local_peer_id`).
+        if let Err(err) = broadcast_pending_proposals(&phase_storage, &transport, &local_peer_id).await {
+            warn!("failed to broadcast pending proposals: {}", err);
+        }
     }
 }
 
-async fn maybe_sign_and_broadcast(
+async fn broadcast_pending_proposals(
+    phase_storage: &Arc<dyn PhaseStorage>,
+    transport: &Arc<dyn Transport>,
+    local_peer_id: &PeerId,
+) -> Result<(), ThresholdError> {
+    const MAX_PROPOSALS_PER_TICK: usize = 64;
+
+    let proposing = phase_storage.get_events_in_phase(igra_core::domain::coordination::EventPhase::Proposing)?;
+    if proposing.is_empty() {
+        return Ok(());
+    }
+
+    let mut sent = 0usize;
+    for event_id in proposing {
+        if sent >= MAX_PROPOSALS_PER_TICK {
+            break;
+        }
+
+        let Some(phase) = phase_storage.get_phase(&event_id)? else {
+            continue;
+        };
+        if phase.phase != igra_core::domain::coordination::EventPhase::Proposing {
+            continue;
+        }
+
+        let proposals = phase_storage.get_proposals(&event_id, phase.round)?;
+        let Some(own) = proposals.iter().find(|p| p.proposer_peer_id == *local_peer_id) else {
+            continue;
+        };
+
+        transport.publish_proposal(own.clone()).await?;
+        sent += 1;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn maybe_sign_and_broadcast(
     app_config: &AppConfig,
     flow: &ServiceFlow,
     transport: &Arc<dyn Transport>,
     storage: &Arc<dyn Storage>,
+    phase_storage: &Arc<dyn PhaseStorage>,
     local_peer_id: &PeerId,
     state: &igra_core::domain::StoredEventCrdt,
 ) -> Result<(), ThresholdError> {
@@ -279,7 +510,15 @@ async fn maybe_sign_and_broadcast(
         return Ok(());
     }
 
+    if let Some(existing) = phase_storage.get_signed_hash(&state.event_id)? {
+        if existing != state.tx_template_hash {
+            return Err(signed_hash_conflict(&state.event_id, existing, state.tx_template_hash));
+        }
+    }
+
     if state.signatures.iter().any(|s| &s.signer_peer_id == local_peer_id) {
+        let now = now_nanos();
+        record_signed_hash_or_conflict(phase_storage, &state.event_id, state.tx_template_hash, now)?;
         return Ok(());
     }
 
@@ -323,26 +562,16 @@ async fn maybe_sign_and_broadcast(
     validate_before_signing(flow, &app_config.policy, &policy_event).await?;
 
     // Fix #3: rebuild the PSKT locally from the verified event data and ensure it matches the CRDT tx_template_hash.
-    let pskt_config = resolve_pskt_config(&app_config.service, &policy_event)?;
-    let (_selection, build) = build_pskt_from_rpc(flow.rpc().as_ref(), &pskt_config).await?;
-    let signer_pskt = pskt_multisig::to_signer(build.pskt);
-    let our_tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
-    if our_tx_template_hash != state.tx_template_hash {
-        flow.metrics().inc_tx_template_hash_mismatch("local_rebuild");
-        warn!(
-            "tx_template_hash mismatch (refusing to sign) event_id={} expected={} computed={} input_count={} output_count={} destination_address={} amount_sompi={}",
-            hex::encode(state.event_id),
-            hex::encode(state.tx_template_hash),
-            hex::encode(our_tx_template_hash),
-            signer_pskt.inputs.len(),
-            signer_pskt.outputs.len(),
-            signing_material.audit.destination_raw,
-            signing_material.event.amount_sompi
-        );
-        return Err(ThresholdError::PsktMismatch {
-            expected: hex::encode(state.tx_template_hash),
-            actual: hex::encode(our_tx_template_hash),
-        });
+    let kpsbt_blob = state.kpsbt_blob.as_deref().ok_or_else(|| ThresholdError::MissingKpsbtBlob {
+        event_id: hex::encode(state.event_id),
+        tx_template_hash: hex::encode(state.tx_template_hash),
+        context: "handle_state_sync_response sign".to_string(),
+    })?;
+    let signer_pskt = pskt_multisig::deserialize_pskt_signer(kpsbt_blob)?;
+    let computed = pskt_multisig::tx_template_hash(&signer_pskt)?;
+    if computed != state.tx_template_hash {
+        flow.metrics().inc_tx_template_hash_mismatch("kpsbt_blob");
+        return Err(ThresholdError::PsktMismatch { expected: hex::encode(state.tx_template_hash), actual: hex::encode(computed) });
     }
 
     let (pubkey, sigs) = sign_pskt(app_config, &signer_pskt)?;
@@ -364,22 +593,29 @@ async fn maybe_sign_and_broadcast(
         signer_pskt.inputs.len()
     );
 
-    broadcast_local_state(transport, storage, local_peer_id, &state.event_id, &state.tx_template_hash).await?;
+    record_signed_hash_or_conflict(phase_storage, &state.event_id, state.tx_template_hash, now)?;
+
+    broadcast_local_state(transport, storage, phase_storage, local_peer_id, &state.event_id, &state.tx_template_hash).await?;
     Ok(())
 }
 
-async fn maybe_submit_and_broadcast(
+pub(crate) async fn maybe_submit_and_broadcast(
     app_config: &AppConfig,
     flow: &ServiceFlow,
     transport: &Arc<dyn Transport>,
     storage: &Arc<dyn Storage>,
+    phase_storage: &Arc<dyn PhaseStorage>,
     local_peer_id: &PeerId,
     event_id: &Hash32,
     tx_template_hash: &Hash32,
 ) -> Result<(), ThresholdError> {
     let state = storage
         .get_event_crdt(event_id, tx_template_hash)?
-        .ok_or_else(|| ThresholdError::Message("missing CRDT state".to_string()))?;
+        .ok_or_else(|| ThresholdError::MissingCrdtState {
+            event_id: hex::encode(event_id),
+            tx_template_hash: hex::encode(tx_template_hash),
+            context: "maybe_submit_and_broadcast".to_string(),
+        })?;
 
     if state.completion.is_some() {
         return Ok(());
@@ -429,29 +665,26 @@ async fn maybe_submit_and_broadcast(
             hex::encode(tx_template_hash),
             hex::encode(tx_id.as_hash())
         );
-        broadcast_local_state(transport, storage, local_peer_id, event_id, tx_template_hash).await?;
+        broadcast_local_state(transport, storage, phase_storage, local_peer_id, event_id, tx_template_hash).await?;
     }
 
     Ok(())
 }
 
-async fn validate_before_signing(
+pub(crate) async fn validate_before_signing(
     flow: &ServiceFlow,
     policy: &igra_core::domain::GroupPolicy,
     event: &StoredEvent,
 ) -> Result<(), ThresholdError> {
     let volume = flow.storage().get_volume_since(now_nanos())?;
-    let result = DefaultPolicyEnforcer::new().evaluate_policy(event, policy, volume);
-    if !result.allowed {
-        return Err(ThresholdError::Message("policy rejected signing event".to_string()));
-    }
+    DefaultPolicyEnforcer::new().enforce_policy(event, policy, volume)?;
     Ok(())
 }
 
 fn sign_pskt(
     app_config: &AppConfig,
     pskt: &kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Signer>,
-) -> Result<(Vec<u8>, Vec<(u32, Vec<u8>)>), ThresholdError> {
+) -> Result<SignPsktResult, ThresholdError> {
     let hd = app_config.service.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config".to_string()))?;
     let key_data = hd.decrypt_mnemonics()?;
     let payment_secret = hd.passphrase.as_deref().map(Secret::from);
@@ -470,13 +703,19 @@ fn sign_pskt(
     Ok((pubkey, sigs))
 }
 
+type SignPsktResult = (Vec<u8>, Vec<(u32, Vec<u8>)>);
+
 async fn attempt_submission(
     app_config: &AppConfig,
     flow: &ServiceFlow,
     state: &igra_core::domain::StoredEventCrdt,
 ) -> Result<kaspa_consensus_core::tx::TransactionId, ThresholdError> {
     let Some(kpsbt_blob) = state.kpsbt_blob.as_deref() else {
-        return Err(ThresholdError::Message("missing kpsbt_blob".to_string()));
+        return Err(ThresholdError::MissingKpsbtBlob {
+            event_id: hex::encode(state.event_id),
+            tx_template_hash: hex::encode(state.tx_template_hash),
+            context: "attempt_submission".to_string(),
+        });
     };
 
     let partials = state

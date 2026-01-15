@@ -4,6 +4,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::foundation::CIRCUIT_BREAKER_BASE_BACKOFF_SECS;
 
+const MAX_BACKOFF_EXPONENT_SHIFT: u32 = 30;
+const JITTER_BUCKET_MODULO: u64 = 41;
+const JITTER_BUCKET_HALF_RANGE: i64 = 20;
+const JITTER_PPM_SCALE_FACTOR: i64 = 10_000;
+const PPM_SCALE: i64 = 1_000_000;
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct CircuitBreakerConfig {
     /// Failures before opening circuit.
@@ -103,7 +109,7 @@ impl CircuitBreaker {
                     *guard = State::Closed { failures: 0 };
                 } else {
                     debug!("circuit breaker half-open success successes={}", next);
-                    *guard = State::HalfOpen { successes: next, open_count: self.open_count(&*guard) };
+                    *guard = State::HalfOpen { successes: next, open_count: self.open_count(&guard) };
                 }
             }
             State::Open { .. } => {
@@ -159,16 +165,16 @@ impl CircuitBreaker {
         // Exponential backoff with a cap at cfg.open_duration_secs.
         let base = Duration::from_secs(CIRCUIT_BREAKER_BASE_BACKOFF_SECS);
         let max = Duration::from_secs(self.cfg.open_duration_secs.max(1));
-        let shift = open_count.saturating_sub(1).min(30);
+        let shift = open_count.saturating_sub(1).min(MAX_BACKOFF_EXPONENT_SHIFT);
         let factor = 1u32.checked_shl(shift).unwrap_or(u32::MAX);
         let exp = base.checked_mul(factor).unwrap_or(max);
         let capped = if exp > max { max } else { exp };
 
         // Jitter ±20% based on wall-clock nanos (good enough; avoids adding rand dependency).
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0);
-        let jitter_bucket = (nanos % 41) as i64 - 20; // [-20..20]
-        let jitter_ppm = 1_000_000i64 + jitter_bucket * 10_000i64; // ±20%
-        let jittered_ms = (capped.as_millis() as i64).saturating_mul(jitter_ppm) / 1_000_000i64;
+        let jitter_bucket = (nanos % JITTER_BUCKET_MODULO) as i64 - JITTER_BUCKET_HALF_RANGE; // [-20..20]
+        let jitter_ppm = PPM_SCALE + jitter_bucket * JITTER_PPM_SCALE_FACTOR; // ±20%
+        let jittered_ms = (capped.as_millis() as i64).saturating_mul(jitter_ppm) / PPM_SCALE;
         let jittered = Duration::from_millis(jittered_ms.max(1) as u64);
 
         (Instant::now() + jittered, open_count)

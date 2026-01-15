@@ -81,7 +81,8 @@ pub fn to_signer(pskt: PSKT<Updater>) -> PSKT<Signer> {
 
 pub fn serialize_pskt<ROLE>(pskt: &PSKT<ROLE>) -> Result<Vec<u8>, ThresholdError> {
     let inner: &Inner = pskt;
-    let bytes = serde_json::to_vec(inner).map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
+    let bytes = serde_json::to_vec(inner)
+        .map_err(|err| ThresholdError::SerializationError { format: "json".into(), details: err.to_string() })?;
     Ok(bytes)
 }
 
@@ -110,9 +111,8 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
             .map_err(|err| ThresholdError::CryptoError { operation: "parse_pubkey".into(), details: err.to_string() })?;
         let (xonly, _) = pubkey.x_only_public_key();
         let pubkey = PublicKey::from_x_only_public_key(xonly, Parity::Even);
-        let signature =
-            secp256k1::schnorr::Signature::from_slice(&sig.signature)
-                .map_err(|err| ThresholdError::CryptoError { operation: "parse_signature".into(), details: err.to_string() })?;
+        let signature = secp256k1::schnorr::Signature::from_slice(&sig.signature)
+            .map_err(|err| ThresholdError::CryptoError { operation: "parse_signature".into(), details: err.to_string() })?;
         input.partial_sigs.insert(pubkey, Signature::Schnorr(signature));
     }
     Ok(PSKT::from(inner))
@@ -121,7 +121,8 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
 pub fn tx_template_hash(pskt: &PSKT<Signer>) -> Result<Hash32, ThresholdError> {
     let inner: &Inner = pskt;
     let tx = signable_tx_from_inner(inner);
-    let bytes = borsh_to_vec(&tx.tx).map_err(|err| ThresholdError::SerializationError { format: "borsh".into(), details: err.to_string() })?;
+    let bytes =
+        borsh_to_vec(&tx.tx).map_err(|err| ThresholdError::SerializationError { format: "borsh".into(), details: err.to_string() })?;
     let hash = *blake3::hash(&bytes).as_bytes();
     Ok(hash)
 }

@@ -40,10 +40,10 @@ pub fn filter_stream(
                     peer_id: envelope.sender_peer_id.to_string(),
                     timestamp_nanos: envelope.timestamp_nanos,
                 });
-                yield Err(ThresholdError::Message(format!(
-                    "rate limit exceeded for peer {}",
-                    envelope.sender_peer_id
-                )));
+                yield Err(ThresholdError::TransportError {
+                    operation: "rate_limit".to_string(),
+                    details: format!("rate limit exceeded for peer {}", envelope.sender_peer_id),
+                });
                 continue;
             }
 
@@ -62,12 +62,15 @@ pub fn filter_stream(
                     hex::encode(expected),
                     hex::encode(envelope.payload_hash)
                 );
-                yield Err(ThresholdError::Message(format!(
-                    "payload hash mismatch peer_id={} expected_hash={} actual_hash={}",
-                    envelope.sender_peer_id,
-                    hex::encode(expected),
-                    hex::encode(envelope.payload_hash)
-                )));
+                yield Err(ThresholdError::TransportError {
+                    operation: "payload_hash_mismatch".to_string(),
+                    details: format!(
+                        "peer_id={} expected_hash={} actual_hash={}",
+                        envelope.sender_peer_id,
+                        hex::encode(expected),
+                        hex::encode(envelope.payload_hash)
+                    ),
+                });
                 continue;
             }
             if !verifier.verify(&envelope.sender_peer_id, &envelope.payload_hash, envelope.signature.as_slice()) {
@@ -76,11 +79,10 @@ pub fn filter_stream(
                     envelope.sender_peer_id,
                     hex::encode(envelope.payload_hash)
                 );
-                yield Err(ThresholdError::Message(format!(
-                    "invalid signature peer_id={} payload_hash={}",
-                    envelope.sender_peer_id,
-                    hex::encode(envelope.payload_hash)
-                )));
+                yield Err(ThresholdError::TransportError {
+                    operation: "signature_verification".to_string(),
+                    details: format!("peer_id={} payload_hash={}", envelope.sender_peer_id, hex::encode(envelope.payload_hash)),
+                });
                 continue;
             }
 

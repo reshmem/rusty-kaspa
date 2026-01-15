@@ -1,5 +1,6 @@
 use super::traits::{
-    EventStateBroadcast, MessageEnvelope, StateSyncRequest, StateSyncResponse, Transport, TransportMessage, TransportSubscription,
+    EventStateBroadcast, MessageEnvelope, ProposalBroadcast, StateSyncRequest, StateSyncResponse, Transport, TransportMessage,
+    TransportSubscription,
 };
 use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
@@ -10,6 +11,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
+
+const MOCK_TRANSPORT_BROADCAST_CAPACITY: usize = 256;
 
 pub struct MockHub {
     topics: Mutex<HashMap<Hash32, broadcast::Sender<MessageEnvelope>>>,
@@ -22,7 +25,7 @@ impl MockHub {
 
     async fn topic(&self, topic: Hash32) -> broadcast::Sender<MessageEnvelope> {
         let mut guard = self.topics.lock().await;
-        guard.entry(topic).or_insert_with(|| broadcast::channel(256).0).clone()
+        guard.entry(topic).or_insert_with(|| broadcast::channel(MOCK_TRANSPORT_BROADCAST_CAPACITY).0).clone()
     }
 }
 
@@ -57,7 +60,7 @@ impl MockTransport {
         let bytes = bincode::DefaultOptions::new()
             .with_fixint_encoding()
             .serialize(payload)
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| crate::serde_err!("bincode", err))?;
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 
@@ -89,7 +92,10 @@ impl MockTransport {
                     Ok(envelope) => yield Ok(envelope),
                     Err(broadcast::error::RecvError::Closed) => break,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        yield Err(ThresholdError::Message("mock transport lagged".to_string()));
+                        yield Err(ThresholdError::TransportError {
+                            operation: "mock transport".to_string(),
+                            details: "lagged".to_string(),
+                        });
                     }
                 }
             }
@@ -102,6 +108,12 @@ impl MockTransport {
 impl Transport for MockTransport {
     async fn publish_event_state(&self, broadcast: EventStateBroadcast) -> Result<(), ThresholdError> {
         let payload = TransportMessage::EventStateBroadcast(broadcast);
+        let topic = self.group_topic_id();
+        self.publish(topic, payload).await
+    }
+
+    async fn publish_proposal(&self, proposal: ProposalBroadcast) -> Result<(), ThresholdError> {
+        let payload = TransportMessage::ProposalBroadcast(proposal);
         let topic = self.group_topic_id();
         self.publish(topic, payload).await
     }

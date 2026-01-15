@@ -15,6 +15,10 @@ use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
+const MAX_SUBMIT_TX_ATTEMPTS: u32 = 4;
+const TX_RETRY_BASE_BACKOFF_MS: u64 = 100;
+const TX_RETRY_BACKOFF_MULTIPLIER: u64 = 2;
+
 pub struct ServiceFlow {
     storage: Arc<dyn Storage>,
     transport: Arc<dyn Transport>,
@@ -94,7 +98,11 @@ impl ServiceFlow {
         fn is_duplicate_submission(err: &ThresholdError) -> bool {
             let msg = err.to_string().to_lowercase();
             msg.contains("already")
-                && (msg.contains("mempool") || msg.contains("known") || msg.contains("exists") || msg.contains("duplicate"))
+                && (msg.contains("mempool")
+                    || msg.contains("known")
+                    || msg.contains("exists")
+                    || msg.contains("duplicate")
+                    || msg.contains("accepted by the consensus"))
         }
 
         fn is_non_retryable_submission(err: &ThresholdError) -> bool {
@@ -132,8 +140,9 @@ impl ServiceFlow {
                     );
                     return Err(err);
                 }
-                Err(err) if attempt < 4 => {
-                    let backoff_ms = 100u64.saturating_mul(2u64.saturating_pow(attempt - 1));
+                Err(err) if attempt < MAX_SUBMIT_TX_ATTEMPTS => {
+                    let backoff_ms =
+                        TX_RETRY_BASE_BACKOFF_MS.saturating_mul(TX_RETRY_BACKOFF_MULTIPLIER.saturating_pow(attempt - 1));
                     warn!(
                         "submit_transaction failed; retrying event_id={} attempt={} backoff_ms={} error={}",
                         hex::encode(event_id),

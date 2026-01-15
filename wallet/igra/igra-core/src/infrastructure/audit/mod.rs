@@ -70,6 +70,9 @@ impl AuditLogger for MultiAuditLogger {
 
 static AUDIT_LOGGER: OnceLock<Box<dyn AuditLogger>> = OnceLock::new();
 
+const SHORT_ID_DISPLAY_LENGTH: usize = 16;
+const SOMPI_PER_KAS: f64 = 100_000_000.0;
+
 pub fn init_audit_logger(logger: Box<dyn AuditLogger>) {
     if AUDIT_LOGGER.set(logger).is_err() {
         warn!("init_audit_logger called more than once; ignoring");
@@ -85,10 +88,10 @@ pub fn audit(event: AuditEvent) {
 
 fn short_id(value: &str) -> String {
     let trimmed = value.trim_start_matches("0x");
-    if trimmed.len() <= 16 {
+    if trimmed.len() <= SHORT_ID_DISPLAY_LENGTH {
         trimmed.to_string()
     } else {
-        format!("{}…", &trimmed[..16])
+        format!("{}…", &trimmed[..SHORT_ID_DISPLAY_LENGTH])
     }
 }
 
@@ -96,7 +99,7 @@ fn human_summary(event: &AuditEvent) -> String {
     match event {
         AuditEvent::EventReceived { event_id, source, recipient, amount_sompi, .. } => format!(
             "AUDIT: signing event received - {} KAS to {} (hash: {}, source: {})",
-            *amount_sompi as f64 / 100_000_000.0,
+            *amount_sompi as f64 / SOMPI_PER_KAS,
             recipient,
             short_id(event_id),
             source

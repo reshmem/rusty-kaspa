@@ -5,6 +5,10 @@ use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Registry, TextEnc
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+fn metrics_err(operation: &str, err: impl std::fmt::Display) -> ThresholdError {
+    ThresholdError::MetricsError { operation: operation.to_string(), details: err.to_string() }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MetricsSnapshot {
     pub uptime: Duration,
@@ -60,55 +64,57 @@ impl Metrics {
         let registry = Registry::new();
         let signing_sessions_total =
             IntCounterVec::new(prometheus::Opts::new("signing_sessions_total", "Signing sessions by stage"), &["stage"])
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+                .map_err(|err| metrics_err("signing_sessions_total", err))?;
         let signer_acks_total =
             IntCounterVec::new(prometheus::Opts::new("signer_acks_total", "Signer acknowledgments"), &["accepted"])
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+                .map_err(|err| metrics_err("signer_acks_total", err))?;
         let partial_sigs_total = IntCounter::new("partial_sigs_total", "Partial signatures received")
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("partial_sigs_total", err))?;
         let rpc_requests_total = IntCounterVec::new(
             prometheus::Opts::new("rpc_requests_total", "RPC requests by method and status"),
             &["method", "status"],
         )
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        .map_err(|err| metrics_err("rpc_requests_total", err))?;
 
         let crdt_event_crdts_total = IntGauge::new("crdt_event_states_total", "Total CRDT event states (exact scan)") //
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("crdt_event_states_total", err))?;
         let crdt_event_crdts_pending = IntGauge::new("crdt_event_states_pending", "Pending CRDT event states (exact scan)") //
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("crdt_event_states_pending", err))?;
         let crdt_event_crdts_completed = IntGauge::new("crdt_event_states_completed", "Completed CRDT event states (exact scan)") //
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("crdt_event_states_completed", err))?;
         let crdt_cf_estimated_num_keys =
             IntGauge::new("crdt_cf_estimated_num_keys", "RocksDB estimate-num-keys for CRDT CF (0 if unknown)") //
-                .map_err(|err| ThresholdError::Message(err.to_string()))?;
+                .map_err(|err| metrics_err("crdt_cf_estimated_num_keys", err))?;
         let crdt_cf_estimated_live_data_size_bytes = IntGauge::new(
             "crdt_cf_estimated_live_data_size_bytes",
             "RocksDB estimate-live-data-size for CRDT CF in bytes (0 if unknown)",
         )
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        .map_err(|err| metrics_err("crdt_cf_estimated_live_data_size_bytes", err))?;
         let crdt_gc_deleted_total = IntCounter::new("crdt_gc_deleted_total", "Total CRDT event states deleted by GC") //
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("crdt_gc_deleted_total", err))?;
         let tx_template_hash_mismatches_total = IntCounterVec::new(
             prometheus::Opts::new("tx_template_hash_mismatches_total", "Tx template hash mismatches detected (by kind)"),
             &["kind"],
         )
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        .map_err(|err| metrics_err("tx_template_hash_mismatches_total", err))?;
 
-        registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(signer_acks_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(crdt_event_crdts_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(crdt_event_crdts_pending.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(crdt_event_crdts_completed.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(crdt_cf_estimated_num_keys.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| metrics_err("register signing_sessions_total", err))?;
+        registry.register(Box::new(signer_acks_total.clone())).map_err(|err| metrics_err("register signer_acks_total", err))?;
+        registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| metrics_err("register partial_sigs_total", err))?;
+        registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| metrics_err("register rpc_requests_total", err))?;
+        registry.register(Box::new(crdt_event_crdts_total.clone())).map_err(|err| metrics_err("register crdt_event_crdts_total", err))?;
+        registry.register(Box::new(crdt_event_crdts_pending.clone())).map_err(|err| metrics_err("register crdt_event_crdts_pending", err))?;
+        registry
+            .register(Box::new(crdt_event_crdts_completed.clone()))
+            .map_err(|err| metrics_err("register crdt_event_crdts_completed", err))?;
+        registry.register(Box::new(crdt_cf_estimated_num_keys.clone())).map_err(|err| metrics_err("register crdt_cf_estimated_num_keys", err))?;
         registry
             .register(Box::new(crdt_cf_estimated_live_data_size_bytes.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
-        registry.register(Box::new(crdt_gc_deleted_total.clone())).map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("register crdt_cf_estimated_live_data_size_bytes", err))?;
+        registry.register(Box::new(crdt_gc_deleted_total.clone())).map_err(|err| metrics_err("register crdt_gc_deleted_total", err))?;
         registry
             .register(Box::new(tx_template_hash_mismatches_total.clone()))
-            .map_err(|err| ThresholdError::Message(err.to_string()))?;
+            .map_err(|err| metrics_err("register tx_template_hash_mismatches_total", err))?;
 
         let out = Self {
             registry,
@@ -239,8 +245,8 @@ impl Metrics {
     pub fn encode(&self) -> Result<String, ThresholdError> {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        TextEncoder::new().encode(&metric_families, &mut buffer).map_err(|err| ThresholdError::Message(err.to_string()))?;
-        let output = String::from_utf8(buffer).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        TextEncoder::new().encode(&metric_families, &mut buffer).map_err(|err| metrics_err("encode metrics", err))?;
+        let output = String::from_utf8(buffer).map_err(|err| ThresholdError::EncodingError(err.to_string()))?;
         Ok(output)
     }
 }

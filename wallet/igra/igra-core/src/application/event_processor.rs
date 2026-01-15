@@ -8,8 +8,8 @@ use crate::foundation::Hash32;
 use crate::foundation::{PeerId, SessionId, ThresholdError};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::config::{PsktBuildConfig, PsktOutput, ServiceConfig};
-use crate::infrastructure::rpc::kaspa_integration::build_pskt_from_rpc;
 use crate::infrastructure::rpc::NodeRpc;
+use crate::infrastructure::storage::phase::PhaseStorage;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::iroh::traits::{CrdtSignature, EventCrdtState, EventStateBroadcast, Transport};
 use kaspa_addresses::Address;
@@ -22,9 +22,11 @@ pub use crate::domain::event::{SigningEventParams, SigningEventResult, SigningEv
 pub struct EventContext {
     pub config: ServiceConfig,
     pub policy: crate::domain::GroupPolicy,
+    pub two_phase: crate::domain::coordination::TwoPhaseConfig,
     pub local_peer_id: PeerId,
     pub message_verifier: Arc<dyn MessageVerifier>,
     pub storage: Arc<dyn Storage>,
+    pub phase_storage: Arc<dyn PhaseStorage>,
     pub transport: Arc<dyn Transport>,
     pub rpc: Arc<dyn NodeRpc>,
 }
@@ -175,49 +177,88 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         }
     }
 
-    // Deterministically build the transaction template via RPC.
-    let pskt_config = resolve_pskt_config(&ctx.config, &stored_event)?;
-    let (_selection, build) = build_pskt_from_rpc(ctx.rpc.as_ref(), &pskt_config).await?;
-    let signer_pskt = crate::domain::pskt::multisig::to_signer(build.pskt);
-    let kpsbt_blob = crate::domain::pskt::multisig::serialize_pskt(&signer_pskt)?;
-    let tx_template_hash = crate::domain::pskt::multisig::tx_template_hash(&signer_pskt)?;
+    let now_ns = crate::foundation::now_nanos();
 
-    // Persist / enforce the single active template for this event.
-    // If another signer already selected a different template, this returns PsktMismatch.
-    ctx.storage.set_event_active_template_hash(&event_id, &tx_template_hash)?;
+    // Enter proposing (idempotent). If we're already in progress, don't rebuild.
+    let entered = ctx.phase_storage.try_enter_proposing(&event_id, now_ns)?;
+    if entered {
+        let (proposal, _anchor) = crate::application::two_phase::build_local_proposal_for_round(
+            ctx.rpc.as_ref(),
+            &ctx.config,
+            &stored_event,
+            &ctx.local_peer_id,
+            0,
+            now_ns,
+        )
+        .await?;
 
-    // Initialize CRDT state for (event_id, tx_template_hash), storing the event and KPSBT locally.
-    let signing_material = CrdtSigningMaterial {
-        event: stored_event.event.clone(),
-        audit: stored_event.audit.clone(),
-        proof: stored_event.proof.clone(),
-    };
-    let empty_state = EventCrdtState { signatures: vec![], completion: None, signing_material: None, kpsbt_blob: None, version: 0 };
-    ctx.storage.merge_event_crdt(&event_id, &tx_template_hash, &empty_state, Some(&signing_material), Some(&kpsbt_blob))?;
+        let _ = ctx.phase_storage.store_proposal(&proposal)?;
+        ctx.phase_storage.set_own_proposal_hash(&event_id, proposal.tx_template_hash)?;
+        ctx.transport.publish_proposal(proposal.clone()).await?;
+        info!(
+            "two-phase published local proposal event_id={} round={} tx_template_hash={}",
+            hex::encode(event_id),
+            0,
+            hex::encode(proposal.tx_template_hash)
+        );
 
-    // Sign locally and broadcast.
-    sign_and_broadcast(
-        ctx,
-        &signing_material,
-        &event_id,
-        &tx_template_hash,
-        &kpsbt_blob,
-        session_id,
-        external_request_id_for_audit.unwrap_or_else(|| hex::encode(event_id)),
-        coordinator_peer_id,
-        expires_at_nanos,
-    )
-    .await?;
+        return Ok(SigningEventResult {
+            session_id_hex,
+            event_id_hex: hex::encode(event_id),
+            tx_template_hash_hex: hex::encode(proposal.tx_template_hash),
+        });
+    }
 
-    Ok(SigningEventResult { session_id_hex, event_id_hex: hex::encode(event_id), tx_template_hash_hex: hex::encode(tx_template_hash) })
+    // Already have phase state. Ensure we also contribute a proposal for the current round.
+    let phase = ctx.phase_storage.get_phase(&event_id)?;
+    if let Some(phase) = phase.as_ref() {
+        if phase.phase == crate::domain::coordination::EventPhase::Proposing {
+            let round = phase.round;
+            if !ctx.phase_storage.has_proposal_from(&event_id, round, &ctx.local_peer_id)? {
+                let (proposal, _anchor) = crate::application::two_phase::build_local_proposal_for_round(
+                    ctx.rpc.as_ref(),
+                    &ctx.config,
+                    &stored_event,
+                    &ctx.local_peer_id,
+                    round,
+                    now_ns,
+                )
+                .await?;
+
+                let _ = ctx.phase_storage.store_proposal(&proposal)?;
+                ctx.phase_storage.set_own_proposal_hash(&event_id, proposal.tx_template_hash)?;
+                ctx.transport.publish_proposal(proposal.clone()).await?;
+                info!(
+                    "two-phase published local proposal event_id={} round={} tx_template_hash={}",
+                    hex::encode(event_id),
+                    round,
+                    hex::encode(proposal.tx_template_hash)
+                );
+
+                return Ok(SigningEventResult {
+                    session_id_hex,
+                    event_id_hex: hex::encode(event_id),
+                    tx_template_hash_hex: hex::encode(proposal.tx_template_hash),
+                });
+            }
+        }
+    }
+
+    // Best-effort: return our last known proposal hash if present.
+    let tx_template_hash_hex = phase.and_then(|p| p.own_proposal_hash).map(hex::encode).unwrap_or_else(|| "pending".to_string());
+
+    Ok(SigningEventResult { session_id_hex, event_id_hex: hex::encode(event_id), tx_template_hash_hex })
 }
 
 pub fn resolve_pskt_config(config: &ServiceConfig, event: &StoredEvent) -> Result<PsktBuildConfig, ThresholdError> {
-    if event.audit.destination_raw.trim().is_empty() || event.event.amount_sompi == 0 {
-        return Err(ThresholdError::Message(format!(
-            "signing_event missing destination_address or amount external_id={}",
+    if event.audit.destination_raw.trim().is_empty() {
+        return Err(ThresholdError::InvalidDestination(format!(
+            "missing destination_address external_id={}",
             event.audit.external_id_raw
         )));
+    }
+    if event.event.amount_sompi == 0 {
+        return Err(ThresholdError::AmountTooLow { amount: 0, min: 1 });
     }
 
     let mut pskt = config.pskt.clone();
@@ -227,7 +268,7 @@ pub fn resolve_pskt_config(config: &ServiceConfig, event: &StoredEvent) -> Resul
     pskt.outputs = vec![PsktOutput { address: event.audit.destination_raw.clone(), amount_sompi: event.event.amount_sompi }];
 
     if pskt.redeem_script_hex.trim().is_empty() {
-        let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::Message("missing redeem script or HD config".to_string()))?;
+        let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing redeem script or HD config".to_string()))?;
         pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(hd, hd.derivation_path.as_deref())?;
     }
 
@@ -290,13 +331,18 @@ async fn sign_and_broadcast(
     let stored = ctx
         .storage
         .get_event_crdt(event_id, tx_template_hash)?
-        .ok_or_else(|| ThresholdError::Message("missing CRDT state after signing".to_string()))?;
+        .ok_or_else(|| ThresholdError::MissingCrdtState {
+            event_id: hex::encode(event_id),
+            tx_template_hash: hex::encode(tx_template_hash),
+            context: "after signing".to_string(),
+        })?;
     let state = to_transport_state(&stored);
     let broadcast = EventStateBroadcast {
         event_id: *event_id,
         tx_template_hash: *tx_template_hash,
         state,
         sender_peer_id: ctx.local_peer_id.clone(),
+        phase_context: None,
     };
     ctx.transport.publish_event_state(broadcast).await?;
     Ok(())

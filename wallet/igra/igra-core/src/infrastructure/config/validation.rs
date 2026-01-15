@@ -2,6 +2,8 @@ use crate::domain::signing::SigningBackendKind;
 use crate::infrastructure::config::types::AppConfig;
 use kaspa_addresses::Address;
 
+const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
+
 impl AppConfig {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
@@ -30,8 +32,11 @@ impl AppConfig {
         if self.runtime.session_timeout_seconds == 0 {
             errors.push("runtime.session_timeout_seconds must be > 0".to_string());
         }
-        if self.runtime.session_timeout_seconds > 600 {
-            errors.push("runtime.session_timeout_seconds should not exceed 600".to_string());
+        if self.runtime.session_timeout_seconds > MAX_SESSION_TIMEOUT_SECONDS {
+            errors.push(format!(
+                "runtime.session_timeout_seconds should not exceed {}",
+                MAX_SESSION_TIMEOUT_SECONDS
+            ));
         }
 
         if let Some(group) = self.group.as_ref() {
@@ -54,8 +59,8 @@ impl AppConfig {
             if group.session_timeout_seconds == 0 {
                 errors.push("group.session_timeout_seconds must be > 0".to_string());
             }
-            if group.session_timeout_seconds > 600 {
-                errors.push("group.session_timeout_seconds should not exceed 600".to_string());
+            if group.session_timeout_seconds > MAX_SESSION_TIMEOUT_SECONDS {
+                errors.push(format!("group.session_timeout_seconds should not exceed {}", MAX_SESSION_TIMEOUT_SECONDS));
             }
 
             // Enforce consistency between the configured redeem script and the group membership keys.

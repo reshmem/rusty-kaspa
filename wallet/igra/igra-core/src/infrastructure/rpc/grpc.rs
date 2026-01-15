@@ -40,7 +40,7 @@ impl GrpcNodeRpc {
         .await
         .map_err(|err| {
             error!("grpc rpc connect failed error={}", err);
-            ThresholdError::Message(err.to_string())
+            ThresholdError::NodeRpcError(err.to_string())
         })?;
         info!("grpc rpc connected");
         Ok(Self {
@@ -81,7 +81,7 @@ impl NodeRpc for GrpcNodeRpc {
             Err(err) => {
                 self.breaker_get_utxos.record_failure();
                 warn!("grpc get_utxos_by_addresses failed address_count={} error={}", addresses.len(), err);
-                return Err(ThresholdError::Message(err.to_string()));
+                return Err(ThresholdError::NodeRpcError(err.to_string()));
             }
         };
         self.breaker_get_utxos.record_success();
@@ -131,7 +131,7 @@ impl NodeRpc for GrpcNodeRpc {
                 self.breaker_submit_transaction.record_failure();
                 error!("grpc submit_transaction failed mass={} error={}", mass, err);
             }
-            ThresholdError::Message(err.to_string())
+            ThresholdError::NodeRpcError(err.to_string())
         })?;
         self.breaker_submit_transaction.record_success();
         debug!("grpc submit_transaction tx_id={} elapsed_ms={}", id, started.elapsed().as_millis());
@@ -146,7 +146,7 @@ impl NodeRpc for GrpcNodeRpc {
         trace!("grpc get_sink_blue_score request");
         let score = self.client.get_sink_blue_score().await.map_err(|err| {
             self.breaker_get_blue_score.record_failure();
-            ThresholdError::Message(err.to_string())
+            ThresholdError::NodeRpcError(err.to_string())
         })?;
         self.breaker_get_blue_score.record_success();
         debug!("grpc get_sink_blue_score blue_score={} elapsed_ms={}", score, started.elapsed().as_millis());

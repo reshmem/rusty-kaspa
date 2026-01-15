@@ -1,10 +1,12 @@
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::NoopVerifier;
 use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
 use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
+use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::mock::{MockHub, MockTransport};
 use igra_service::service::coordination::run_coordination_loop;
@@ -21,6 +23,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 const WALLET_SECRET: &str = "test-wallet-secret";
+const LOOP_STARTUP_GRACE: Duration = Duration::from_millis(50);
 
 fn ensure_wallet_secret() {
     static ONCE: Once = Once::new();
@@ -59,16 +62,18 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
 }
 
 fn build_config(redeem_script_hex: String) -> AppConfig {
-    let mut service = ServiceConfig::default();
-    service.pskt = PsktBuildConfig {
-        node_rpc_url: String::new(),
-        source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
-        redeem_script_hex,
-        sig_op_count: 2,
-        outputs: Vec::new(),
-        fee_payment_mode: Default::default(),
-        fee_sompi: Some(1_000),
-        change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+    let service = ServiceConfig {
+        pskt: PsktBuildConfig {
+            node_rpc_url: String::new(),
+            source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
+            redeem_script_hex,
+            sig_op_count: 2,
+            outputs: Vec::new(),
+            fee_payment_mode: Default::default(),
+            fee_sompi: Some(1_000),
+            change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+        },
+        ..Default::default()
     };
 
     AppConfig {
@@ -132,11 +137,9 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
         Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
     ];
 
-    let storages = [
-        Arc::new(MemoryStorage::new()) as Arc<dyn Storage>,
-        Arc::new(MemoryStorage::new()) as Arc<dyn Storage>,
-        Arc::new(MemoryStorage::new()) as Arc<dyn Storage>,
-    ];
+    let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let storages: [Arc<dyn Storage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
+    let phase_storages: [Arc<dyn PhaseStorage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -151,41 +154,54 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
         Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
+    let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
+
     let loops = [
         tokio::spawn(run_coordination_loop(
             configs[0].clone(),
+            two_phase.clone(),
             flows[0].clone(),
             transports[0].clone(),
             storages[0].clone(),
+            phase_storages[0].clone(),
             PeerId::from("signer-1"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[1].clone(),
+            two_phase.clone(),
             flows[1].clone(),
             transports[1].clone(),
             storages[1].clone(),
+            phase_storages[1].clone(),
             PeerId::from("signer-2"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[2].clone(),
+            two_phase.clone(),
             flows[2].clone(),
             transports[2].clone(),
             storages[2].clone(),
+            phase_storages[2].clone(),
             PeerId::from("signer-3"),
             group_id,
         )),
     ];
 
+    tokio::time::sleep(LOOP_STARTUP_GRACE).await;
+
     // Ingest the same event on all 3 nodes (as if each had its own watcher).
+    let mut event_id_hex = None;
     for i in 0..3usize {
         let ctx = EventContext {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
+            phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
         };
@@ -198,8 +214,13 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             event: signing_event("event-1"),
         };
 
-        submit_signing_event(&ctx, params).await?;
+        let result = submit_signing_event(&ctx, params).await?;
+        event_id_hex.get_or_insert(result.event_id_hex);
     }
+
+    let event_id_hex = event_id_hex.expect("event id");
+    let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
+    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
 
     // Wait for a completion record to appear on all nodes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -207,14 +228,15 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
         if tokio::time::Instant::now() > deadline {
             return Err(ThresholdError::Message("timeout waiting for CRDT completion".to_string()));
         }
-        let mut completed = 0usize;
+
+        let mut done = true;
         for storage in &storages {
-            let pending = storage.list_pending_event_crdts()?;
-            if pending.is_empty() {
-                completed += 1;
+            if storage.get_event_completion(&event_id)?.is_none() {
+                done = false;
+                break;
             }
         }
-        if completed == 3 {
+        if done {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

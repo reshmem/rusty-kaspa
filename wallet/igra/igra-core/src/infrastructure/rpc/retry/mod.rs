@@ -32,7 +32,5 @@ where
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| {
-        ThresholdError::Message(format!("retry exhausted after {} attempts", initial_attempts))
-    }))
+    Err(last_err.unwrap_or_else(|| ThresholdError::NodeRpcError(format!("retry exhausted after {} attempts", initial_attempts))))
 }

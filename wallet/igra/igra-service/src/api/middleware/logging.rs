@@ -22,7 +22,7 @@ fn sanitize_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
                         let mut out = s.to_string();
                         if out.len() > 128 {
                             out.truncate(128);
-                            out.push_str("…");
+                            out.push('…');
                         }
                         out
                     })

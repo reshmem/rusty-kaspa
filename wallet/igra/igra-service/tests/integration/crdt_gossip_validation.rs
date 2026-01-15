@@ -1,9 +1,11 @@
+use igra_core::domain::coordination::{EventPhase, PhaseContext};
 use igra_core::domain::validation::{MessageVerifier, ValidationSource, VerificationReport};
 use igra_core::domain::{CrdtSigningMaterial, Event, EventAuditData, SourceType, StoredEvent};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, ServiceConfig};
 use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
+use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::mock::{MockHub, MockTransport};
 use igra_core::infrastructure::transport::iroh::traits::Transport;
@@ -98,7 +100,9 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
     let group_id: Hash32 = [7u8; 32];
     let hub = Arc::new(MockHub::new());
     let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), group_id, 2));
-    let storage = Arc::new(MemoryStorage::new()) as Arc<dyn Storage>;
+    let store = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn Storage> = store.clone();
+    let phase_storage: Arc<dyn PhaseStorage> = store.clone();
     let rpc = Arc::new(UnimplementedRpc::new());
     let flow = ServiceFlow::new_with_rpc(rpc, storage.clone(), transport.clone(), Arc::new(DenyAllVerifier))?;
 
@@ -110,15 +114,23 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
         tx_template_hash,
         sender_peer_id: PeerId::from("attacker"),
         state: EventCrdtState { signatures: vec![], completion: None, signing_material: Some(material), kpsbt_blob: None, version: 0 },
+        phase_context: Some(PhaseContext { round: 0, phase: EventPhase::Committed }),
     };
 
-    let err = handle_crdt_broadcast(&AppConfig::default(), &flow, &transport, &storage, &PeerId::from("signer-1"), broadcast)
-        .await
-        .expect_err("should reject invalid proof");
+    let err = handle_crdt_broadcast(
+        &AppConfig::default(),
+        &flow,
+        &transport,
+        &storage,
+        &phase_storage,
+        &PeerId::from("signer-1"),
+        broadcast,
+    )
+    .await
+    .expect_err("should reject invalid proof");
     assert!(matches!(err, ThresholdError::EventSignatureInvalid));
 
-    let state = storage.get_event_crdt(&event_id, &tx_template_hash)?.expect("crdt state exists");
-    assert!(state.signatures.is_empty());
+    assert!(storage.get_event_crdt(&event_id, &tx_template_hash)?.is_none());
     Ok(())
 }
 
@@ -127,7 +139,9 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
     let group_id: Hash32 = [7u8; 32];
     let hub = Arc::new(MockHub::new());
     let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), group_id, 2));
-    let storage = Arc::new(MemoryStorage::new()) as Arc<dyn Storage>;
+    let store = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn Storage> = store.clone();
+    let phase_storage: Arc<dyn PhaseStorage> = store.clone();
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let secp = secp256k1::Secp256k1::new();
@@ -144,16 +158,18 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         entry: UtxoEntry::new(100_000_000, spk, 0, false),
     });
 
-    let mut service = ServiceConfig::default();
-    service.pskt = PsktBuildConfig {
-        node_rpc_url: String::new(),
-        source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
-        redeem_script_hex,
-        sig_op_count: 2,
-        outputs: Vec::new(),
-        fee_payment_mode: Default::default(),
-        fee_sompi: Some(1_000),
-        change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+    let service = ServiceConfig {
+        pskt: PsktBuildConfig {
+            node_rpc_url: String::new(),
+            source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
+            redeem_script_hex,
+            sig_op_count: 2,
+            outputs: Vec::new(),
+            fee_payment_mode: Default::default(),
+            fee_sompi: Some(1_000),
+            change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+        },
+        ..Default::default()
     };
     let app_config = AppConfig { service, ..Default::default() };
     let flow = ServiceFlow::new_with_rpc(rpc, storage.clone(), transport.clone(), Arc::new(AllowAllVerifier))?;
@@ -166,9 +182,10 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         tx_template_hash,
         sender_peer_id: PeerId::from("attacker"),
         state: EventCrdtState { signatures: vec![], completion: None, signing_material: Some(material), kpsbt_blob: None, version: 0 },
+        phase_context: Some(PhaseContext { round: 0, phase: EventPhase::Committed }),
     };
 
-    let err = handle_crdt_broadcast(&app_config, &flow, &transport, &storage, &PeerId::from("signer-1"), broadcast)
+    let err = handle_crdt_broadcast(&app_config, &flow, &transport, &storage, &phase_storage, &PeerId::from("signer-1"), broadcast)
         .await
         .expect_err("should reject tx template hash mismatch");
     match err {
@@ -176,7 +193,6 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         other => return Err(other),
     }
 
-    let state = storage.get_event_crdt(&event_id, &tx_template_hash)?.expect("crdt state exists");
-    assert!(state.signatures.is_empty());
+    assert!(storage.get_event_crdt(&event_id, &tx_template_hash)?.is_none());
     Ok(())
 }

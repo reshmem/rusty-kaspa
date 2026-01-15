@@ -59,7 +59,10 @@ impl Default for UnimplementedRpc {
 impl NodeRpc for UnimplementedRpc {
     async fn get_utxos_by_addresses(&self, _addresses: &[Address]) -> Result<Vec<UtxoWithOutpoint>, ThresholdError> {
         let addresses = _addresses;
-        let entries = self.utxos.lock().map_err(|_| ThresholdError::Message("utxo store lock poisoned".to_string()))?;
+        let entries = self.utxos.lock().map_err(|_| ThresholdError::StorageError {
+            operation: "unimplemented_rpc utxo store lock".to_string(),
+            details: "poisoned".to_string(),
+        })?;
         if addresses.is_empty() {
             return Ok(entries.clone());
         }

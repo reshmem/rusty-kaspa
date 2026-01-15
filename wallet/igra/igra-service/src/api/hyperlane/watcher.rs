@@ -43,7 +43,10 @@ pub async fn run_hyperlane_watcher(
             }
 
             debug!("processing Hyperlane message file file={}", path.display());
-            let bytes = fs::read(&path).await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+            let bytes = fs::read(&path).await.map_err(|err| ThresholdError::StorageError {
+                operation: "hyperlane watcher read".to_string(),
+                details: err.to_string(),
+            })?;
             let params: SigningEventParams = match serde_json::from_slice(&bytes) {
                 Ok(params) => params,
                 Err(err) => {

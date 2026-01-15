@@ -129,8 +129,10 @@ impl Default for RetryConfig {
 impl RetryConfig {
     /// Calculate delay for a given retry count
     pub fn delay_for_retry(&self, retry_count: u32) -> u64 {
+        // First retry uses base_delay_ms, then exponential backoff.
+        let exponent = retry_count.saturating_sub(1) as i32;
         let base = (self.base_delay_ms as f64)
-            * self.backoff_multiplier.powi(retry_count as i32);
+            * self.backoff_multiplier.powi(exponent);
         let clamped = base.min(self.max_delay_ms as f64) as u64;
         // Jitter is applied by caller using random
         clamped
@@ -140,16 +142,13 @@ impl RetryConfig {
 /// Two-phase protocol configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoPhaseConfig {
-    /// Feature toggle (safe incremental enablement)
-    pub enabled: bool,
-
     /// Timeout for proposal collection phase
     pub proposal_timeout_ms: u64,
 
     /// Votes required to commit.
     ///
     /// v1: derive from `GroupConfig.threshold_m` (do not hardcode).
-    pub commit_quorum: usize,
+    pub commit_quorum: u16,
 
     /// Minimum depth for UTXO inputs.
     ///
@@ -166,7 +165,6 @@ pub struct TwoPhaseConfig {
 impl Default for TwoPhaseConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             proposal_timeout_ms: DEFAULT_PROPOSAL_TIMEOUT_MS,
             commit_quorum: 0, // Must be derived from GroupConfig.threshold_m
             min_input_score_depth: 0, // Auto (derive from group)
@@ -2050,32 +2048,30 @@ use crate::domain::coordination::ProposalBroadcast;
 use crate::infrastructure::storage::phase::PhaseStorage;
 
 // Pseudocode sketch: inside the existing submit_signing_event after event validation+storage insert
-if ctx.two_phase.enabled {
-    let now = crate::foundation::now_nanos();
+let now = crate::foundation::now_nanos();
 
-    // Enter proposing (idempotent)
-    if !ctx.phase_storage.try_enter_proposing(&event_id, now)? {
-        return Ok(SigningEventResult { /* already in progress */ });
-    }
-
-    // Build proposal for round=0 using the same PSKT+hash logic as the signing path
-    let proposal: ProposalBroadcast = crate::application::two_phase::build_local_proposal_for_round(
-        ctx.rpc.as_ref(),
-        &ctx.config,
-        &stored_event,
-        &ctx.local_peer_id,
-        /* round */ 0,
-        now,
-    ).await?;
-
-    // Store + broadcast (proposal phase never signs)
-    let _ = ctx.phase_storage.store_proposal(&proposal)?;
-    ctx.phase_storage.set_own_proposal_hash(&event_id, proposal.tx_template_hash)?;
-    ctx.transport.publish_proposal(proposal).await?;
-
-    // Note: signing happens only after commit via the existing CRDT path.
-    return Ok(SigningEventResult { /* tx_template_hash omitted until committed */ });
+// Enter proposing (idempotent)
+if !ctx.phase_storage.try_enter_proposing(&event_id, now)? {
+    return Ok(SigningEventResult { /* already in progress */ });
 }
+
+// Build proposal for round=0 using the same PSKT+hash logic as the signing path
+let proposal: ProposalBroadcast = crate::application::two_phase::build_local_proposal_for_round(
+    ctx.rpc.as_ref(),
+    &ctx.config,
+    &stored_event,
+    &ctx.local_peer_id,
+    /* round */ 0,
+    now,
+).await?;
+
+// Store + broadcast (proposal phase never signs)
+let _ = ctx.phase_storage.store_proposal(&proposal)?;
+ctx.phase_storage.set_own_proposal_hash(&event_id, proposal.tx_template_hash)?;
+ctx.transport.publish_proposal(proposal).await?;
+
+// Note: signing happens only after commit via the existing CRDT path.
+return Ok(SigningEventResult { /* tx_template_hash omitted until committed */ });
 ```
 
 ### 6.2 Proposal Builder Helper (shared)
@@ -2357,7 +2353,7 @@ jitter_ms = 250
 |------|---------|
 | `igra-core/src/domain/mod.rs` | Add `coordination` module export |
 | `igra-core/src/infrastructure/config/types.rs` | Add `two_phase: TwoPhaseConfig` to `AppConfig` |
-| `igra-core/src/application/event_processor.rs` | Start propose instead of immediate signing when `two_phase.enabled` |
+| `igra-core/src/application/event_processor.rs` | Start proposing instead of immediate signing |
 | `igra-core/src/application/event_processor.rs` | Add `phase_storage` + `two_phase` to `EventContext` |
 | `igra-core/src/infrastructure/storage/mod.rs` | Add phase storage exports |
 | `igra-core/src/infrastructure/storage/rocks/schema.rs` | Add CF constants for phase/proposals |

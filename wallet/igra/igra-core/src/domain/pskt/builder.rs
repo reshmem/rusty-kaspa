@@ -43,15 +43,40 @@ pub fn build_pskt_from_utxos(
     // Deterministic UTXO ordering (leaderless requirement).
     //
     // Total ordering:
-    // 1) amount (desc) - prefer larger UTXOs to reduce input count
+    // 1) score(seed, outpoint) (asc) if selection_seed is provided
     // 2) outpoint.txid (lexicographic asc)
     // 3) outpoint.index (asc)
+    //
+    // NOTE: We intentionally avoid using `amount` as a secondary sort key. Under partial UTXO-view
+    // skew, amount-biased ordering increases proposal divergence by pulling different "large"
+    // UTXOs into the selected prefix.
+    fn score_for(seed: &[u8; 32], utxo: &UtxoInput) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(seed);
+        hasher.update(&utxo.outpoint.transaction_id.as_bytes());
+        hasher.update(&utxo.outpoint.index.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(digest.as_bytes());
+        out
+    }
+
+    let selection_seed = params.selection_seed;
     utxos.sort_by(|a, b| {
-        b.entry
-            .amount
-            .cmp(&a.entry.amount)
-            .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
-            .then(a.outpoint.index.cmp(&b.outpoint.index))
+        if let Some(seed) = selection_seed.as_ref() {
+            let score_a = score_for(seed, a);
+            let score_b = score_for(seed, b);
+            score_a
+                .cmp(&score_b)
+                .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
+                .then(a.outpoint.index.cmp(&b.outpoint.index))
+        } else {
+            b.entry
+                .amount
+                .cmp(&a.entry.amount)
+                .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
+                .then(a.outpoint.index.cmp(&b.outpoint.index))
+        }
     });
 
     let calc_storage_mass_for_candidate = |inputs: &[UtxoInput], outputs: &[MultisigOutput]| -> Option<u64> {
@@ -207,7 +232,10 @@ fn signature_script_template(redeem_script: &[u8], required_signatures: usize) -
         signatures.push(SIG_HASH_ALL.to_u8());
     }
 
-    let redeem_push = ScriptBuilder::new().add_data(redeem_script).map_err(|err| ThresholdError::Message(err.to_string()))?.drain();
+    let redeem_push = ScriptBuilder::new()
+        .add_data(redeem_script)
+        .map_err(|err| ThresholdError::PsktError { operation: "signature_script_template".to_string(), details: err.to_string() })?
+        .drain();
 
     let mut out = signatures;
     out.extend(redeem_push);
@@ -312,11 +340,11 @@ impl FeeConfig {
             FeePaymentMode::Split { recipient_parts, signer_parts } => {
                 let total_parts = recipient_parts.saturating_add(*signer_parts);
                 if total_parts == 0 {
-                    return Err(ThresholdError::Message("fee split parts must not both be zero".to_string()));
+                    return Err(ThresholdError::ConfigError("fee split parts must not both be zero".to_string()));
                 }
                 fee.checked_mul(*recipient_parts as u64)
                     .and_then(|v| v.checked_div(total_parts as u64))
-                    .ok_or_else(|| ThresholdError::Message("fee split overflow".to_string()))?
+                    .ok_or_else(|| ThresholdError::PsktError { operation: "fee_split".to_string(), details: "fee split overflow".to_string() })?
             }
         };
 

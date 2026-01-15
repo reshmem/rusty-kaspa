@@ -11,7 +11,7 @@ pub fn encode_envelope(envelope: &MessageEnvelope) -> Result<Vec<u8>, ThresholdE
     let bytes = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .serialize(envelope)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        .map_err(|err| crate::serde_err!("bincode", err))?;
     out.extend_from_slice(&bytes);
     Ok(out)
 }
@@ -29,13 +29,13 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<MessageEnvelope, ThresholdError> 
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .deserialize(&bytes[2..])
-        .map_err(|err| ThresholdError::Message(err.to_string()))
+        .map_err(|err| crate::serde_err!("bincode", err))
 }
 
 pub fn payload_hash(payload: &TransportMessage) -> Result<Hash32, ThresholdError> {
     let bytes = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .serialize(payload)
-        .map_err(|err| ThresholdError::Message(err.to_string()))?;
+        .map_err(|err| crate::serde_err!("bincode", err))?;
     Ok(*blake3::hash(&bytes).as_bytes())
 }

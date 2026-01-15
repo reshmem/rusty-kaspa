@@ -7,10 +7,12 @@ mod setup;
 
 use crate::cli::Cli;
 use igra_core::application::EventContext;
+use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::{parse_validator_pubkeys, CompositeVerifier};
 use igra_core::foundation::ThresholdError;
 use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktOutput};
 use igra_core::infrastructure::hyperlane::ConfiguredIsm;
+use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
 use igra_service::service::coordination::run_coordination_loop;
@@ -52,6 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = setup::init_storage(&app_config.service.data_dir, app_config.service.allow_schema_wipe)?;
     info!("storage initialized data_dir={}", app_config.service.data_dir);
+
+    let required_sigs_fallback = app_config.service.hd.as_ref().map(|hd| hd.required_sigs as u16);
+    let two_phase: TwoPhaseConfig = app_config.two_phase.effective(app_config.group.as_ref(), required_sigs_fallback)?;
+    let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
 
     let audit_id = args.audit.clone().or_else(igra_core::infrastructure::config::get_audit_request_id);
     if let Some(request_id) = audit_id {
@@ -107,15 +113,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let group_id_hex = Some(hex::encode(group_id));
 
     let app_config_for_loop = app_config.clone();
+    let two_phase_for_loop = two_phase.clone();
     let flow_for_loop = flow.clone();
     let transport_for_loop = transport.clone();
     let storage_for_loop = storage.clone();
+    let phase_storage_for_loop = phase_storage.clone();
     let group_id_for_loop = group_id;
     tokio::spawn(async move {
         info!("starting coordination loop peer_id={} group_id={}", peer_id, hex::encode(group_id_for_loop));
-        if let Err(err) =
-            run_coordination_loop(app_config_for_loop, flow_for_loop, transport_for_loop, storage_for_loop, peer_id, group_id_for_loop)
-                .await
+        if let Err(err) = run_coordination_loop(
+            app_config_for_loop,
+            two_phase_for_loop,
+            flow_for_loop,
+            transport_for_loop,
+            storage_for_loop,
+            phase_storage_for_loop,
+            peer_id,
+            group_id_for_loop,
+        )
+        .await
         {
             warn!("coordination loop error: {}", err);
         }
@@ -135,9 +151,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let event_ctx = EventContext {
             config: app_config.service.clone(),
             policy: app_config.policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: peer_id_for_state.clone(),
             message_verifier: message_verifier.clone(),
             storage: storage.clone(),
+            phase_storage: phase_storage.clone(),
             transport: flow.transport(),
             rpc: flow.rpc(),
         };

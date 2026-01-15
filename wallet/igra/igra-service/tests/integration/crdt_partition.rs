@@ -1,11 +1,14 @@
 use async_trait::async_trait;
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventWire};
+use igra_core::domain::coordination::EventPhase;
+use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::NoopVerifier;
 use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{Hash32, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
 use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
+use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{Transport, TransportMessage, TransportSubscription};
@@ -26,6 +29,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 const WALLET_SECRET: &str = "test-wallet-secret";
+const LOOP_STARTUP_GRACE: Duration = Duration::from_millis(50);
 
 fn ensure_wallet_secret() {
     static ONCE: Once = Once::new();
@@ -64,16 +68,18 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
 }
 
 fn build_config(redeem_script_hex: String) -> AppConfig {
-    let mut service = ServiceConfig::default();
-    service.pskt = PsktBuildConfig {
-        node_rpc_url: String::new(),
-        source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
-        redeem_script_hex,
-        sig_op_count: 2,
-        outputs: Vec::new(),
-        fee_payment_mode: Default::default(),
-        fee_sompi: Some(1_000),
-        change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+    let service = ServiceConfig {
+        pskt: PsktBuildConfig {
+            node_rpc_url: String::new(),
+            source_addresses: vec!["kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()],
+            redeem_script_hex,
+            sig_op_count: 2,
+            outputs: Vec::new(),
+            fee_payment_mode: Default::default(),
+            fee_sompi: Some(1_000),
+            change_address: Some("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw".to_string()),
+        },
+        ..Default::default()
     };
 
     AppConfig {
@@ -97,7 +103,7 @@ fn signing_event(label: &str) -> SigningEventWire {
     }
 }
 
-async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], timeout: Duration) -> Result<(), ThresholdError> {
+async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], event_id: &Hash32, timeout: Duration) -> Result<(), ThresholdError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() > deadline {
@@ -106,7 +112,7 @@ async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], timeout: Duration)
 
         let mut completed = 0usize;
         for storage in storages {
-            if storage.list_pending_event_crdts()?.is_empty() {
+            if storage.get_event_completion(event_id)?.is_some() {
                 completed += 1;
             }
         }
@@ -117,13 +123,13 @@ async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], timeout: Duration)
     }
 }
 
-async fn wait_for_complete(storage: &Arc<dyn Storage>, timeout: Duration) -> Result<(), ThresholdError> {
+async fn wait_for_complete(storage: &Arc<dyn Storage>, event_id: &Hash32, timeout: Duration) -> Result<(), ThresholdError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() > deadline {
             return Err(ThresholdError::Message("timeout waiting for CRDT completion".to_string()));
         }
-        if storage.list_pending_event_crdts()?.is_empty() {
+        if storage.get_event_completion(event_id)?.is_some() {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -173,6 +179,10 @@ impl Transport for FilteringTransport {
         broadcast: igra_core::infrastructure::transport::messages::EventStateBroadcast,
     ) -> Result<(), ThresholdError> {
         self.inner.publish_event_state(broadcast).await
+    }
+
+    async fn publish_proposal(&self, proposal: igra_core::domain::coordination::ProposalBroadcast) -> Result<(), ThresholdError> {
+        self.inner.publish_proposal(proposal).await
     }
 
     async fn publish_state_sync_request(
@@ -278,8 +288,9 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         ),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] =
-        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let storages: [Arc<dyn Storage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
+    let phase_storages: [Arc<dyn PhaseStorage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -294,32 +305,42 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
+    let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
+
     let loops = [
         tokio::spawn(run_coordination_loop(
             configs[0].clone(),
+            two_phase.clone(),
             flows[0].clone(),
             transports[0].clone(),
             storages[0].clone(),
+            phase_storages[0].clone(),
             PeerId::from("signer-1"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[1].clone(),
+            two_phase.clone(),
             flows[1].clone(),
             transports[1].clone(),
             storages[1].clone(),
+            phase_storages[1].clone(),
             PeerId::from("signer-2"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[2].clone(),
+            two_phase.clone(),
             flows[2].clone(),
             transports[2].clone(),
             storages[2].clone(),
+            phase_storages[2].clone(),
             PeerId::from("signer-3"),
             group_id,
         )),
     ];
+
+    tokio::time::sleep(LOOP_STARTUP_GRACE).await;
 
     // Ingest the same event on all 3 nodes (as if each had its own watcher).
     let mut event_id_hex = None;
@@ -327,9 +348,11 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         let ctx = EventContext {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
+            phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
         };
@@ -350,9 +373,11 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
 
     // Nodes 1 and 2 should complete without node 3 seeing their messages.
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], Duration::from_secs(10)).await?;
-    // Node 3 is partitioned; it should still have pending work.
-    assert!(!storages[2].list_pending_event_crdts()?.is_empty());
+    wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], &event_id, Duration::from_secs(10)).await?;
+
+    // Node 3 is partitioned; it should not have completed the event yet.
+    let phase3 = phase_storages[2].get_phase(&event_id)?.expect("phase state");
+    assert!(matches!(phase3.phase, EventPhase::Proposing | EventPhase::Failed));
 
     // Heal the partition and request sync.
     partitioned.store(false, Ordering::Relaxed);
@@ -361,7 +386,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         .await?;
 
     // Node 3 catches up via response merge.
-    wait_for_complete(&storages[2].clone(), Duration::from_secs(10)).await?;
+    wait_for_complete(&storages[2].clone(), &event_id, Duration::from_secs(10)).await?;
 
     for handle in loops {
         handle.abort();
@@ -415,8 +440,9 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
         Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_drop_broadcast_threshold(128)),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] =
-        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let storages: [Arc<dyn Storage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
+    let phase_storages: [Arc<dyn PhaseStorage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -431,41 +457,53 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
         Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
+    let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
+
     let loops = [
         tokio::spawn(run_coordination_loop(
             configs[0].clone(),
+            two_phase.clone(),
             flows[0].clone(),
             transports[0].clone(),
             storages[0].clone(),
+            phase_storages[0].clone(),
             PeerId::from("signer-1"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[1].clone(),
+            two_phase.clone(),
             flows[1].clone(),
             transports[1].clone(),
             storages[1].clone(),
+            phase_storages[1].clone(),
             PeerId::from("signer-2"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[2].clone(),
+            two_phase.clone(),
             flows[2].clone(),
             transports[2].clone(),
             storages[2].clone(),
+            phase_storages[2].clone(),
             PeerId::from("signer-3"),
             group_id,
         )),
     ];
+
+    tokio::time::sleep(LOOP_STARTUP_GRACE).await;
 
     let mut event_id_hex = None;
     for i in 0..3usize {
         let ctx = EventContext {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
+            phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
         };
@@ -494,7 +532,8 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
         .await?;
     }
 
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], Duration::from_secs(15)).await?;
+    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], &event_id, Duration::from_secs(15))
+        .await?;
 
     for handle in loops {
         handle.abort();
@@ -546,8 +585,9 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
         Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_max_delay_ms(25)),
     ];
 
-    let storages: [Arc<dyn Storage>; 3] =
-        [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
+    let storages: [Arc<dyn Storage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
+    let phase_storages: [Arc<dyn PhaseStorage>; 3] = [stores[0].clone(), stores[1].clone(), stores[2].clone()];
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -562,40 +602,53 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
         Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
     ];
 
+    let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
+
     let loops = [
         tokio::spawn(run_coordination_loop(
             configs[0].clone(),
+            two_phase.clone(),
             flows[0].clone(),
             transports[0].clone(),
             storages[0].clone(),
+            phase_storages[0].clone(),
             PeerId::from("signer-1"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[1].clone(),
+            two_phase.clone(),
             flows[1].clone(),
             transports[1].clone(),
             storages[1].clone(),
+            phase_storages[1].clone(),
             PeerId::from("signer-2"),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
             configs[2].clone(),
+            two_phase.clone(),
             flows[2].clone(),
             transports[2].clone(),
             storages[2].clone(),
+            phase_storages[2].clone(),
             PeerId::from("signer-3"),
             group_id,
         )),
     ];
 
+    tokio::time::sleep(LOOP_STARTUP_GRACE).await;
+
+    let mut event_id_hex = None;
     for i in 0..3usize {
         let ctx = EventContext {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
+            phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
         };
@@ -608,10 +661,16 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             event: signing_event("event-reorder"),
         };
 
-        submit_signing_event(&ctx, params).await?;
+        let result = submit_signing_event(&ctx, params).await?;
+        event_id_hex.get_or_insert(result.event_id_hex);
     }
 
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], Duration::from_secs(10)).await?;
+    let event_id_hex = event_id_hex.expect("event id");
+    let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
+    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+
+    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], &event_id, Duration::from_secs(10))
+        .await?;
 
     for handle in loops {
         handle.abort();
@@ -660,9 +719,17 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let transports: [Arc<dyn Transport>; 3] = [raw_transports[0].clone(), raw_transports[1].clone(), raw_transports[2].clone()];
 
     let node3_dir = tempdir().expect("tempdir");
-    let storage1: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let storage2: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let storage3: Arc<dyn Storage> = Arc::new(RocksStorage::open(node3_dir.path())?);
+    let store1 = Arc::new(MemoryStorage::new());
+    let store2 = Arc::new(MemoryStorage::new());
+    let store3 = Arc::new(RocksStorage::open(node3_dir.path())?);
+
+    let storage1: Arc<dyn Storage> = store1.clone();
+    let storage2: Arc<dyn Storage> = store2.clone();
+    let storage3: Arc<dyn Storage> = store3.clone();
+
+    let phase1: Arc<dyn PhaseStorage> = store1.clone();
+    let phase2: Arc<dyn PhaseStorage> = store2.clone();
+    let phase3: Arc<dyn PhaseStorage> = store3.clone();
 
     let mut configs = Vec::new();
     for i in 0..3usize {
@@ -675,36 +742,46 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let flow2 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage2.clone(), transports[1].clone(), Arc::new(NoopVerifier))?);
     let flow3 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
 
+    let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
+
     let loop1 = tokio::spawn(run_coordination_loop(
         configs[0].clone(),
+        two_phase.clone(),
         flow1.clone(),
         transports[0].clone(),
         storage1.clone(),
+        phase1.clone(),
         PeerId::from("signer-1"),
         group_id,
     ));
     let loop2 = tokio::spawn(run_coordination_loop(
         configs[1].clone(),
+        two_phase.clone(),
         flow2.clone(),
         transports[1].clone(),
         storage2.clone(),
+        phase2.clone(),
         PeerId::from("signer-2"),
         group_id,
     ));
     let loop3 = tokio::spawn(run_coordination_loop(
         configs[2].clone(),
+        two_phase.clone(),
         flow3.clone(),
         transports[2].clone(),
         storage3.clone(),
+        phase3.clone(),
         PeerId::from("signer-3"),
         group_id,
     ));
 
+    tokio::time::sleep(LOOP_STARTUP_GRACE).await;
+
     let mut event_id_hex = None;
-    for (idx, (storage, transport)) in [
-        (storage1.clone(), transports[0].clone()),
-        (storage2.clone(), transports[1].clone()),
-        (storage3.clone(), transports[2].clone()),
+    for (idx, (storage, phase_storage, transport)) in [
+        (storage1.clone(), phase1.clone(), transports[0].clone()),
+        (storage2.clone(), phase2.clone(), transports[1].clone()),
+        (storage3.clone(), phase3.clone(), transports[2].clone()),
     ]
     .into_iter()
     .enumerate()
@@ -712,9 +789,11 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         let ctx = EventContext {
             config: configs[idx].service.clone(),
             policy: configs[idx].policy.clone(),
+            two_phase: two_phase.clone(),
             local_peer_id: PeerId::from(format!("signer-{}", idx + 1)),
             message_verifier: Arc::new(NoopVerifier),
             storage,
+            phase_storage,
             transport,
             rpc: rpc.clone(),
         };
@@ -740,19 +819,25 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let _ = loop3.await;
     drop(flow3);
     drop(storage3);
+    drop(phase3);
+    drop(store3);
 
     // Nodes 1 and 2 should complete.
-    wait_for_all_complete(&[storage1.clone(), storage2.clone()], Duration::from_secs(10)).await?;
+    wait_for_all_complete(&[storage1.clone(), storage2.clone()], &event_id, Duration::from_secs(10)).await?;
 
     // Restart node 3 with the same RocksDB dir.
-    let storage3_restarted: Arc<dyn Storage> = Arc::new(RocksStorage::open(node3_dir.path())?);
+    let store3_restarted = Arc::new(RocksStorage::open(node3_dir.path())?);
+    let storage3_restarted: Arc<dyn Storage> = store3_restarted.clone();
+    let phase3_restarted: Arc<dyn PhaseStorage> = store3_restarted.clone();
     let flow3_restarted =
         Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3_restarted.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
     let loop3_restarted = tokio::spawn(run_coordination_loop(
         configs[2].clone(),
+        two_phase.clone(),
         flow3_restarted.clone(),
         transports[2].clone(),
         storage3_restarted.clone(),
+        phase3_restarted.clone(),
         PeerId::from("signer-3"),
         group_id,
     ));
@@ -762,7 +847,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         .publish_state_sync_request(StateSyncRequest { event_ids: vec![event_id], requester_peer_id: PeerId::from("signer-3") })
         .await?;
 
-    wait_for_complete(&storage3_restarted, Duration::from_secs(10)).await?;
+    wait_for_complete(&storage3_restarted, &event_id, Duration::from_secs(10)).await?;
 
     loop1.abort();
     loop2.abort();

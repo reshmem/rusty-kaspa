@@ -10,7 +10,7 @@ pub fn split_fee(fee: u64, mode: &FeePaymentMode) -> Result<(u64, u64), Threshol
         FeePaymentMode::Split { recipient_parts, signer_parts } => {
             let total_parts = recipient_parts.saturating_add(*signer_parts);
             if total_parts == 0 {
-                return Err(ThresholdError::Message(format!(
+                return Err(ThresholdError::ConfigError(format!(
                     "fee split parts must not both be zero (recipient_parts={}, signer_parts={})",
                     recipient_parts, signer_parts
                 )));
@@ -18,7 +18,7 @@ pub fn split_fee(fee: u64, mode: &FeePaymentMode) -> Result<(u64, u64), Threshol
             let recipient_fee = fee
                 .checked_mul(*recipient_parts as u64)
                 .and_then(|v| v.checked_div(total_parts as u64))
-                .ok_or_else(|| ThresholdError::Message("fee split overflow".to_string()))?;
+                .ok_or_else(|| ThresholdError::PsktError { operation: "split_fee".to_string(), details: "fee split overflow".to_string() })?;
             Ok((recipient_fee, fee.saturating_sub(recipient_fee)))
         }
     }
@@ -31,10 +31,7 @@ pub fn apply_recipient_fee(outputs: &mut [MultisigOutput], recipient_fee: u64) -
     }
     let outputs_len = outputs.len();
     let first = outputs.first_mut().ok_or_else(|| {
-        ThresholdError::Message(format!(
-            "missing recipient output (outputs_len={}, recipient_fee={})",
-            outputs_len, recipient_fee
-        ))
+        ThresholdError::PsktValidationFailed(format!("missing recipient output (outputs_len={}, recipient_fee={})", outputs_len, recipient_fee))
     })?;
     if first.amount < recipient_fee {
         return Err(ThresholdError::InsufficientUTXOs);
@@ -47,7 +44,7 @@ pub fn apply_recipient_fee(outputs: &mut [MultisigOutput], recipient_fee: u64) -
 pub fn validate_fee_mode(mode: &FeePaymentMode) -> Result<(), ThresholdError> {
     if let FeePaymentMode::Split { recipient_parts, signer_parts } = mode {
         if *recipient_parts == 0 && *signer_parts == 0 {
-            return Err(ThresholdError::Message(format!(
+            return Err(ThresholdError::ConfigError(format!(
                 "fee split parts must not both be zero (recipient_parts={}, signer_parts={})",
                 recipient_parts, signer_parts
             )));

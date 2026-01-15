@@ -1,8 +1,10 @@
+use crate::domain::coordination::{EventPhase, EventPhaseState, Proposal};
 use crate::domain::pskt::multisig as pskt_multisig;
 use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, GroupConfig, StoredCompletionRecord, StoredEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
 use crate::foundation::{day_start_nanos, now_nanos};
 use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::infrastructure::storage::phase::{PhaseStorage, RecordSignedHashResult, StoreProposalResult};
 use crate::infrastructure::storage::{BatchTransaction, CrdtStorageStats, Storage};
 use crate::infrastructure::transport::messages::{CompletionRecord, CrdtSignature, EventCrdtState};
 use std::collections::HashMap;
@@ -16,6 +18,11 @@ struct MemoryInner {
     event_crdt: HashMap<(Hash32, Hash32), StoredEventCrdt>,
     volume: HashMap<u64, u64>,
     seen: HashMap<(PeerId, SessionId, u64), u64>,
+
+    // Two-phase protocol
+    phase: HashMap<Hash32, EventPhaseState>,
+    proposals: HashMap<(Hash32, u32, PeerId), Proposal>,
+    signed_hash: HashMap<Hash32, Hash32>,
 }
 
 impl MemoryInner {
@@ -28,6 +35,9 @@ impl MemoryInner {
             event_crdt: HashMap::new(),
             volume: HashMap::new(),
             seen: HashMap::new(),
+            phase: HashMap::new(),
+            proposals: HashMap::new(),
+            signed_hash: HashMap::new(),
         }
     }
 }
@@ -308,7 +318,7 @@ impl Storage for MemoryStorage {
             }
         }
 
-        Ok((0..input_count as u32).all(|idx| per_input.get(&idx).map_or(false, |set| set.len() >= required)))
+        Ok((0..input_count as u32).all(|idx| per_input.get(&idx).is_some_and(|set| set.len() >= required)))
     }
 
     fn list_pending_event_crdts(&self) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
@@ -383,6 +393,212 @@ impl Storage for MemoryStorage {
         let before = inner.seen.len();
         inner.seen.retain(|_, ts| *ts >= older_than_nanos);
         Ok(before - inner.seen.len())
+    }
+}
+
+impl PhaseStorage for MemoryStorage {
+    fn try_enter_proposing(&self, event_id: &Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        match inner.phase.get(event_id) {
+            None => {
+                inner.phase.insert(*event_id, EventPhaseState::new(EventPhase::Proposing, now_ns));
+                Ok(true)
+            }
+            Some(state) if state.phase == EventPhase::Unknown => {
+                inner.phase.insert(*event_id, EventPhaseState::new(EventPhase::Proposing, now_ns));
+                Ok(true)
+            }
+            Some(_) => Ok(false),
+        }
+    }
+
+    fn get_phase(&self, event_id: &Hash32) -> Result<Option<EventPhaseState>, ThresholdError> {
+        Ok(self.lock_inner()?.phase.get(event_id).cloned())
+    }
+
+    fn get_signed_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+        Ok(self.lock_inner()?.signed_hash.get(event_id).copied())
+    }
+
+    fn record_signed_hash(
+        &self,
+        event_id: &Hash32,
+        tx_template_hash: Hash32,
+        _now_ns: u64,
+    ) -> Result<RecordSignedHashResult, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        match inner.signed_hash.get(event_id) {
+            None => {
+                inner.signed_hash.insert(*event_id, tx_template_hash);
+                Ok(RecordSignedHashResult::Set)
+            }
+            Some(existing) if *existing == tx_template_hash => Ok(RecordSignedHashResult::AlreadySame),
+            Some(existing) => Ok(RecordSignedHashResult::Conflict { existing: *existing, attempted: tx_template_hash }),
+        }
+    }
+
+    fn adopt_round_if_behind(&self, event_id: &Hash32, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
+
+        if matches!(state.phase, EventPhase::Committed | EventPhase::Completed | EventPhase::Abandoned) {
+            return Ok(false);
+        }
+        if state.round >= new_round {
+            return Ok(false);
+        }
+
+        state.phase = EventPhase::Proposing;
+        state.phase_started_at_ns = now_ns;
+        state.round = new_round;
+        state.canonical_hash = None;
+        state.own_proposal_hash = None;
+        Ok(true)
+    }
+
+    fn set_own_proposal_hash(&self, event_id: &Hash32, tx_template_hash: Hash32) -> Result<(), ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_nanos()));
+        state.own_proposal_hash = Some(tx_template_hash);
+        Ok(())
+    }
+
+    fn store_proposal(&self, proposal: &Proposal) -> Result<StoreProposalResult, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(proposal.event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Proposing, now_nanos()));
+
+        if state.phase == EventPhase::Committed || state.phase == EventPhase::Completed || state.phase == EventPhase::Abandoned {
+            return Ok(StoreProposalResult::PhaseTooLate);
+        }
+        if state.round != proposal.round {
+            return Ok(StoreProposalResult::RoundMismatch { expected: state.round, got: proposal.round });
+        }
+
+        // Ensure phase is Proposing for this round.
+        if state.phase == EventPhase::Unknown || state.phase == EventPhase::Failed {
+            state.phase = EventPhase::Proposing;
+            state.phase_started_at_ns = now_nanos();
+        }
+
+        let key = (proposal.event_id, proposal.round, proposal.proposer_peer_id.clone());
+        if let Some(existing) = inner.proposals.get(&key) {
+            if existing.tx_template_hash != proposal.tx_template_hash {
+                return Ok(StoreProposalResult::Equivocation {
+                    existing_hash: existing.tx_template_hash,
+                    new_hash: proposal.tx_template_hash,
+                });
+            }
+            return Ok(StoreProposalResult::DuplicateFromPeer);
+        }
+
+        inner.proposals.insert(key, proposal.clone());
+        Ok(StoreProposalResult::Stored)
+    }
+
+    fn get_proposals(&self, event_id: &Hash32, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
+        let inner = self.lock_inner()?;
+        Ok(inner.proposals.iter().filter(|((eid, r, _), _)| eid == event_id && *r == round).map(|(_, p)| p.clone()).collect())
+    }
+
+    fn proposal_count(&self, event_id: &Hash32, round: u32) -> Result<usize, ThresholdError> {
+        Ok(self.get_proposals(event_id, round)?.len())
+    }
+
+    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<Hash32>, ThresholdError> {
+        let inner = self.lock_inner()?;
+        Ok(inner.phase.iter().filter(|(_, s)| s.phase == phase).map(|(id, _)| *id).collect())
+    }
+
+    fn mark_committed(&self, event_id: &Hash32, round: u32, canonical_hash: Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Proposing, now_ns));
+
+        if state.phase == EventPhase::Committed || state.phase == EventPhase::Completed {
+            if state.canonical_hash != Some(canonical_hash) {
+                return Ok(false);
+            }
+            state.round = round;
+            return Ok(true);
+        }
+        if !state.phase.can_transition_to(EventPhase::Committed)
+            && state.phase != EventPhase::Proposing
+            && state.phase != EventPhase::Unknown
+        {
+            return Ok(false);
+        }
+        state.phase = EventPhase::Committed;
+        state.phase_started_at_ns = now_ns;
+        state.round = round;
+        state.canonical_hash = Some(canonical_hash);
+        Ok(true)
+    }
+
+    fn mark_completed(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
+        state.phase = EventPhase::Completed;
+        state.phase_started_at_ns = now_ns;
+        Ok(())
+    }
+
+    fn fail_and_bump_round(&self, event_id: &Hash32, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let Some(state) = inner.phase.get_mut(event_id) else {
+            return Ok(false);
+        };
+        if state.round != expected_round {
+            return Ok(false);
+        }
+        if state.phase == EventPhase::Committed || state.phase == EventPhase::Completed || state.phase == EventPhase::Abandoned {
+            return Ok(false);
+        }
+        state.phase = EventPhase::Failed;
+        state.phase_started_at_ns = now_ns;
+        state.round = state.round.saturating_add(1);
+        state.retry_count = state.retry_count.saturating_add(1);
+        state.canonical_hash = None;
+        state.own_proposal_hash = None;
+        Ok(true)
+    }
+
+    fn mark_abandoned(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
+        state.phase = EventPhase::Abandoned;
+        state.phase_started_at_ns = now_ns;
+        Ok(())
+    }
+
+    fn clear_stale_proposals(&self, event_id: &Hash32, before_round: u32) -> Result<usize, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let keys =
+            inner.proposals.keys().filter(|(eid, round, _)| eid == event_id && *round < before_round).cloned().collect::<Vec<_>>();
+        let deleted = keys.len();
+        for key in keys {
+            inner.proposals.remove(&key);
+        }
+        Ok(deleted)
+    }
+
+    fn gc_events_older_than(&self, cutoff_timestamp_ns: u64) -> Result<usize, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let ids = inner
+            .phase
+            .iter()
+            .filter(|(_, state)| state.phase_started_at_ns < cutoff_timestamp_ns && state.phase.is_terminal())
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        let deleted = ids.len();
+        for id in ids {
+            inner.phase.remove(&id);
+            inner.proposals.retain(|(eid, _, _), _| eid != &id);
+        }
+        Ok(deleted)
+    }
+
+    fn has_proposal_from(&self, event_id: &Hash32, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
+        let inner = self.lock_inner()?;
+        Ok(inner.proposals.contains_key(&(*event_id, round, peer_id.clone())))
     }
 }
 

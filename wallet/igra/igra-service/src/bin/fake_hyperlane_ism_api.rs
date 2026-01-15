@@ -4,6 +4,7 @@ use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Sign
 use kaspa_addresses::Address;
 use reqwest::Client;
 use reqwest::StatusCode;
+use rand::seq::SliceRandom;
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{Secp256k1, SecretKey};
 use serde::Deserialize;
@@ -81,6 +82,9 @@ const DEFAULT_DESTINATION_DOMAIN: u32 = 7;
 const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000000000000000000000000dead"; // burn-like payload
 const DEFAULT_DESTINATION_ADDRESS: &str = "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw";
 
+const UNORDERED_EVENTS_MIN: u16 = 1;
+const UNORDERED_EVENTS_MAX: u16 = 1024;
+
 #[allow(dead_code)]
 fn now_nanos() -> u64 {
     igra_core::foundation::util::time::current_timestamp_nanos_env(Some("KASPA_IGRA_TEST_NOW_NANOS")).unwrap_or(0)
@@ -104,6 +108,46 @@ fn parse_h256(hex_str: &str) -> Result<H256, String> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(H256::from(arr))
+}
+
+fn parse_cli_unordered_events() -> Result<Option<u16>, String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--help" || arg == "-h" {
+            eprintln!(
+                "Usage: fake_hyperlane_ism_api [--unordered-events N]\n\n  --unordered-events N   Shuffle nonces within each batch of N events ({}..={})",
+                UNORDERED_EVENTS_MIN,
+                UNORDERED_EVENTS_MAX
+            );
+            return Ok(None);
+        }
+
+        if let Some(value) = arg.strip_prefix("--unordered-events=") {
+            let parsed = value.trim().parse::<u16>().map_err(|_| "invalid --unordered-events value".to_string())?;
+            validate_unordered_events(parsed)?;
+            return Ok(Some(parsed));
+        }
+
+        if arg == "--unordered-events" {
+            let Some(value) = args.next() else {
+                return Err("--unordered-events requires a value".to_string());
+            };
+            let parsed = value.trim().parse::<u16>().map_err(|_| "invalid --unordered-events value".to_string())?;
+            validate_unordered_events(parsed)?;
+            return Ok(Some(parsed));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_unordered_events(value: u16) -> Result<(), String> {
+    if !(UNORDERED_EVENTS_MIN..=UNORDERED_EVENTS_MAX).contains(&value) {
+        return Err(format!(
+            "--unordered-events must be between {} and {}",
+            UNORDERED_EVENTS_MIN, UNORDERED_EVENTS_MAX
+        ));
+    }
+    Ok(())
 }
 
 fn build_hyperlane_message(
@@ -215,6 +259,8 @@ async fn submit_mailbox_process(
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
+    let unordered_events = parse_cli_unordered_events()?;
+
     let rpc_url = env::var("IGRA_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8088/rpc".to_string());
     let keys_path = env::var("HYPERLANE_KEYS_PATH").unwrap_or_else(|_| "/data/igra/hyperlane-keys.json".to_string());
     let interval_secs = parse_env_u64("HYPERLANE_INTERVAL_SECS", 10);
@@ -243,7 +289,7 @@ async fn main() -> Result<(), String> {
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;
     eprintln!(
-        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} destination_address={} origin_domain={} dest_domain={} sender={}",
+        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} destination_address={} origin_domain={} dest_domain={} sender={} unordered_events={:?}",
         rpc_url,
         keys.validators.len(),
         interval_secs,
@@ -253,6 +299,8 @@ async fn main() -> Result<(), String> {
         domain,
         destination_domain,
         hex::encode(sender)
+        ,
+        unordered_events
     );
     if keys.validators.is_empty() {
         eprintln!("[fake-hyperlane] WARNING: no validators loaded from {}", keys_path);
@@ -269,12 +317,64 @@ async fn main() -> Result<(), String> {
     // after a successful JSON-RPC response.
     let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let initial_slot = now_secs.saturating_sub(start_epoch_secs) / interval_secs.max(1);
-    let mut nonce: u32 = initial_slot.try_into().unwrap_or(0);
+
+    // For unordered batching tests we want deterministic, predictable ranges (0..N-1, N..2N-1, ...).
+    // Allow overriding via env for other workflows.
+    let start_nonce_override = env::var("HYPERLANE_START_NONCE").ok().and_then(|v| v.parse::<u32>().ok());
+    let start_nonce = if let Some(override_nonce) = start_nonce_override {
+        override_nonce
+    } else if unordered_events.is_some() {
+        0
+    } else {
+        u32::try_from(initial_slot).unwrap_or(0)
+    };
+    let mut next_batch_start_nonce: u32 = start_nonce;
+
+    let batch_size = unordered_events.unwrap_or(1) as u32;
+    let mut batch = Vec::<u32>::new();
+    let mut pending_nonce: Option<u32> = None;
+    let mut rng = rand::thread_rng();
+
+    let mut refill_batch = |batch: &mut Vec<u32>, next_start: &mut u32| {
+        batch.clear();
+        let start = *next_start;
+        let end_exclusive = start.saturating_add(batch_size);
+        for n in start..end_exclusive {
+            batch.push(n);
+        }
+        if batch_size > 1 {
+            eprintln!(
+                "[fake-hyperlane] unordered batch prepared start_nonce={} end_nonce_inclusive={} size={}",
+                start,
+                end_exclusive.saturating_sub(1),
+                batch_size
+            );
+        }
+        if batch_size > 1 {
+            batch.shuffle(&mut rng);
+        }
+        *next_start = start.saturating_add(batch_size);
+    };
 
     loop {
         let version = 3u8;
         let origin = domain.parse::<u32>().unwrap_or(5);
         let destination = destination_domain;
+
+        let nonce = match pending_nonce {
+            Some(nonce) => nonce,
+            None => {
+                if batch.is_empty() {
+                    refill_batch(&mut batch, &mut next_batch_start_nonce);
+                }
+                let Some(nonce) = batch.pop() else {
+                    continue;
+                };
+                pending_nonce = Some(nonce);
+                nonce
+            }
+        };
+
         eprintln!(
             "[fake-hyperlane] tick nonce={} origin={} dest_domain={} amount={} destination_address={} validators={}",
             nonce,
@@ -317,7 +417,7 @@ async fn main() -> Result<(), String> {
                     "[fake-hyperlane] submit ok rpc={} nonce={} mode={} status={} signing_submitted={:?}",
                     rpc_url, nonce, mode, status, signing_submitted
                 );
-                nonce = nonce.saturating_add(1);
+                pending_nonce = None;
                 sleep(Duration::from_secs(interval_secs)).await;
             }
             Err(err) => {
@@ -329,7 +429,7 @@ async fn main() -> Result<(), String> {
                         mode,
                         err.summary()
                     );
-                    nonce = nonce.saturating_add(1);
+                    pending_nonce = None;
                     sleep(Duration::from_secs(interval_secs)).await;
                 } else {
                     eprintln!("[fake-hyperlane] submit failed rpc={} nonce={} mode={} {}", rpc_url, nonce, mode, err.summary());

@@ -3,11 +3,11 @@ use igra_core::foundation::{Hash32, PeerId, TransactionId};
 
 #[test]
 fn test_gset_merge_properties() {
-    let mut a = GSet::from_iter(vec![1, 2, 3]);
-    let b = GSet::from_iter(vec![3, 4, 5]);
+    let mut a = GSet::from_items(vec![1, 2, 3]);
+    let b = GSet::from_items(vec![3, 4, 5]);
 
-    let mut c = GSet::from_iter(vec![3, 4, 5]);
-    let d = GSet::from_iter(vec![1, 2, 3]);
+    let mut c = GSet::from_items(vec![3, 4, 5]);
+    let d = GSet::from_items(vec![1, 2, 3]);
 
     a.merge(&b);
     c.merge(&d);

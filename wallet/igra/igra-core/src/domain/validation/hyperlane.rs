@@ -132,7 +132,7 @@ pub fn verify_event(
     let mut matched = 0usize;
 
     let signature_chunks = signatures.len();
-    for (_sig_index, sig) in signatures.iter().enumerate() {
+    for sig in signatures.iter() {
         for (idx, validator) in validators.iter().enumerate() {
             if used[idx] {
                 continue;

@@ -29,7 +29,10 @@ impl SigningKeypair {
     }
 
     pub fn to_secp256k1(&self) -> Result<Keypair, ThresholdError> {
-        let secret = SecretKey::from_slice(&self.secret_bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let secret = SecretKey::from_slice(&self.secret_bytes).map_err(|err| ThresholdError::CryptoError {
+            operation: "secret_key_from_slice".to_string(),
+            details: err.to_string(),
+        })?;
         let secp = Secp256k1::new();
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
@@ -59,7 +62,10 @@ pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdE
     };
 
     for key_data in inputs.key_data {
-        let xprv = key_data.get_xprv(inputs.payment_secret).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let xprv = key_data.get_xprv(inputs.payment_secret).map_err(|err| ThresholdError::CryptoError {
+            operation: "get_xprv".to_string(),
+            details: err.to_string(),
+        })?;
         let derived = match &path {
             Some(path) => xprv.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
             None => xprv,
@@ -68,7 +74,10 @@ pub fn derive_pubkeys(inputs: HdInputs<'_>) -> Result<Vec<PublicKey>, ThresholdE
     }
 
     for xpub in inputs.xpubs {
-        let xpub = ExtendedPublicKey::<PublicKey>::from_str(xpub).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let xpub = ExtendedPublicKey::<PublicKey>::from_str(xpub).map_err(|err| ThresholdError::CryptoError {
+            operation: "parse_xpub".to_string(),
+            details: err.to_string(),
+        })?;
         let derived = match &path {
             Some(path) => xpub.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
             None => xpub,
@@ -89,7 +98,10 @@ pub fn derive_keypair_from_key_data(
         p => Some(DerivationPath::from_str(p).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?),
     };
 
-    let xprv = key_data.get_xprv(payment_secret).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let xprv = key_data.get_xprv(payment_secret).map_err(|err| ThresholdError::CryptoError {
+        operation: "get_xprv".to_string(),
+        details: err.to_string(),
+    })?;
     let xprv = match &path {
         Some(path) => xprv.derive_path(path).map_err(|err| ThresholdError::InvalidDerivationPath(err.to_string()))?,
         None => xprv,
@@ -109,7 +121,10 @@ pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -
             xonly.serialize()
         })
         .collect();
-    multisig_redeem_script(xonly_keys.iter(), required_sigs).map_err(|err| ThresholdError::Message(err.to_string()))
+    multisig_redeem_script(xonly_keys.iter(), required_sigs).map_err(|err| ThresholdError::PsktError {
+        operation: "multisig_redeem_script".to_string(),
+        details: err.to_string(),
+    })
 }
 
 pub fn derivation_path_from_index(index: u32) -> String {

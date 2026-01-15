@@ -25,9 +25,9 @@ pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: Option<&str>
     let inputs = HdInputs { key_data: &key_data, xpubs: &hd.xpubs, derivation_path, payment_secret: payment_secret.as_ref() };
     let mut pubkeys = derive_pubkeys(inputs)?;
     if pubkeys.is_empty() {
-        return Err(ThresholdError::Message("no HD pubkeys configured".to_string()));
+        return Err(ThresholdError::ConfigError("no HD pubkeys configured".to_string()));
     }
-    pubkeys.sort_by(|a, b| a.serialize().cmp(&b.serialize()));
+    pubkeys.sort_by_key(|key| key.serialize());
     let redeem = redeem_script_from_pubkeys(&pubkeys, hd.required_sigs)?;
     Ok(hex::encode(redeem))
 }
@@ -70,7 +70,10 @@ pub fn resolve_data_dir() -> Result<PathBuf, ThresholdError> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    let cwd = std::env::current_dir().map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let cwd = std::env::current_dir().map_err(|err| ThresholdError::StorageError {
+        operation: "env::current_dir".to_string(),
+        details: err.to_string(),
+    })?;
     Ok(cwd.join(".igra"))
 }
 

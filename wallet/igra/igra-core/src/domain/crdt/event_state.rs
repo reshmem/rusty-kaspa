@@ -11,7 +11,7 @@ use super::CompletionInfo;
 
 /// The main Event CRDT combining signature G-Set with completion LWW-Register.
 /// Keyed by (event_id, tx_template_hash) - signatures only merge if both match.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct EventCrdt {
     /// The cross-chain event being processed (for grouping/audit).
     pub event_id: Hash32,
@@ -29,18 +29,6 @@ pub struct EventCrdt {
     version: u64,
 }
 
-impl Default for EventCrdt {
-    fn default() -> Self {
-        Self {
-            event_id: [0u8; 32],
-            tx_template_hash: [0u8; 32],
-            signatures: HashMap::new(),
-            completion: LWWRegister::new(),
-            version: 0,
-        }
-    }
-}
-
 impl EventCrdt {
     /// Create a new EventCrdt for the given (event_id, tx_template_hash) pair.
     pub fn new(event_id: Hash32, tx_template_hash: Hash32) -> Self {
@@ -51,12 +39,12 @@ impl EventCrdt {
     /// Returns true if signature was newly added.
     pub fn add_signature(&mut self, record: SignatureRecord) -> bool {
         let key = SignatureKey::new(record.input_index, record.pubkey.clone());
-        if self.signatures.contains_key(&key) {
-            false
-        } else {
-            self.signatures.insert(key, record);
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.signatures.entry(key) {
+            entry.insert(record);
             self.version += 1;
             true
+        } else {
+            false
         }
     }
 
@@ -104,7 +92,7 @@ impl EventCrdt {
             }
         }
 
-        (0..input_count as u32).all(|idx| per_input.get(&idx).map_or(false, |set| set.len() >= required))
+        (0..input_count as u32).all(|idx| per_input.get(&idx).is_some_and(|set| set.len() >= required))
     }
 
     /// Merge another EventCrdt into this one.
@@ -141,16 +129,16 @@ impl EventCrdt {
     /// Validate that the CRDT is self-consistent.
     pub fn validate(&self) -> Result<(), ThresholdError> {
         if self.event_id == [0u8; 32] {
-            return Err(ThresholdError::Message(format!(
-                "missing event_id in CRDT, tx_template_hash={}",
-                hex::encode(self.tx_template_hash)
-            )));
+            return Err(ThresholdError::SerializationError {
+                format: "crdt".to_string(),
+                details: format!("missing event_id, tx_template_hash={}", hex::encode(self.tx_template_hash)),
+            });
         }
         if self.tx_template_hash == [0u8; 32] {
-            return Err(ThresholdError::Message(format!(
-                "missing tx_template_hash in CRDT, event_id={}",
-                hex::encode(self.event_id)
-            )));
+            return Err(ThresholdError::SerializationError {
+                format: "crdt".to_string(),
+                details: format!("missing tx_template_hash, event_id={}", hex::encode(self.event_id)),
+            });
         }
         Ok(())
     }

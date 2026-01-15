@@ -1,19 +1,28 @@
 use crate::service::coordination::crdt_handler::{
     handle_crdt_broadcast, handle_state_sync_request, handle_state_sync_response, run_anti_entropy_loop,
 };
+use crate::service::coordination::two_phase_handler::handle_proposal_broadcast;
+use crate::service::coordination::two_phase_timeout::run_two_phase_tick_loop;
+use crate::service::coordination::unfinalized_reporter::run_unfinalized_event_reporter_loop;
 use crate::service::flow::ServiceFlow;
+use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::foundation::{day_start_nanos, now_nanos, Hash32, PeerId, ThresholdError};
+use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{Transport, TransportMessage};
 use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+const IDLE_TICKER_INTERVAL_SECS: u64 = 60;
+
 pub async fn run_coordination_loop(
     app_config: Arc<igra_core::infrastructure::config::AppConfig>,
+    two_phase: TwoPhaseConfig,
     flow: Arc<ServiceFlow>,
     transport: Arc<dyn Transport>,
     storage: Arc<dyn Storage>,
+    phase_storage: Arc<dyn PhaseStorage>,
     local_peer_id: PeerId,
     group_id: Hash32,
 ) -> Result<(), ThresholdError> {
@@ -39,8 +48,31 @@ pub async fn run_coordination_loop(
         }
     }
 
-    let anti_entropy = tokio::spawn(run_anti_entropy_loop(storage.clone(), transport.clone(), local_peer_id.clone(), 5));
+    let anti_entropy =
+        tokio::spawn(run_anti_entropy_loop(storage.clone(), phase_storage.clone(), transport.clone(), local_peer_id.clone(), 5));
     let _anti_entropy_guard = AbortOnDrop(anti_entropy);
+
+    let _two_phase_guard = {
+        let two_phase_for_tick = two_phase.clone();
+        let app_config_for_tick = app_config.clone();
+        let flow_for_tick = flow.clone();
+        let transport_for_tick = transport.clone();
+        let storage_for_tick = storage.clone();
+        let phase_storage_for_tick = phase_storage.clone();
+        let local_peer_for_tick = local_peer_id.clone();
+        AbortOnDrop(tokio::spawn(async move {
+            run_two_phase_tick_loop(
+                app_config_for_tick,
+                two_phase_for_tick,
+                flow_for_tick,
+                transport_for_tick,
+                storage_for_tick,
+                phase_storage_for_tick,
+                local_peer_for_tick,
+            )
+            .await;
+        }))
+    };
 
     let gc_interval_secs = app_config.runtime.crdt_gc_interval_seconds.unwrap_or(600);
     let gc_ttl_secs = app_config.runtime.crdt_gc_ttl_seconds.unwrap_or(24 * 60 * 60);
@@ -77,15 +109,17 @@ pub async fn run_coordination_loop(
         None
     };
 
+    let _unfinalized_report_guard = AbortOnDrop(tokio::spawn(run_unfinalized_event_reporter_loop(storage.clone(), phase_storage.clone())));
+
     let mut last_activity = Instant::now();
-    let mut idle_ticker = tokio::time::interval(Duration::from_secs(60));
+    let mut idle_ticker = tokio::time::interval(Duration::from_secs(IDLE_TICKER_INTERVAL_SECS));
     idle_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = idle_ticker.tick() => {
                 let idle = last_activity.elapsed();
-                if idle >= Duration::from_secs(60) {
+                if idle >= Duration::from_secs(IDLE_TICKER_INTERVAL_SECS) {
                     info!(
                         "service idle, waiting for CRDT messages idle_seconds={} group_id_prefix={} peer_id={}",
                         idle.as_secs(),
@@ -113,17 +147,52 @@ pub async fn run_coordination_loop(
                     envelope.seq_no
                 );
 
+                let sender_peer_id = envelope.sender_peer_id.clone();
                 match envelope.payload {
                     TransportMessage::EventStateBroadcast(broadcast) => {
+                        if broadcast.sender_peer_id != sender_peer_id {
+                            warn!(
+                                "dropping broadcast with mismatched sender_peer_id envelope_sender={} payload_sender={}",
+                                sender_peer_id,
+                                broadcast.sender_peer_id
+                            );
+                            continue;
+                        }
                         if let Err(err) = handle_crdt_broadcast(
                             &app_config,
                             &flow,
                             &transport,
                             &storage,
+                            &phase_storage,
                             &local_peer_id,
                             broadcast,
                         ).await {
                             warn!("CRDT handler error error={}", err);
+                        }
+                    }
+                    TransportMessage::ProposalBroadcast(proposal) => {
+                        if proposal.proposer_peer_id != sender_peer_id {
+                            warn!(
+                                "dropping proposal with mismatched proposer_peer_id envelope_sender={} proposer_peer_id={}",
+                                sender_peer_id,
+                                proposal.proposer_peer_id
+                            );
+                            continue;
+                        }
+                        if let Err(err) = handle_proposal_broadcast(
+                            &app_config,
+                            &two_phase,
+                            &flow,
+                            &transport,
+                            &storage,
+                            &phase_storage,
+                            &local_peer_id,
+                            &sender_peer_id,
+                            proposal,
+                        )
+                        .await
+                        {
+                            warn!("proposal handler error error={}", err);
                         }
                     }
                     TransportMessage::StateSyncRequest(req) => {
@@ -137,6 +206,7 @@ pub async fn run_coordination_loop(
                             &flow,
                             &transport,
                             &storage,
+                            &phase_storage,
                             &local_peer_id,
                             resp,
                         )

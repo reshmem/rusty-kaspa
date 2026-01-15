@@ -15,9 +15,15 @@ pub fn parse_validator_pubkeys(label: &str, values: &[String]) -> Result<Vec<Pub
         let stripped = entry.trim().trim_start_matches("0x");
         let bytes = hex::decode(stripped)?;
         if bytes.len() != 33 && bytes.len() != 65 {
-            return Err(ThresholdError::Message(format!("{} validator key must be 33 or 65 bytes (secp256k1)", label)));
+            return Err(ThresholdError::ConfigError(format!(
+                "{label} validator key must be 33 or 65 bytes (secp256k1), got {}",
+                bytes.len()
+            )));
         }
-        let key = PublicKey::from_slice(&bytes).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let key = PublicKey::from_slice(&bytes).map_err(|err| ThresholdError::CryptoError {
+            operation: "parse_validator_pubkey".to_string(),
+            details: err.to_string(),
+        })?;
         validators.push(key);
     }
     Ok(validators)

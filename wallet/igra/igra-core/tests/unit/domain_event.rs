@@ -23,7 +23,7 @@ fn test_event_decode_when_session_id_invalid_length_then_errors() {
     };
 
     let err = decode_session_and_coordinator_ids(&params).unwrap_err();
-    assert!(matches!(err, ThresholdError::Message(_)));
+    assert!(matches!(err, ThresholdError::EncodingError(_)));
 }
 
 #[test]
@@ -45,5 +45,5 @@ fn test_event_decode_when_coordinator_peer_id_too_long_then_errors() {
     };
 
     let err = decode_session_and_coordinator_ids(&params).unwrap_err();
-    assert!(matches!(err, ThresholdError::Message(_)));
+    assert!(matches!(err, ThresholdError::EncodingError(_)));
 }

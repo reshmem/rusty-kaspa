@@ -33,7 +33,7 @@ where
                 Ok(item) => item,
                 Err(err) => {
                     warn!("iroh gossip stream error error={}", err);
-                    yield Err(ThresholdError::Message(err.to_string()));
+                    yield Err(ThresholdError::TransportError { operation: "gossip_stream".to_string(), details: err.to_string() });
                     continue;
                 }
             };
@@ -46,18 +46,20 @@ where
                             message.content.len(),
                             MAX_MESSAGE_SIZE
                         );
-                        yield Err(ThresholdError::Message(format!(
-                            "received message size {} exceeds maximum {}",
-                            message.content.len(),
-                            MAX_MESSAGE_SIZE
-                        )));
+                        yield Err(ThresholdError::MessageTooLarge { size: message.content.len(), max: MAX_MESSAGE_SIZE });
                         continue;
                     }
 
                     let envelope = match encoding::decode_envelope(message.content.as_ref()) {
                         Ok(envelope) => envelope,
                         Err(err) => {
-                            warn!("iroh gossip decode error error={}", err);
+                            let msg_hash = blake3::hash(message.content.as_ref());
+                            warn!(
+                                "iroh gossip decode error error={} message_hash={} size={}",
+                                err,
+                                hex::encode(msg_hash.as_bytes()),
+                                message.content.len()
+                            );
                             yield Err(err);
                             continue;
                         }
@@ -67,7 +69,10 @@ where
                 GossipEvent::Lagged => {
                     // Group id not available in this layer; surface lag with placeholder.
                     warn!("iroh gossip stream lagged group_id=unknown");
-                    yield Err(ThresholdError::Message("iroh gossip stream lagged group_id=unknown".to_string()));
+                    yield Err(ThresholdError::TransportError {
+                        operation: "gossip_stream_lagged".to_string(),
+                        details: "iroh gossip stream lagged group_id=unknown".to_string(),
+                    });
                 }
                 _ => {}
             }

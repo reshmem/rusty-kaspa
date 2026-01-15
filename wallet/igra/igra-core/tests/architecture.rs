@@ -22,7 +22,7 @@ fn collect_rust_files(dir: &Path) -> Vec<(String, String)> {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 files.extend(collect_rust_files(&path));
-            } else if path.extension().map_or(false, |e| e == "rs") {
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
                 let content = fs::read_to_string(&path).unwrap();
                 let path_str = path.to_string_lossy().to_string();
                 files.push((path_str, content));

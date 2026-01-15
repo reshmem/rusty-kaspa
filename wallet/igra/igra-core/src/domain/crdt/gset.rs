@@ -19,9 +19,9 @@ impl<T: Clone + Eq + Hash> GSet<T> {
         Self { elements: HashSet::new() }
     }
 
-    /// Create a G-Set from an iterator.
-    pub fn from_iter(iter: impl IntoIterator<Item = T>) -> Self {
-        Self { elements: iter.into_iter().collect() }
+    /// Create a G-Set from a set of items.
+    pub fn from_items(items: impl IntoIterator<Item = T>) -> Self {
+        items.into_iter().collect()
     }
 
     /// Add an element to the set.
@@ -66,6 +66,12 @@ impl<T: Clone + Eq + Hash> GSet<T> {
     }
 }
 
+impl<T: Clone + Eq + Hash> FromIterator<T> for GSet<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self { elements: iter.into_iter().collect() }
+    }
+}
+
 impl<T: Clone + Eq + Hash> IntoIterator for GSet<T> {
     type Item = T;
     type IntoIter = std::collections::hash_set::IntoIter<T>;
@@ -93,11 +99,11 @@ mod tests {
 
     #[test]
     fn test_merge_is_commutative() {
-        let mut a = GSet::from_iter(vec![1, 2, 3]);
-        let b = GSet::from_iter(vec![3, 4, 5]);
+        let mut a = GSet::from_items(vec![1, 2, 3]);
+        let b = GSet::from_items(vec![3, 4, 5]);
 
-        let mut c = GSet::from_iter(vec![3, 4, 5]);
-        let d = GSet::from_iter(vec![1, 2, 3]);
+        let mut c = GSet::from_items(vec![3, 4, 5]);
+        let d = GSet::from_items(vec![1, 2, 3]);
 
         a.merge(&b);
         c.merge(&d);
@@ -110,7 +116,7 @@ mod tests {
 
     #[test]
     fn test_merge_is_idempotent() {
-        let mut a = GSet::from_iter(vec![1, 2, 3]);
+        let mut a = GSet::from_items(vec![1, 2, 3]);
         let b = a.clone();
 
         let added = a.merge(&b);
@@ -121,9 +127,9 @@ mod tests {
 
     #[test]
     fn test_merge_is_associative() {
-        let a = GSet::from_iter(vec![1, 2]);
-        let b = GSet::from_iter(vec![2, 3]);
-        let c = GSet::from_iter(vec![3, 4]);
+        let a = GSet::from_items(vec![1, 2]);
+        let b = GSet::from_items(vec![2, 3]);
+        let c = GSet::from_items(vec![3, 4]);
 
         let mut ab = a.clone();
         ab.merge(&b);

@@ -1,4 +1,7 @@
-use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, StoredCompletionRecord, StoredEventCrdt};
+use crate::domain::coordination::PhaseContext;
+use crate::domain::{
+    coordination::ProposalBroadcast, CrdtSignatureRecord, CrdtSigningMaterial, StoredCompletionRecord, StoredEventCrdt,
+};
 use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +21,8 @@ pub struct MessageEnvelope {
 pub enum TransportMessage {
     /// CRDT state broadcast - the main message type.
     EventStateBroadcast(EventStateBroadcast),
+    /// Two-phase protocol proposal broadcast (non-signing).
+    ProposalBroadcast(ProposalBroadcast),
     /// Anti-entropy sync request.
     StateSyncRequest(StateSyncRequest),
     /// Anti-entropy sync response.
@@ -36,6 +41,9 @@ pub struct EventStateBroadcast {
     pub state: EventCrdtState,
     /// Who sent this broadcast (redundant with envelope, but helpful for debug/audit).
     pub sender_peer_id: PeerId,
+    /// Optional phase context for two-phase protocol (fast-forward support).
+    #[serde(default)]
+    pub phase_context: Option<PhaseContext>,
 }
 
 /// The actual CRDT state that gets merged.
@@ -126,13 +134,12 @@ impl std::convert::TryFrom<&CrdtSignature> for CrdtSignatureRecord {
     type Error = crate::foundation::ThresholdError;
 
     fn try_from(value: &CrdtSignature) -> Result<Self, Self::Error> {
-        let signer_peer_id = value
-            .signer_peer_id
-            .clone()
-            .ok_or_else(|| crate::foundation::ThresholdError::Message(format!(
-                "missing signer_peer_id in CRDT signature input_index={}",
-                value.input_index
-            )))?;
+        let signer_peer_id = value.signer_peer_id.clone().ok_or_else(|| {
+            crate::foundation::ThresholdError::SerializationError {
+                format: "crdt_signature".to_string(),
+                details: format!("missing signer_peer_id input_index={}", value.input_index),
+            }
+        })?;
 
         Ok(Self {
             input_index: value.input_index,

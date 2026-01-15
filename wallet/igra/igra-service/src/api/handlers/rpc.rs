@@ -1,4 +1,5 @@
 use super::hyperlane::{handle_mailbox_process, handle_validators_and_threshold};
+use super::events::handle_events_status;
 use super::signing_event::handle_signing_event_submit;
 use super::types::{json_err, JsonRpcRequest, RpcErrorCode};
 use crate::api::middleware::auth::authorize_rpc;
@@ -72,6 +73,7 @@ async fn handle_single(state: &RpcState, headers: &HeaderMap, req: JsonRpcReques
         "signing_event.submit" => handle_signing_event_submit(state, id, req.params).await,
         "hyperlane.validators_and_threshold" => handle_validators_and_threshold(state, id, req.params).await,
         "hyperlane.mailbox_process" => handle_mailbox_process(state, id, req.params).await,
+        "events.status" => handle_events_status(state, id, headers, req.params).await,
         _ => {
             state.metrics.inc_rpc_request(req.method.as_str(), "not_found");
             debug!("method not found method={}", req.method);

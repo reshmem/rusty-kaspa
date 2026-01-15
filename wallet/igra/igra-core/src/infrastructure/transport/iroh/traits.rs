@@ -6,8 +6,8 @@ use futures_util::StreamExt;
 
 pub use crate::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
 pub use crate::infrastructure::transport::messages::{
-    CompletionRecord, CrdtSignature, EventCrdtState, EventStateBroadcast, MessageEnvelope, StateSyncRequest, StateSyncResponse,
-    TransportMessage,
+    CompletionRecord, CrdtSignature, EventCrdtState, EventStateBroadcast, MessageEnvelope, ProposalBroadcast, StateSyncRequest,
+    StateSyncResponse, TransportMessage,
 };
 
 pub type Result<T> = std::result::Result<T, ThresholdError>;
@@ -52,6 +52,7 @@ impl SignatureVerifier for NoopSignatureVerifier {
 #[async_trait]
 pub trait Transport: Send + Sync {
     async fn publish_event_state(&self, broadcast: EventStateBroadcast) -> Result<()>;
+    async fn publish_proposal(&self, proposal: ProposalBroadcast) -> Result<()>;
     async fn publish_state_sync_request(&self, request: StateSyncRequest) -> Result<()>;
     async fn publish_state_sync_response(&self, response: StateSyncResponse) -> Result<()>;
     async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription>;

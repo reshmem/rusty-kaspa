@@ -1,12 +1,14 @@
+use crate::domain::coordination::{EventPhase, EventPhaseState, Proposal};
 use crate::domain::pskt::multisig as pskt_multisig;
 use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, GroupConfig, StoredCompletionRecord, StoredEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
-use crate::storage_err;
 use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::infrastructure::storage::phase::{PhaseStorage, RecordSignedHashResult, StoreProposalResult};
 use crate::infrastructure::storage::rocks::migration::open_db_with_cfs;
 use crate::infrastructure::storage::rocks::schema::*;
 use crate::infrastructure::storage::{BatchTransaction, CrdtStorageStats, Storage};
 use crate::infrastructure::transport::messages::{CompletionRecord, EventCrdtState};
+use crate::storage_err;
 use bincode::Options;
 use log::{debug, info, trace, warn};
 use rocksdb::{checkpoint::Checkpoint, ColumnFamily, Direction, IteratorMode, WriteBatch, DB};
@@ -18,6 +20,7 @@ use std::{env, fs};
 pub struct RocksStorage {
     db: Arc<DB>,
     crdt_lock: std::sync::Mutex<()>,
+    phase_lock: std::sync::Mutex<()>,
 }
 
 impl RocksStorage {
@@ -29,7 +32,7 @@ impl RocksStorage {
         let path = path.as_ref();
         debug!("opening RocksStorage path={}", path.display());
         let db = open_db_with_cfs(path)?;
-        let storage = Self { db: Arc::new(db), crdt_lock: std::sync::Mutex::new(()) };
+        let storage = Self { db: Arc::new(db), crdt_lock: std::sync::Mutex::new(()), phase_lock: std::sync::Mutex::new(()) };
         if let Err(err) = storage.maybe_run_migrations() {
             if allow_schema_wipe {
                 if let ThresholdError::SchemaMismatch { stored, current } = err {
@@ -87,7 +90,10 @@ impl RocksStorage {
         if path.exists() {
             let mut entries = fs::read_dir(path).map_err(|err| storage_err!("fs::read_dir checkpoint", err))?;
             if entries.next().is_some() {
-                return Err(ThresholdError::Message(format!("checkpoint directory is not empty: {}", path.display())));
+                return Err(ThresholdError::StorageError {
+                    operation: "rocksdb checkpoint".to_string(),
+                    details: format!("checkpoint directory is not empty: {}", path.display()),
+                });
             }
             fs::remove_dir_all(path).map_err(|err| storage_err!("fs::remove_dir_all checkpoint", err))?;
         }
@@ -98,7 +104,10 @@ impl RocksStorage {
     }
 
     fn cf_handle(&self, name: &str) -> Result<&ColumnFamily, ThresholdError> {
-        self.db.cf_handle(name).ok_or_else(|| ThresholdError::Message(format!("missing column family: {}", name)))
+        self.db.cf_handle(name).ok_or_else(|| ThresholdError::StorageError {
+            operation: "rocksdb cf_handle".to_string(),
+            details: format!("missing column family: {}", name),
+        })
     }
 
     fn maybe_run_migrations(&self) -> Result<(), ThresholdError> {
@@ -120,10 +129,16 @@ impl RocksStorage {
         match self.db.get_cf(cf, b"schema_version") {
             Ok(Some(bytes)) if bytes.len() == 4 => {
                 let array: [u8; 4] =
-                    bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("corrupt schema version".to_string()))?;
+                    bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
+                        operation: "schema_version decode".to_string(),
+                        details: "corrupt schema version".to_string(),
+                    })?;
                 Ok(Some(u32::from_be_bytes(array)))
             }
-            Ok(Some(_)) => Err(ThresholdError::Message("corrupt schema version".to_string())),
+            Ok(Some(_)) => Err(ThresholdError::StorageError {
+                operation: "schema_version decode".to_string(),
+                details: "corrupt schema version".to_string(),
+            }),
             Ok(None) => Ok(None),
             Err(e) => Err(storage_err!("rocksdb get_cf schema_version", e)),
         }
@@ -171,6 +186,39 @@ impl RocksStorage {
         KeyBuilder::with_capacity(10 + event_id.len() + 1).prefix(b"evt_crdt:").hash32(event_id).sep().build()
     }
 
+    fn key_event_phase(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.len()).prefix(b"evt_phase:").hash32(event_id).build()
+    }
+
+    fn key_event_signed_hash(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(17 + event_id.len()).prefix(b"evt_signed_hash:").hash32(event_id).build()
+    }
+
+    fn key_event_proposal_prefix(event_id: &Hash32) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.len() + 1).prefix(b"evt_prop:").hash32(event_id).sep().build()
+    }
+
+    fn key_event_proposal_round_prefix(event_id: &Hash32, round: u32) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.len() + 1 + 4 + 1)
+            .prefix(b"evt_prop:")
+            .hash32(event_id)
+            .sep()
+            .u32_be(round)
+            .sep()
+            .build()
+    }
+
+    fn key_event_proposal(event_id: &Hash32, round: u32, proposer_peer_id: &PeerId) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.len() + 1 + 4 + 1 + proposer_peer_id.len())
+            .prefix(b"evt_prop:")
+            .hash32(event_id)
+            .sep()
+            .u32_be(round)
+            .sep()
+            .str(proposer_peer_id.as_str())
+            .build()
+    }
+
     fn key_seen(sender_peer_id: &PeerId, session_id: &SessionId, seq_no: u64) -> Vec<u8> {
         KeyBuilder::with_capacity(6 + sender_peer_id.len() + 1 + session_id.as_hash().len() + 1 + 8)
             .prefix(b"seen:")
@@ -205,8 +253,10 @@ impl RocksStorage {
         let Some(bytes) = value else {
             return Ok(None);
         };
-        let amount_bytes: [u8; 8] =
-            bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("invalid volume value format".to_string()))?;
+        let amount_bytes: [u8; 8] = bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
+            operation: "volume_from_index decode".to_string(),
+            details: "invalid volume value format".to_string(),
+        })?;
         Ok(Some(u64::from_be_bytes(amount_bytes)))
     }
 
@@ -244,6 +294,404 @@ impl RocksStorage {
     }
 }
 
+impl PhaseStorage for RocksStorage {
+    fn try_enter_proposing(&self, event_id: &Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        if let Some(bytes) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            let state: EventPhaseState = Self::decode(&bytes)?;
+            if state.phase != EventPhase::Unknown {
+                return Ok(false);
+            }
+        }
+
+        let state = EventPhaseState::new(EventPhase::Proposing, now_ns);
+        let value = Self::encode(&state)?;
+        self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(true)
+    }
+
+    fn get_phase(&self, event_id: &Hash32) -> Result<Option<EventPhaseState>, ThresholdError> {
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let Some(bytes) = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? else {
+            return Ok(None);
+        };
+        Ok(Some(Self::decode(&bytes)?))
+    }
+
+    fn get_signed_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+        let cf = self.cf_handle(CF_EVENT_SIGNED_HASH)?;
+        let key = Self::key_event_signed_hash(event_id);
+        let Some(bytes) = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_signed_hash", err))? else {
+            return Ok(None);
+        };
+        if bytes.len() != 32 {
+            return Err(ThresholdError::StorageError {
+                operation: "get_signed_hash".to_string(),
+                details: "corrupt signed hash record".to_string(),
+            });
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        Ok(Some(out))
+    }
+
+    fn record_signed_hash(
+        &self,
+        event_id: &Hash32,
+        tx_template_hash: Hash32,
+        _now_ns: u64,
+    ) -> Result<RecordSignedHashResult, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+
+        let cf = self.cf_handle(CF_EVENT_SIGNED_HASH)?;
+        let key = Self::key_event_signed_hash(event_id);
+
+        if let Some(existing) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_signed_hash", err))? {
+            if existing.len() != 32 {
+                return Err(ThresholdError::StorageError {
+                    operation: "record_signed_hash".to_string(),
+                    details: "corrupt signed hash record".to_string(),
+                });
+            }
+            let mut existing_hash = [0u8; 32];
+            existing_hash.copy_from_slice(&existing);
+            if existing_hash == tx_template_hash {
+                return Ok(RecordSignedHashResult::AlreadySame);
+            }
+            return Ok(RecordSignedHashResult::Conflict { existing: existing_hash, attempted: tx_template_hash });
+        }
+
+        self.db
+            .put_cf(cf, key, tx_template_hash)
+            .map_err(|err| storage_err!("rocksdb put_cf evt_signed_hash", err))?;
+        Ok(RecordSignedHashResult::Set)
+    }
+
+    fn adopt_round_if_behind(&self, event_id: &Hash32, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+
+        let mut state = match self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Unknown, now_ns),
+        };
+
+        if matches!(state.phase, EventPhase::Committed | EventPhase::Completed | EventPhase::Abandoned) {
+            return Ok(false);
+        }
+        if state.round >= new_round {
+            return Ok(false);
+        }
+
+        state.phase = EventPhase::Proposing;
+        state.phase_started_at_ns = now_ns;
+        state.round = new_round;
+        state.canonical_hash = None;
+        state.own_proposal_hash = None;
+
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(true)
+    }
+
+    fn set_own_proposal_hash(&self, event_id: &Hash32, tx_template_hash: Hash32) -> Result<(), ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let mut state = match self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Unknown, crate::foundation::now_nanos()),
+        };
+        state.own_proposal_hash = Some(tx_template_hash);
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(())
+    }
+
+    fn store_proposal(&self, proposal: &Proposal) -> Result<StoreProposalResult, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+
+        let cf_phase = self.cf_handle(CF_EVENT_PHASE)?;
+        let cf_prop = self.cf_handle(CF_EVENT_PROPOSAL)?;
+        let phase_key = Self::key_event_phase(&proposal.event_id);
+        let now_ns = crate::foundation::now_nanos();
+
+        let mut phase = match self.db.get_cf(cf_phase, &phase_key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Proposing, now_ns),
+        };
+
+        if matches!(phase.phase, EventPhase::Committed | EventPhase::Completed | EventPhase::Abandoned) {
+            return Ok(StoreProposalResult::PhaseTooLate);
+        }
+        if phase.round != proposal.round {
+            return Ok(StoreProposalResult::RoundMismatch { expected: phase.round, got: proposal.round });
+        }
+
+        if matches!(phase.phase, EventPhase::Unknown | EventPhase::Failed) {
+            phase.phase = EventPhase::Proposing;
+            phase.phase_started_at_ns = now_ns;
+        }
+
+        let key = Self::key_event_proposal(&proposal.event_id, proposal.round, &proposal.proposer_peer_id);
+        if let Some(existing) = self.db.get_cf(cf_prop, &key).map_err(|err| storage_err!("rocksdb get_cf evt_prop", err))? {
+            let existing: Proposal = Self::decode(&existing)?;
+            if existing.tx_template_hash != proposal.tx_template_hash {
+                return Ok(StoreProposalResult::Equivocation {
+                    existing_hash: existing.tx_template_hash,
+                    new_hash: proposal.tx_template_hash,
+                });
+            }
+            return Ok(StoreProposalResult::DuplicateFromPeer);
+        }
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_phase, phase_key, Self::encode(&phase)?);
+        batch.put_cf(cf_prop, key, Self::encode(proposal)?);
+        self.db.write(batch).map_err(|err| storage_err!("rocksdb write store_proposal", err))?;
+        Ok(StoreProposalResult::Stored)
+    }
+
+    fn get_proposals(&self, event_id: &Hash32, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
+        let cf = self.cf_handle(CF_EVENT_PROPOSAL)?;
+        let prefix = Self::key_event_proposal_round_prefix(event_id, round);
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix.as_slice(), Direction::Forward));
+        let mut out = Vec::new();
+        for item in iter {
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb iterator evt_prop", err))?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            out.push(Self::decode::<Proposal>(&value)?);
+        }
+        Ok(out)
+    }
+
+    fn proposal_count(&self, event_id: &Hash32, round: u32) -> Result<usize, ThresholdError> {
+        Ok(self.get_proposals(event_id, round)?.len())
+    }
+
+    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<Hash32>, ThresholdError> {
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let mut out = Vec::new();
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb iterator evt_phase", err))?;
+            let state: EventPhaseState = Self::decode(&value)?;
+            if state.phase != phase {
+                continue;
+            }
+            if key.len() != b"evt_phase:".len() + 32 {
+                continue;
+            }
+            let start = b"evt_phase:".len();
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&key[start..start + 32]);
+            out.push(id);
+        }
+        Ok(out)
+    }
+
+    fn mark_committed(&self, event_id: &Hash32, round: u32, canonical_hash: Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let mut state = match self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Proposing, now_ns),
+        };
+
+        if state.phase == EventPhase::Committed || state.phase == EventPhase::Completed {
+            if state.canonical_hash != Some(canonical_hash) {
+                return Ok(false);
+            }
+            // Idempotent: accept replays even if the sender's round differs from ours.
+            // Round is informational once committed; the canonical hash is the real commitment.
+            state.round = round;
+            self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+            return Ok(true);
+        }
+        if matches!(state.phase, EventPhase::Abandoned) {
+            return Ok(false);
+        }
+        state.phase = EventPhase::Committed;
+        state.phase_started_at_ns = now_ns;
+        state.round = round;
+        state.canonical_hash = Some(canonical_hash);
+
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(true)
+    }
+
+    fn mark_completed(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let mut state = match self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Unknown, now_ns),
+        };
+        state.phase = EventPhase::Completed;
+        state.phase_started_at_ns = now_ns;
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(())
+    }
+
+    fn fail_and_bump_round(&self, event_id: &Hash32, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let Some(bytes) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? else {
+            return Ok(false);
+        };
+        let mut state: EventPhaseState = Self::decode(&bytes)?;
+        if state.round != expected_round {
+            return Ok(false);
+        }
+        if matches!(state.phase, EventPhase::Committed | EventPhase::Completed | EventPhase::Abandoned) {
+            return Ok(false);
+        }
+        state.phase = EventPhase::Failed;
+        state.phase_started_at_ns = now_ns;
+        state.round = state.round.saturating_add(1);
+        state.retry_count = state.retry_count.saturating_add(1);
+        state.canonical_hash = None;
+        state.own_proposal_hash = None;
+
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(true)
+    }
+
+    fn mark_abandoned(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PHASE)?;
+        let key = Self::key_event_phase(event_id);
+        let mut state = match self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? {
+            Some(bytes) => Self::decode::<EventPhaseState>(&bytes)?,
+            None => EventPhaseState::new(EventPhase::Unknown, now_ns),
+        };
+        state.phase = EventPhase::Abandoned;
+        state.phase_started_at_ns = now_ns;
+        self.db.put_cf(cf, key, Self::encode(&state)?).map_err(|err| storage_err!("rocksdb put_cf evt_phase", err))?;
+        Ok(())
+    }
+
+    fn clear_stale_proposals(&self, event_id: &Hash32, before_round: u32) -> Result<usize, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf = self.cf_handle(CF_EVENT_PROPOSAL)?;
+        let prefix = Self::key_event_proposal_prefix(event_id);
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix.as_slice(), Direction::Forward));
+        let mut batch = WriteBatch::default();
+        let mut deleted = 0usize;
+        for item in iter {
+            let (key, _value) = item.map_err(|err| storage_err!("rocksdb iterator evt_prop", err))?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let round_offset = prefix.len();
+            if key.len() < round_offset + 4 {
+                continue;
+            }
+            let mut round_bytes = [0u8; 4];
+            round_bytes.copy_from_slice(&key[round_offset..round_offset + 4]);
+            let round = u32::from_be_bytes(round_bytes);
+            if round < before_round {
+                batch.delete_cf(cf, key);
+                deleted += 1;
+            }
+        }
+        if deleted > 0 {
+            self.db.write(batch).map_err(|err| storage_err!("rocksdb write clear_stale_proposals", err))?;
+        }
+        Ok(deleted)
+    }
+
+    fn gc_events_older_than(&self, cutoff_timestamp_ns: u64) -> Result<usize, ThresholdError> {
+        let _guard = self
+            .phase_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "phase_lock".to_string(), details: "poisoned".to_string() })?;
+        let cf_phase = self.cf_handle(CF_EVENT_PHASE)?;
+        let cf_prop = self.cf_handle(CF_EVENT_PROPOSAL)?;
+        let iter = self.db.iterator_cf(cf_phase, IteratorMode::Start);
+        let mut batch = WriteBatch::default();
+        let mut deleted = 0usize;
+        for item in iter {
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb iterator evt_phase", err))?;
+            let state: EventPhaseState = Self::decode(&value)?;
+            if !state.phase.is_terminal() {
+                continue;
+            }
+            if state.phase_started_at_ns >= cutoff_timestamp_ns {
+                continue;
+            }
+            // phase key contains the event_id bytes.
+            if key.len() != b"evt_phase:".len() + 32 {
+                continue;
+            }
+            let start = b"evt_phase:".len();
+            let mut event_id = [0u8; 32];
+            event_id.copy_from_slice(&key[start..start + 32]);
+
+            batch.delete_cf(cf_phase, key);
+
+            // Delete proposals for this event.
+            let prop_prefix = Self::key_event_proposal_prefix(&event_id);
+            let prop_iter = self.db.iterator_cf(cf_prop, IteratorMode::From(prop_prefix.as_slice(), Direction::Forward));
+            for prop_item in prop_iter {
+                let (prop_key, _) = prop_item.map_err(|err| storage_err!("rocksdb iterator evt_prop", err))?;
+                if !prop_key.starts_with(&prop_prefix) {
+                    break;
+                }
+                batch.delete_cf(cf_prop, prop_key);
+            }
+            deleted += 1;
+        }
+        if deleted > 0 {
+            self.db.write(batch).map_err(|err| storage_err!("rocksdb write gc_events_older_than", err))?;
+        }
+        Ok(deleted)
+    }
+
+    fn has_proposal_from(&self, event_id: &Hash32, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
+        let cf = self.cf_handle(CF_EVENT_PROPOSAL)?;
+        let key = Self::key_event_proposal(event_id, round, peer_id);
+        Ok(self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_prop", err))?.is_some())
+    }
+}
+
 impl RocksStorage {
     pub fn compact(&self) -> Result<(), ThresholdError> {
         debug!("rocksdb compact_range start");
@@ -277,11 +725,7 @@ impl Storage for RocksStorage {
         debug!("insert_event event_id={} external_id={}", hex::encode(event_id), hex::encode(event.event.external_id));
         let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
-        if self.db
-            .get_cf(cf, &key)
-            .map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?
-            .is_some()
-        {
+        if self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?.is_some() {
             return Ok(());
         }
 
@@ -294,11 +738,7 @@ impl Storage for RocksStorage {
     fn insert_event_if_not_exists(&self, event_id: Hash32, event: StoredEvent) -> Result<bool, ThresholdError> {
         let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
-        if self.db
-            .get_cf(cf, &key)
-            .map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?
-            .is_some()
-        {
+        if self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?.is_some() {
             return Ok(false);
         }
 
@@ -325,10 +765,8 @@ impl Storage for RocksStorage {
         match value {
             None => Ok(None),
             Some(bytes) => {
-                let array: [u8; 32] = bytes
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
+                let array: [u8; 32] =
+                    bytes.as_slice().try_into().map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
                 Ok(Some(array))
             }
         }
@@ -338,10 +776,8 @@ impl Storage for RocksStorage {
         let key = Self::key_event_active_template(event_id);
         let cf = self.cf_handle(CF_EVENT_INDEX)?;
         if let Some(existing) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb", err))? {
-            let existing: [u8; 32] = existing
-                .as_slice()
-                .try_into()
-                .map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
+            let existing: [u8; 32] =
+                existing.as_slice().try_into().map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
             if &existing != tx_template_hash {
                 return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
             }
@@ -606,7 +1042,7 @@ impl Storage for RocksStorage {
             }
         }
 
-        Ok((0..input_count as u32).all(|idx| per_input.get(&idx).map_or(false, |set| set.len() >= required)))
+        Ok((0..input_count as u32).all(|idx| per_input.get(&idx).is_some_and(|set| set.len() >= required)))
     }
 
     fn list_pending_event_crdts(&self) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
@@ -664,10 +1100,8 @@ impl Storage for RocksStorage {
 
         let cf_estimated_num_keys =
             self.db.property_int_value_cf(cf, "rocksdb.estimate-num-keys").map_err(|err| storage_err!("rocksdb", err))?;
-        let cf_estimated_live_data_size_bytes = self
-            .db
-            .property_int_value_cf(cf, "rocksdb.estimate-live-data-size")
-            .map_err(|err| storage_err!("rocksdb", err))?;
+        let cf_estimated_live_data_size_bytes =
+            self.db.property_int_value_cf(cf, "rocksdb.estimate-live-data-size").map_err(|err| storage_err!("rocksdb", err))?;
 
         Ok(CrdtStorageStats {
             total_event_crdts: total,
@@ -766,13 +1200,17 @@ impl Storage for RocksStorage {
                 break;
             }
             if value.len() != 8 {
-                warn!("corrupted seen-message timestamp; skipping key={:?} value_len={}", key, value.len());
+                warn!(
+                    "corrupted seen-message timestamp; skipping key_hex={} value_len={}",
+                    hex::encode(&key),
+                    value.len()
+                );
                 continue;
             }
             let timestamp: u64 = match value.as_ref().try_into() {
                 Ok(bytes) => u64::from_be_bytes(bytes),
                 Err(_) => {
-                    warn!("corrupted seen-message timestamp bytes; skipping key={:?}", key);
+                    warn!("corrupted seen-message timestamp bytes; skipping key_hex={}", hex::encode(&key));
                     continue;
                 }
             };

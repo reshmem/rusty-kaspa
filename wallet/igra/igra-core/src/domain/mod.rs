@@ -3,6 +3,7 @@ pub use model::*;
 pub mod audit;
 pub mod crdt;
 pub use crdt::{EventCrdt, GSet, LWWRegister};
+pub mod coordination;
 pub mod event;
 pub mod group_id;
 pub mod hashes;

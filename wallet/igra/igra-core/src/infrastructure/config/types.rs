@@ -85,6 +85,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub group: Option<GroupConfig>,
     #[serde(default)]
+    pub two_phase: crate::domain::coordination::TwoPhaseConfig,
+    #[serde(default)]
     pub hyperlane: HyperlaneConfig,
     #[serde(default)]
     pub layerzero: LayerZeroConfig,

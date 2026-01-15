@@ -41,6 +41,8 @@ struct AppConfigRaw {
     #[serde(default)]
     pub group: Option<GroupConfigRaw>,
     #[serde(default)]
+    pub two_phase: crate::domain::coordination::TwoPhaseConfig,
+    #[serde(default)]
     pub hyperlane: crate::infrastructure::config::types::HyperlaneConfig,
     #[serde(default)]
     pub layerzero: crate::infrastructure::config::types::LayerZeroConfig,
@@ -165,7 +167,7 @@ fn profile_overrides(config: &AppConfigRaw, profile: &str) -> Result<Dict, Thres
         .cloned()
         .ok_or_else(|| ThresholdError::ConfigError(format!("profile '{profile}' not found in config")))?;
 
-    Ok(normalize_profile_overrides(overrides)?)
+    normalize_profile_overrides(overrides)
 }
 
 /// Normalizes `[profiles.<name>.*]` sections into the shape expected by `AppConfig`.
@@ -296,6 +298,7 @@ fn convert_raw(raw: AppConfigRaw) -> Result<AppConfig, ThresholdError> {
         rpc: raw.rpc,
         policy,
         group,
+        two_phase: raw.two_phase,
         hyperlane: raw.hyperlane,
         layerzero: raw.layerzero,
         iroh: raw.iroh,

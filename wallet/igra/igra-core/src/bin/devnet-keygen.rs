@@ -129,7 +129,7 @@ fn main() -> Result<(), ThresholdError> {
     let mut signer_addresses: Vec<String> = Vec::new();
     let mut signer_mnemonics: Vec<String> = Vec::new();
 
-    for (_i, profile) in ["signer-1", "signer-2", "signer-3"].iter().enumerate() {
+    for profile in ["signer-1", "signer-2", "signer-3"].iter() {
         let mnemonic = mnemonic_phrase()?;
         signer_mnemonics.push(mnemonic.phrase().to_string());
 
@@ -180,18 +180,19 @@ fn main() -> Result<(), ThresholdError> {
         derivation_path: None,
         payment_secret: payment_secret.as_ref(),
     })
-    .expect("derive pubkeys");
+    ?;
 
     // Match `derive_redeem_script_hex()` determinism: sort pubkeys before building the redeem script.
     let mut ordered_pubkeys = pubkeys.clone();
-    ordered_pubkeys.sort_by(|a, b| a.serialize().cmp(&b.serialize()));
+    ordered_pubkeys.sort_by_key(|key| key.serialize());
 
-    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2).expect("redeem");
+    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem_script);
 
     // Derive multisig address for SCHNORR multisig (ecdsa=false) so it matches `redeem_script_hex`.
-    let multisig_address =
-        create_multisig_address(2, ordered_pubkeys.clone(), Prefix::Devnet, false).expect("multisig address").to_string();
+    let multisig_address = create_multisig_address(2, ordered_pubkeys.clone(), Prefix::Devnet, false)
+        .map_err(|err| ThresholdError::Message(format!("multisig address: {err}")))?
+        .to_string();
     let change_address = multisig_address.clone();
 
     // Fill derived signer pubkeys/addresses for debugging / tooling.
