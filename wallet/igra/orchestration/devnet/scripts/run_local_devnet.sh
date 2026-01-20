@@ -35,12 +35,15 @@ REPO_ROOT="$(cd "${DEVNET_DIR}/../../../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: run_local_devnet.sh [--build clone|local] [--root PATH] [--target-dir PATH] [--dry-run] [help|setup|build|start|stop|restart|status|clean|generate-keys] [all|kaspad|kaspaminer|signer-1|signer-2|signer-3|igra]
+Usage: run_local_devnet.sh [--build clone|local] [--root PATH] [--target-dir PATH] [--dry-run] [--fake-hyperlane-legacy] [--no-fake-hyperlane] [--unordered-events N] [help|setup|build|start|stop|restart|status|clean|generate-keys] [all|kaspad|kaspaminer|signer-1|signer-2|signer-3|igra]
 
 Options:
   --build clone    Default. Clone sources (per dockerfiles) and build binaries under ROOT/sources.
   --build local    Build from the current rusty-kaspa checkout without git clones.
   --dry-run        Print what would be done without executing.
+  --fake-hyperlane-legacy  Run legacy fake Hyperlane binary (fake_hyperlane_ism_api) instead of the relayer-style binary.
+  --no-fake-hyperlane      Do not start any fake Hyperlane process (use real Hyperlane agents).
+  --unordered-events N     Shuffle nonces within each batch of N messages (simulates out-of-order delivery).
 
 Commands:
   (no command)        Show this help
@@ -62,7 +65,8 @@ Environment overrides:
   KASPA_MINER_BIN          Path to kaspa-miner binary (skip build/clone)
   KASPA_MINER_PATH         Local path to kaspa-miner sources for --local mode
   IGRA_BIN                 Path to kaspa-threshold-service binary (skip build/clone)
-  FAKE_HYPERLANE_BIN       Path to fake_hyperlane_ism_api binary (skip build/clone)
+  FAKE_HYPERLANE_BIN       Path to legacy fake_hyperlane_ism_api binary (skip build/clone)
+  FAKE_HYPERLANE_RELAYER_BIN  Path to fake_hyperlane_relayer binary (skip build/clone)
   ROTHSCHILD_BIN           Path to rothschild binary (skip build/clone)
 IGRA_REPO / IGRA_REF     Clone source for --clone mode (default: https://github.com/reshmem/rusty-kaspa.git / devel)
   KASPA_MINER_REPO/REF     Clone source for --clone mode (default: https://github.com/IgraLabs/kaspa-miner.git / main)
@@ -79,6 +83,9 @@ ROOT_ARG=""
 TARGET_DIR_ARG=""
 COMMAND=""
 TARGET_ARG="all"
+FAKE_HYPERLANE_LEGACY=false
+NO_FAKE_HYPERLANE=false
+FAKE_HYPERLANE_UNORDERED_EVENTS=""
 POSITIONAL=()
 
 require_cmd() {
@@ -101,6 +108,22 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       log_warn "DRY RUN MODE: actions will be printed but not executed"
       shift
+      ;;
+    --fake-hyperlane-legacy|fake-hyperlane-legacy)
+      FAKE_HYPERLANE_LEGACY=true
+      shift
+      ;;
+    --no-fake-hyperlane|no-fake-hyperlane)
+      NO_FAKE_HYPERLANE=true
+      shift
+      ;;
+    --unordered-events=*)
+      FAKE_HYPERLANE_UNORDERED_EVENTS="${1#*=}"
+      shift
+      ;;
+    --unordered-events)
+      FAKE_HYPERLANE_UNORDERED_EVENTS="${2:-}"
+      shift 2
       ;;
     --build)
       case "${2:-}" in
@@ -125,6 +148,18 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${FAKE_HYPERLANE_UNORDERED_EVENTS}" ]]; then
+  if [[ "${FAKE_HYPERLANE_UNORDERED_EVENTS}" =~ ^[0-9]+$ ]]; then
+    if [[ "${FAKE_HYPERLANE_UNORDERED_EVENTS}" -lt 1 || "${FAKE_HYPERLANE_UNORDERED_EVENTS}" -gt 1024 ]]; then
+      echo "--unordered-events must be between 1 and 1024" >&2
+      exit 1
+    fi
+  else
+    echo "--unordered-events must be a number" >&2
+    exit 1
+  fi
+fi
 
 if [[ ${#POSITIONAL[@]} -eq 0 && -z "${COMMAND}" ]]; then
   usage
@@ -221,6 +256,7 @@ FAKE_HYPERLANE_START="${HYPERLANE_START_EPOCH_SECS:-0}"
 FAKE_HYPERLANE_AMOUNT="${HYPERLANE_AMOUNT_SOMPI:-20000000}"
 FAKE_HYPERLANE_DEST="${HYPERLANE_DESTINATION:-kaspadev:qr9ptqk4gcphla6whs5qep9yp4c33sy4ndugtw2whf56279jw00wcqlxl3lq3}"
 FAKE_HYPERLANE_DOMAIN="${HYPERLANE_DOMAIN:-5}"
+FAKE_HYPERLANE_DEST_DOMAIN="${HYPERLANE_DESTINATION_DOMAIN:-7}"
 FAKE_HYPERLANE_SENDER="${HYPERLANE_SENDER:-0x0}"
 FAKE_HYPERLANE_COORDINATOR="${HYPERLANE_COORDINATOR_PEER_ID:-coordinator-1}"
 # Derivation is optional; default is empty (root) unless explicitly provided.
@@ -311,7 +347,7 @@ build_rusty_repo() {
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] cd ${repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p kaspad -p rothschild -p kaspa-cli -p kaspa-wallet"
     log_info "[DRY-RUN] cd ${igra_repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-core --bin devnet-balance"
-    log_info "[DRY-RUN] cd ${igra_repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api"
+    log_info "[DRY-RUN] cd ${igra_repo_path} && CARGO_TARGET_DIR=${TARGET_DIR} cargo build --release --locked -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api --bin fake_hyperlane_relayer --bin hyperlane_anvil_sender"
   else
     # Clear RUSTC_WRAPPER to avoid sccache/wrappers interfering with target dir
     if ! (cd "${repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
@@ -333,12 +369,12 @@ build_rusty_repo() {
 
     if ! (cd "${igra_repo_path}" && RUSTC_WRAPPER= CARGO_TARGET_DIR="${TARGET_DIR}" \
       cargo build --release --locked \
-        -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api); then
+        -p igra-service --bin kaspa-threshold-service --bin fake_hyperlane_ism_api --bin fake_hyperlane_relayer --bin hyperlane_anvil_sender); then
       log_error "Failed to build igra-service binaries from ${igra_repo_path}"
       exit 1
     fi
 
-    for binary in kaspad rothschild kaspa-cli kaspa-wallet devnet-balance kaspa-threshold-service fake_hyperlane_ism_api; do
+    for binary in kaspad rothschild kaspa-cli kaspa-wallet devnet-balance kaspa-threshold-service fake_hyperlane_ism_api fake_hyperlane_relayer hyperlane_anvil_sender; do
       if [[ ! -x "${TARGET_DIR}/release/${binary}" ]]; then
         log_error "${binary} not found after build (expected at ${TARGET_DIR}/release/${binary})"
         exit 1
@@ -374,7 +410,7 @@ build_miner_repo() {
   fi
 }
 
-required_bins=(kaspad rothschild kaspa-cli kaspa-wallet kaspa-threshold-service fake_hyperlane_ism_api devnet-keygen kaspa-miner)
+required_bins=(kaspad rothschild kaspa-cli kaspa-wallet kaspa-threshold-service fake_hyperlane_ism_api fake_hyperlane_relayer hyperlane_anvil_sender devnet-keygen kaspa-miner)
 
 have_all_binaries() {
   for bin in "${required_bins[@]}"; do
@@ -414,6 +450,7 @@ prepare_sources() {
       DEFAULT_KASPA_WALLET_BIN="${TARGET_DIR}/release/kaspa-wallet"
       DEFAULT_IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
       DEFAULT_FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
+      DEFAULT_FAKE_HYPERLANE_RELAYER_BIN="${TARGET_DIR}/release/fake_hyperlane_relayer"
       DEFAULT_MINER_BIN="${TARGET_DIR}/release/kaspa-miner"
       ;;
     local)
@@ -429,6 +466,7 @@ prepare_sources() {
        DEFAULT_KASPA_WALLET_BIN="${TARGET_DIR}/release/kaspa-wallet"
       DEFAULT_IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
       DEFAULT_FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
+      DEFAULT_FAKE_HYPERLANE_RELAYER_BIN="${TARGET_DIR}/release/fake_hyperlane_relayer"
 
       if [[ -n "${local_miner}" ]]; then
         build_miner_repo "${local_miner}"
@@ -491,6 +529,7 @@ resolve_binaries_from_target() {
   DEVNET_BALANCE_BIN="${TARGET_DIR}/release/devnet-balance"
   IGRA_BIN="${TARGET_DIR}/release/kaspa-threshold-service"
   FAKE_HYPERLANE_BIN="${TARGET_DIR}/release/fake_hyperlane_ism_api"
+  FAKE_HYPERLANE_RELAYER_BIN="${TARGET_DIR}/release/fake_hyperlane_relayer"
   ROTHSCHILD_BIN="${TARGET_DIR}/release/rothschild"
   DEVNET_KEYGEN_BIN="${TARGET_DIR}/release/devnet-keygen"
 }
@@ -507,6 +546,7 @@ require_binaries_present() {
   DEVNET_BALANCE_BIN="${BIN_DIR}/devnet-balance"
   IGRA_BIN="${BIN_DIR}/kaspa-threshold-service"
   FAKE_HYPERLANE_BIN="${BIN_DIR}/fake_hyperlane_ism_api"
+  FAKE_HYPERLANE_RELAYER_BIN="${BIN_DIR}/fake_hyperlane_relayer"
   ROTHSCHILD_BIN="${BIN_DIR}/rothschild"
   DEVNET_KEYGEN_BIN="${BIN_DIR}/devnet-keygen"
 }
@@ -544,6 +584,10 @@ stage_binaries() {
   cp -f "${DEVNET_BALANCE_BIN}" "${BIN_DIR}/devnet-balance"
   cp -f "${IGRA_BIN}" "${BIN_DIR}/kaspa-threshold-service"
   cp -f "${FAKE_HYPERLANE_BIN}" "${BIN_DIR}/fake_hyperlane_ism_api"
+  cp -f "${FAKE_HYPERLANE_RELAYER_BIN}" "${BIN_DIR}/fake_hyperlane_relayer"
+  if [[ -f "${TARGET_DIR}/release/hyperlane_anvil_sender" ]]; then
+    cp -f "${TARGET_DIR}/release/hyperlane_anvil_sender" "${BIN_DIR}/hyperlane_anvil_sender"
+  fi
   cp -f "${ROTHSCHILD_BIN}" "${BIN_DIR}/rothschild"
   if [[ -n "${DEVNET_KEYGEN_BIN:-}" && -f "${DEVNET_KEYGEN_BIN}" ]]; then
     cp -f "${DEVNET_KEYGEN_BIN}" "${BIN_DIR}/devnet-keygen"
@@ -788,6 +832,8 @@ start_fake_hyperlane() {
   local rpc_url="http://127.0.0.1:${rpc_port}/rpc"
   local log_path="${LOG_DIR}/fake-hyperlane-${profile}.log"
   local destination="${FAKE_HYPERLANE_DEST}"
+  local fake_bin=""
+  local -a fake_args=()
 
   if [[ -z "${HYPERLANE_DESTINATION:-}" && -f "${KEYSET_JSON}" ]]; then
     local mined_addr
@@ -806,23 +852,64 @@ PY
     fi
   fi
 
-  local -a env_kv=(
-    "IGRA_RPC_URL=${rpc_url}"
-    "HYPERLANE_KEYS_PATH=${HYPERLANE_KEYS}"
-    "HYPERLANE_INTERVAL_SECS=${FAKE_HYPERLANE_INTERVAL}"
-    "HYPERLANE_START_EPOCH_SECS=${FAKE_HYPERLANE_START}"
-    "HYPERLANE_AMOUNT_SOMPI=${FAKE_HYPERLANE_AMOUNT}"
-    "HYPERLANE_DESTINATION=${destination}"
-    "HYPERLANE_DOMAIN=${FAKE_HYPERLANE_DOMAIN}"
-    "HYPERLANE_SENDER=${FAKE_HYPERLANE_SENDER}"
-    "HYPERLANE_COORDINATOR_PEER_ID=${FAKE_HYPERLANE_COORDINATOR}"
-  )
-  if [[ -n "${FAKE_HYPERLANE_PATH}" ]]; then
-    env_kv+=("HYPERLANE_DERIVATION_PATH=${FAKE_HYPERLANE_PATH}")
-  fi
-
-  start_process "fake-hyperlane-${profile}" \
-    env "${env_kv[@]}" "${FAKE_HYPERLANE_BIN}"
+  if [[ "${FAKE_HYPERLANE_LEGACY}" == "true" ]]; then
+    fake_bin="${FAKE_HYPERLANE_BIN}"
+    local -a env_kv=(
+      "IGRA_RPC_URL=${rpc_url}"
+      "HYPERLANE_KEYS_PATH=${HYPERLANE_KEYS}"
+      "HYPERLANE_INTERVAL_SECS=${FAKE_HYPERLANE_INTERVAL}"
+      "HYPERLANE_START_EPOCH_SECS=${FAKE_HYPERLANE_START}"
+      "HYPERLANE_AMOUNT_SOMPI=${FAKE_HYPERLANE_AMOUNT}"
+      "HYPERLANE_DESTINATION=${destination}"
+      "HYPERLANE_DOMAIN=${FAKE_HYPERLANE_DOMAIN}"
+      "HYPERLANE_SENDER=${FAKE_HYPERLANE_SENDER}"
+      "HYPERLANE_COORDINATOR_PEER_ID=${FAKE_HYPERLANE_COORDINATOR}"
+    )
+    if [[ -n "${FAKE_HYPERLANE_PATH}" ]]; then
+      env_kv+=("HYPERLANE_DERIVATION_PATH=${FAKE_HYPERLANE_PATH}")
+    fi
+	    if [[ -n "${FAKE_HYPERLANE_UNORDERED_EVENTS}" ]]; then
+	      fake_args+=(--unordered-events "${FAKE_HYPERLANE_UNORDERED_EVENTS}")
+	    fi
+	    if [[ ${#fake_args[@]} -gt 0 ]]; then
+	      start_process "fake-hyperlane-${profile}" \
+	        env "${env_kv[@]}" "${fake_bin}" "${fake_args[@]}"
+	    else
+	      start_process "fake-hyperlane-${profile}" \
+	        env "${env_kv[@]}" "${fake_bin}"
+	    fi
+	  else
+	    fake_bin="${FAKE_HYPERLANE_RELAYER_BIN}"
+	    local rpc_base="http://127.0.0.1:${rpc_port}"
+	    local -a env_kv=(
+      "IGRA_RPC_BASE_URL=${rpc_base}"
+      "HYPERLANE_KEYS_PATH=${HYPERLANE_KEYS}"
+      "HYPERLANE_INTERVAL_SECS=${FAKE_HYPERLANE_INTERVAL}"
+      "HYPERLANE_RETRY_DELAY_SECS=1"
+      "HYPERLANE_CLIENT_TIMEOUT_SECS=120"
+      "HYPERLANE_AMOUNT_SOMPI=${FAKE_HYPERLANE_AMOUNT}"
+      "HYPERLANE_DESTINATION=${destination}"
+      "HYPERLANE_ORIGIN_DOMAIN=${FAKE_HYPERLANE_DOMAIN}"
+      "HYPERLANE_DESTINATION_DOMAIN=${FAKE_HYPERLANE_DEST_DOMAIN}"
+    )
+    # Only forward sender if it looks like a full 32-byte H256; otherwise let the binary default to zero.
+    if [[ -n "${FAKE_HYPERLANE_SENDER}" ]]; then
+      local sender_trim="${FAKE_HYPERLANE_SENDER#0x}"
+      if [[ ${#sender_trim} -eq 64 ]]; then
+        env_kv+=("HYPERLANE_SENDER=0x${sender_trim}")
+      fi
+    fi
+	    if [[ -n "${FAKE_HYPERLANE_UNORDERED_EVENTS}" ]]; then
+	      fake_args+=(--unordered-events "${FAKE_HYPERLANE_UNORDERED_EVENTS}")
+	    fi
+	    if [[ ${#fake_args[@]} -gt 0 ]]; then
+	      start_process "fake-hyperlane-${profile}" \
+	        env "${env_kv[@]}" "${fake_bin}" "${fake_args[@]}"
+	    else
+	      start_process "fake-hyperlane-${profile}" \
+	        env "${env_kv[@]}" "${fake_bin}"
+	    fi
+	  fi
 
   # Brief liveness check to avoid silent failures.
   sleep 1
@@ -892,7 +979,8 @@ wait_for_igra() {
         return 1
       fi
     fi
-    if curl -s -f "http://127.0.0.1:${rpc_port}/rpc" >/dev/null 2>&1; then
+    # `/rpc` is POST-only; use `/health` for readiness checks.
+    if curl -s -f "http://127.0.0.1:${rpc_port}/health" >/dev/null 2>&1; then
       log_success "igra-${profile} is ready"
       return 0
     fi
@@ -1014,17 +1102,29 @@ start_targets() {
       signer-1)
         start_igra "signer-1" "8088"
         wait_for_igra "signer-1" "8088"
-        start_fake_hyperlane "signer-1" "8088"
+        if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
+          log_info "Skipping fake Hyperlane for signer-1 (--no-fake-hyperlane)"
+        else
+          start_fake_hyperlane "signer-1" "8088"
+        fi
         ;;
       signer-2)
         start_igra "signer-2" "8089"
         wait_for_igra "signer-2" "8089"
-        start_fake_hyperlane "signer-2" "8089"
+        if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
+          log_info "Skipping fake Hyperlane for signer-2 (--no-fake-hyperlane)"
+        else
+          start_fake_hyperlane "signer-2" "8089"
+        fi
         ;;
       signer-3)
         start_igra "signer-3" "8090"
         wait_for_igra "signer-3" "8090"
-        start_fake_hyperlane "signer-3" "8090"
+        if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
+          log_info "Skipping fake Hyperlane for signer-3 (--no-fake-hyperlane)"
+        else
+          start_fake_hyperlane "signer-3" "8090"
+        fi
         ;;
     esac
   done

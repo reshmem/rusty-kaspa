@@ -1,6 +1,11 @@
-pub mod health;
+pub mod chain;
 pub mod events;
+pub mod health;
 pub mod hyperlane;
+pub mod hyperlane_wire;
+pub mod indexer;
+pub mod ism;
+pub mod mailbox;
 pub mod rpc;
 pub mod signing_event;
 pub mod types;

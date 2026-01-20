@@ -1,10 +1,11 @@
 use crate::domain::coordination::{KaspaAnchorRef, ProposalBroadcast};
 use crate::domain::pskt::params::{PsktOutputParams, UtxoInput};
 use crate::domain::{CrdtSigningMaterial, StoredEvent};
-use crate::foundation::{Hash32, PeerId, ThresholdError};
+use crate::foundation::{EventId, PeerId, ThresholdError};
 use crate::infrastructure::config::ServiceConfig;
 use crate::infrastructure::rpc::kaspa_integration::build_pskt_from_rpc_seeded;
 use crate::infrastructure::rpc::NodeRpc;
+use log::warn;
 
 pub async fn build_local_proposal_for_round(
     rpc: &dyn NodeRpc,
@@ -20,7 +21,7 @@ pub async fn build_local_proposal_for_round(
     // Seed UTXO selection by (event_id, round) so that events with identical output parameters
     // don't continuously pick the same inputs across concurrent execution and retries.
     let mut hasher = blake3::Hasher::new();
-    hasher.update(&event_id);
+    hasher.update(event_id.as_ref());
     hasher.update(&round.to_le_bytes());
     let digest = hasher.finalize();
     let mut selection_seed = [0u8; 32];
@@ -55,7 +56,17 @@ pub async fn build_local_proposal_for_round(
         proof: stored_event.proof.clone(),
     };
 
-    let anchor = KaspaAnchorRef { tip_blue_score: rpc.get_virtual_selected_parent_blue_score().await.unwrap_or(0) };
+    let tip_blue_score = match rpc.get_virtual_selected_parent_blue_score().await {
+        Ok(score) => score,
+        Err(err) => {
+            warn!(
+                "two_phase: get_virtual_selected_parent_blue_score failed, defaulting tip_blue_score=0 event_id={:#x} round={} error={}",
+                event_id, round, err
+            );
+            0
+        }
+    };
+    let anchor = KaspaAnchorRef { tip_blue_score };
 
     let proposal = ProposalBroadcast {
         event_id,
@@ -72,7 +83,7 @@ pub async fn build_local_proposal_for_round(
     Ok((proposal, anchor))
 }
 
-pub fn extract_event_id_from_signing_material(signing_material: &CrdtSigningMaterial) -> Hash32 {
+pub fn extract_event_id_from_signing_material(signing_material: &CrdtSigningMaterial) -> EventId {
     crate::domain::hashes::compute_event_id(&signing_material.event)
 }
 

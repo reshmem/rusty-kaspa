@@ -1,5 +1,4 @@
-use crate::foundation::Hash32;
-use crate::foundation::ThresholdError;
+use crate::foundation::{ExternalId, ThresholdError};
 use kaspa_addresses::{Address, Prefix};
 use kaspa_consensus_core::tx::ScriptPublicKey;
 use kaspa_txscript::pay_to_address_script;
@@ -24,7 +23,7 @@ impl ExpectedNetwork {
     }
 }
 
-pub fn parse_external_id(raw: &str) -> Result<Hash32, ThresholdError> {
+pub fn parse_external_id(raw: &str) -> Result<ExternalId, ThresholdError> {
     let trimmed = raw.trim();
     if trimmed.len() > crate::foundation::constants::MAX_EXTERNAL_ID_RAW_LENGTH {
         return Err(ThresholdError::InvalidExternalId(format!(
@@ -42,14 +41,14 @@ pub fn parse_external_id(raw: &str) -> Result<Hash32, ThresholdError> {
         .as_slice()
         .try_into()
         .map_err(|_| ThresholdError::InvalidExternalId(format!("expected 32 bytes, got {}", bytes.len())))?;
-    Ok(array)
+    Ok(ExternalId::from(array))
 }
 
 /// Canonicalize an external identifier that may not already be 32-byte hex.
 ///
 /// - If it looks like 32-byte hex (with optional 0x prefix), use it as-is.
 /// - Otherwise, hash the raw string under an explicit domain separator.
-pub fn canonical_external_id_from_raw(raw: &str) -> Result<Hash32, ThresholdError> {
+pub fn canonical_external_id_from_raw(raw: &str) -> Result<ExternalId, ThresholdError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(ThresholdError::InvalidExternalId("external id is empty".to_string()));
@@ -68,7 +67,7 @@ pub fn canonical_external_id_from_raw(raw: &str) -> Result<Hash32, ThresholdErro
     let mut buf = Vec::with_capacity(DOMAIN.len() + trimmed.len());
     buf.extend_from_slice(DOMAIN);
     buf.extend_from_slice(trimmed.as_bytes());
-    Ok(*blake3::hash(&buf).as_bytes())
+    Ok(ExternalId::from(*blake3::hash(&buf).as_bytes()))
 }
 
 pub fn parse_destination(expected: ExpectedNetwork, raw: &str) -> Result<ScriptPublicKey, ThresholdError> {

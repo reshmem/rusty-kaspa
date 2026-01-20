@@ -1,5 +1,5 @@
-use super::hyperlane::{handle_mailbox_process, handle_validators_and_threshold};
 use super::events::handle_events_status;
+use super::hyperlane::{handle_mailbox_process, handle_validators_and_threshold};
 use super::signing_event::handle_signing_event_submit;
 use super::types::{json_err, JsonRpcRequest, RpcErrorCode};
 use crate::api::middleware::auth::authorize_rpc;

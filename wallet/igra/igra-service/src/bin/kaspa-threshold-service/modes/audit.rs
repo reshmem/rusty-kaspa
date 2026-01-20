@@ -1,5 +1,5 @@
 use igra_core::domain::StoredEvent;
-use igra_core::foundation::{Hash32, ThresholdError};
+use igra_core::foundation::{EventId, Hash32, ThresholdError};
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
 use log::info;
@@ -43,14 +43,14 @@ struct AuditCompletion {
 
 pub fn dump_audit_trail(event_id_hex: &str, storage: &RocksStorage) -> Result<(), ThresholdError> {
     info!("Audit mode: dumping CRDT trail for {}", event_id_hex);
-    let event_id = parse_hash32_hex(event_id_hex)?;
+    let event_id = EventId::from(parse_hash32_hex(event_id_hex)?);
     let report = build_audit_report(storage, &event_id)?;
     let json = serde_json::to_string_pretty(&report)?;
     println!("{}", json);
     Ok(())
 }
 
-fn build_audit_report(storage: &RocksStorage, event_id: &Hash32) -> Result<AuditReport, ThresholdError> {
+fn build_audit_report(storage: &RocksStorage, event_id: &EventId) -> Result<AuditReport, ThresholdError> {
     let event = storage.get_event(event_id)?;
     let mut crdts = storage.list_event_crdts_for_event(event_id)?;
     crdts.sort_by(|a, b| a.tx_template_hash.cmp(&b.tx_template_hash));
@@ -84,7 +84,7 @@ fn build_audit_report(storage: &RocksStorage, event_id: &Hash32) -> Result<Audit
         })
         .collect();
 
-    Ok(AuditReport { event_id_hex: hex::encode(event_id), event, crdts })
+    Ok(AuditReport { event_id_hex: event_id.to_string(), event, crdts })
 }
 
 fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {

@@ -1,28 +1,31 @@
 use crate::domain::coordination::{EventPhase, EventPhaseState, Proposal};
-use crate::domain::pskt::multisig as pskt_multisig;
 use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, GroupConfig, StoredCompletionRecord, StoredEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
-use crate::foundation::{day_start_nanos, now_nanos};
-use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::foundation::{day_start_nanos, now_nanos, EventId, ExternalId, GroupId, PeerId, SessionId, TransactionId, TxTemplateHash};
+use crate::infrastructure::storage::hyperlane::{HyperlaneDeliveredMessage, HyperlaneDeliveryRecord, HyperlaneMessageRecord};
 use crate::infrastructure::storage::phase::{PhaseStorage, RecordSignedHashResult, StoreProposalResult};
 use crate::infrastructure::storage::{BatchTransaction, CrdtStorageStats, Storage};
 use crate::infrastructure::transport::messages::{CompletionRecord, CrdtSignature, EventCrdtState};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 struct MemoryInner {
-    group: HashMap<Hash32, GroupConfig>,
-    event: HashMap<Hash32, StoredEvent>,
-    event_active_template: HashMap<Hash32, Hash32>,
-    event_completion: HashMap<Hash32, StoredCompletionRecord>,
-    event_crdt: HashMap<(Hash32, Hash32), StoredEventCrdt>,
+    group: HashMap<GroupId, GroupConfig>,
+    event: HashMap<EventId, StoredEvent>,
+    event_active_template: HashMap<EventId, TxTemplateHash>,
+    event_completion: HashMap<EventId, StoredCompletionRecord>,
+    event_crdt: HashMap<(EventId, TxTemplateHash), StoredEventCrdt>,
     volume: HashMap<u64, u64>,
     seen: HashMap<(PeerId, SessionId, u64), u64>,
 
     // Two-phase protocol
-    phase: HashMap<Hash32, EventPhaseState>,
-    proposals: HashMap<(Hash32, u32, PeerId), Proposal>,
-    signed_hash: HashMap<Hash32, Hash32>,
+    phase: HashMap<EventId, EventPhaseState>,
+    proposals: HashMap<(EventId, u32, PeerId), Proposal>,
+    signed_hash: HashMap<EventId, TxTemplateHash>,
+
+    hyperlane_delivered_count: u32,
+    hyperlane_deliveries: HashMap<ExternalId, HyperlaneDeliveredMessage>,
+    hyperlane_deliveries_by_daa: BTreeMap<(u64, ExternalId), HyperlaneDeliveryRecord>,
 }
 
 impl MemoryInner {
@@ -38,6 +41,9 @@ impl MemoryInner {
             phase: HashMap::new(),
             proposals: HashMap::new(),
             signed_hash: HashMap::new(),
+            hyperlane_delivered_count: 0,
+            hyperlane_deliveries: HashMap::new(),
+            hyperlane_deliveries_by_daa: BTreeMap::new(),
         }
     }
 }
@@ -66,22 +72,22 @@ impl Default for MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    fn upsert_group_config(&self, group_id: Hash32, config: GroupConfig) -> Result<(), ThresholdError> {
+    fn upsert_group_config(&self, group_id: GroupId, config: GroupConfig) -> Result<(), ThresholdError> {
         self.lock_inner()?.group.insert(group_id, config);
         Ok(())
     }
 
-    fn get_group_config(&self, group_id: &Hash32) -> Result<Option<GroupConfig>, ThresholdError> {
+    fn get_group_config(&self, group_id: &GroupId) -> Result<Option<GroupConfig>, ThresholdError> {
         Ok(self.lock_inner()?.group.get(group_id).cloned())
     }
 
-    fn insert_event(&self, event_id: Hash32, event: StoredEvent) -> Result<(), ThresholdError> {
+    fn insert_event(&self, event_id: EventId, event: StoredEvent) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         inner.event.entry(event_id).or_insert(event);
         Ok(())
     }
 
-    fn insert_event_if_not_exists(&self, event_id: Hash32, event: StoredEvent) -> Result<bool, ThresholdError> {
+    fn insert_event_if_not_exists(&self, event_id: EventId, event: StoredEvent) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
         if inner.event.contains_key(&event_id) {
             return Ok(false);
@@ -90,19 +96,19 @@ impl Storage for MemoryStorage {
         Ok(true)
     }
 
-    fn get_event(&self, event_id: &Hash32) -> Result<Option<StoredEvent>, ThresholdError> {
+    fn get_event(&self, event_id: &EventId) -> Result<Option<StoredEvent>, ThresholdError> {
         Ok(self.lock_inner()?.event.get(event_id).cloned())
     }
 
-    fn get_event_active_template_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+    fn get_event_active_template_hash(&self, event_id: &EventId) -> Result<Option<TxTemplateHash>, ThresholdError> {
         Ok(self.lock_inner()?.event_active_template.get(event_id).copied())
     }
 
-    fn set_event_active_template_hash(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<(), ThresholdError> {
+    fn set_event_active_template_hash(&self, event_id: &EventId, tx_template_hash: &TxTemplateHash) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         if let Some(existing) = inner.event_active_template.get(event_id) {
             if existing != tx_template_hash {
-                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
+                return Err(ThresholdError::PsktMismatch { expected: existing.to_string(), actual: tx_template_hash.to_string() });
             }
             return Ok(());
         }
@@ -110,24 +116,28 @@ impl Storage for MemoryStorage {
         Ok(())
     }
 
-    fn get_event_completion(&self, event_id: &Hash32) -> Result<Option<StoredCompletionRecord>, ThresholdError> {
+    fn get_event_completion(&self, event_id: &EventId) -> Result<Option<StoredCompletionRecord>, ThresholdError> {
         Ok(self.lock_inner()?.event_completion.get(event_id).cloned())
     }
 
-    fn set_event_completion(&self, event_id: &Hash32, completion: &StoredCompletionRecord) -> Result<(), ThresholdError> {
+    fn set_event_completion(&self, event_id: &EventId, completion: &StoredCompletionRecord) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         inner.event_completion.insert(*event_id, completion.clone());
         Ok(())
     }
 
-    fn get_event_crdt(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>, ThresholdError> {
+    fn get_event_crdt(
+        &self,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
+    ) -> Result<Option<StoredEventCrdt>, ThresholdError> {
         Ok(self.lock_inner()?.event_crdt.get(&(*event_id, *tx_template_hash)).cloned())
     }
 
     fn merge_event_crdt(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         incoming: &EventCrdtState,
         signing_material: Option<&CrdtSigningMaterial>,
         kpsbt_blob: Option<&[u8]>,
@@ -135,13 +145,6 @@ impl Storage for MemoryStorage {
         let mut inner = self.lock_inner()?;
         let now_nanos = now_nanos();
         let key = (*event_id, *tx_template_hash);
-        let mut should_lock_active_template = false;
-
-        if let Some(existing) = inner.event_active_template.get(event_id) {
-            if existing != tx_template_hash {
-                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
-            }
-        }
 
         let mut changed = false;
         let mut completion_to_index: Option<StoredCompletionRecord> = None;
@@ -163,24 +166,15 @@ impl Storage for MemoryStorage {
 
             if local.signing_material.is_none() {
                 if let Some(ev) = signing_material {
-                    crate::domain::normalization::validate_source_data(&ev.audit.source_data)?;
-                    let computed_event_id = crate::domain::hashes::compute_event_id(&ev.event);
-                    if computed_event_id == *event_id {
-                        local.signing_material = Some(ev.clone());
-                        changed = true;
-                    }
+                    local.signing_material = Some(ev.clone());
+                    changed = true;
                 }
             }
 
             if local.kpsbt_blob.is_none() {
                 if let Some(blob) = kpsbt_blob {
-                    let signer_pskt = pskt_multisig::deserialize_pskt_signer(blob)?;
-                    let computed_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
-                    if computed_hash == *tx_template_hash {
-                        should_lock_active_template = true;
-                        local.kpsbt_blob = Some(blob.to_vec());
-                        changed = true;
-                    }
+                    local.kpsbt_blob = Some(blob.to_vec());
+                    changed = true;
                 }
             }
 
@@ -224,10 +218,6 @@ impl Storage for MemoryStorage {
             local.clone()
         };
 
-        if should_lock_active_template {
-            inner.event_active_template.insert(*event_id, *tx_template_hash);
-        }
-
         if let Some(completion) = completion_to_index {
             inner.event_completion.insert(*event_id, completion);
             if completion_first_seen {
@@ -244,8 +234,8 @@ impl Storage for MemoryStorage {
 
     fn add_signature_to_crdt(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         input_index: u32,
         pubkey: &[u8],
         signature: &[u8],
@@ -272,8 +262,8 @@ impl Storage for MemoryStorage {
 
     fn mark_crdt_completed(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         tx_id: TransactionId,
         submitter_peer_id: &PeerId,
         timestamp_nanos: u64,
@@ -281,12 +271,7 @@ impl Storage for MemoryStorage {
     ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
         let incoming = EventCrdtState {
             signatures: vec![],
-            completion: Some(CompletionRecord {
-                tx_id: *tx_id.as_hash(),
-                submitter_peer_id: submitter_peer_id.clone(),
-                timestamp_nanos,
-                blue_score,
-            }),
+            completion: Some(CompletionRecord { tx_id, submitter_peer_id: submitter_peer_id.clone(), timestamp_nanos, blue_score }),
             signing_material: None,
             kpsbt_blob: None,
             version: 0,
@@ -297,8 +282,8 @@ impl Storage for MemoryStorage {
 
     fn crdt_has_threshold(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         input_count: usize,
         required: usize,
     ) -> Result<bool, ThresholdError> {
@@ -325,7 +310,7 @@ impl Storage for MemoryStorage {
         Ok(self.lock_inner()?.event_crdt.values().filter(|s| s.completion.is_none()).cloned().collect())
     }
 
-    fn list_event_crdts_for_event(&self, event_id: &Hash32) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
+    fn list_event_crdts_for_event(&self, event_id: &EventId) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
         Ok(self.lock_inner()?.event_crdt.values().filter(|s| &s.event_id == event_id).cloned().collect())
     }
 
@@ -394,10 +379,72 @@ impl Storage for MemoryStorage {
         inner.seen.retain(|_, ts| *ts >= older_than_nanos);
         Ok(before - inner.seen.len())
     }
+
+    fn hyperlane_get_delivered_count(&self) -> Result<u32, ThresholdError> {
+        Ok(self.lock_inner()?.hyperlane_delivered_count)
+    }
+
+    fn hyperlane_is_message_delivered(&self, message_id: &ExternalId) -> Result<bool, ThresholdError> {
+        Ok(self.lock_inner()?.hyperlane_deliveries.contains_key(message_id))
+    }
+
+    fn hyperlane_get_delivery(&self, message_id: &ExternalId) -> Result<Option<HyperlaneDeliveryRecord>, ThresholdError> {
+        Ok(self.lock_inner()?.hyperlane_deliveries.get(message_id).map(|record| record.delivery.clone()))
+    }
+
+    fn hyperlane_get_deliveries_in_range(
+        &self,
+        from_daa_score: u64,
+        to_daa_score: u64,
+    ) -> Result<Vec<HyperlaneDeliveryRecord>, ThresholdError> {
+        let inner = self.lock_inner()?;
+        if from_daa_score > to_daa_score {
+            return Ok(Vec::new());
+        }
+        let start = (from_daa_score, ExternalId::new([0u8; 32]));
+        let end = (to_daa_score, ExternalId::new([0xffu8; 32]));
+        Ok(inner.hyperlane_deliveries_by_daa.range(start..=end).map(|(_, v)| v.clone()).collect())
+    }
+
+    fn hyperlane_get_messages_in_range(
+        &self,
+        from_daa_score: u64,
+        to_daa_score: u64,
+    ) -> Result<Vec<HyperlaneMessageRecord>, ThresholdError> {
+        let inner = self.lock_inner()?;
+        if from_daa_score > to_daa_score {
+            return Ok(Vec::new());
+        }
+        let start = (from_daa_score, ExternalId::new([0u8; 32]));
+        let end = (to_daa_score, ExternalId::new([0xffu8; 32]));
+        let mut out = Vec::new();
+        for ((_daa_score, message_id), _delivery) in inner.hyperlane_deliveries_by_daa.range(start..=end) {
+            if let Some(record) = inner.hyperlane_deliveries.get(message_id) {
+                out.push(record.message.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    fn hyperlane_get_latest_delivery_daa_score(&self) -> Result<Option<u64>, ThresholdError> {
+        Ok(self.lock_inner()?.hyperlane_deliveries_by_daa.iter().next_back().map(|(k, _)| k.0))
+    }
+
+    fn hyperlane_mark_delivered(&self, delivered: &HyperlaneDeliveredMessage) -> Result<bool, ThresholdError> {
+        let mut inner = self.lock_inner()?;
+        let message_id = delivered.delivery.message_id;
+        if inner.hyperlane_deliveries.contains_key(&message_id) {
+            return Ok(false);
+        }
+        inner.hyperlane_deliveries.insert(message_id, delivered.clone());
+        inner.hyperlane_deliveries_by_daa.insert((delivered.delivery.daa_score, message_id), delivered.delivery.clone());
+        inner.hyperlane_delivered_count = inner.hyperlane_delivered_count.saturating_add(1);
+        Ok(true)
+    }
 }
 
 impl PhaseStorage for MemoryStorage {
-    fn try_enter_proposing(&self, event_id: &Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn try_enter_proposing(&self, event_id: &EventId, now_ns: u64) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
         match inner.phase.get(event_id) {
             None => {
@@ -412,18 +459,18 @@ impl PhaseStorage for MemoryStorage {
         }
     }
 
-    fn get_phase(&self, event_id: &Hash32) -> Result<Option<EventPhaseState>, ThresholdError> {
+    fn get_phase(&self, event_id: &EventId) -> Result<Option<EventPhaseState>, ThresholdError> {
         Ok(self.lock_inner()?.phase.get(event_id).cloned())
     }
 
-    fn get_signed_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+    fn get_signed_hash(&self, event_id: &EventId) -> Result<Option<TxTemplateHash>, ThresholdError> {
         Ok(self.lock_inner()?.signed_hash.get(event_id).copied())
     }
 
     fn record_signed_hash(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: Hash32,
+        event_id: &EventId,
+        tx_template_hash: TxTemplateHash,
         _now_ns: u64,
     ) -> Result<RecordSignedHashResult, ThresholdError> {
         let mut inner = self.lock_inner()?;
@@ -437,7 +484,7 @@ impl PhaseStorage for MemoryStorage {
         }
     }
 
-    fn adopt_round_if_behind(&self, event_id: &Hash32, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn adopt_round_if_behind(&self, event_id: &EventId, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
 
@@ -456,7 +503,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(true)
     }
 
-    fn set_own_proposal_hash(&self, event_id: &Hash32, tx_template_hash: Hash32) -> Result<(), ThresholdError> {
+    fn set_own_proposal_hash(&self, event_id: &EventId, tx_template_hash: TxTemplateHash) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_nanos()));
         state.own_proposal_hash = Some(tx_template_hash);
@@ -483,6 +530,17 @@ impl PhaseStorage for MemoryStorage {
         let key = (proposal.event_id, proposal.round, proposal.proposer_peer_id.clone());
         if let Some(existing) = inner.proposals.get(&key) {
             if existing.tx_template_hash != proposal.tx_template_hash {
+                // Crash-fault model behavior: detect and record equivocation, but do not attempt to punish
+                // or “resolve” it at this layer. We keep the first stored proposal and reject conflicting
+                // votes from the same peer for the same (event_id, round).
+                crate::infrastructure::audit::audit(crate::infrastructure::audit::AuditEvent::ProposalEquivocationDetected {
+                    event_id: proposal.event_id.to_string(),
+                    round: proposal.round,
+                    proposer_peer_id: proposal.proposer_peer_id.to_string(),
+                    existing_tx_template_hash: existing.tx_template_hash.to_string(),
+                    new_tx_template_hash: proposal.tx_template_hash.to_string(),
+                    timestamp_nanos: now_nanos(),
+                });
                 return Ok(StoreProposalResult::Equivocation {
                     existing_hash: existing.tx_template_hash,
                     new_hash: proposal.tx_template_hash,
@@ -495,21 +553,27 @@ impl PhaseStorage for MemoryStorage {
         Ok(StoreProposalResult::Stored)
     }
 
-    fn get_proposals(&self, event_id: &Hash32, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
+    fn get_proposals(&self, event_id: &EventId, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
         let inner = self.lock_inner()?;
         Ok(inner.proposals.iter().filter(|((eid, r, _), _)| eid == event_id && *r == round).map(|(_, p)| p.clone()).collect())
     }
 
-    fn proposal_count(&self, event_id: &Hash32, round: u32) -> Result<usize, ThresholdError> {
+    fn proposal_count(&self, event_id: &EventId, round: u32) -> Result<usize, ThresholdError> {
         Ok(self.get_proposals(event_id, round)?.len())
     }
 
-    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<Hash32>, ThresholdError> {
+    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<EventId>, ThresholdError> {
         let inner = self.lock_inner()?;
         Ok(inner.phase.iter().filter(|(_, s)| s.phase == phase).map(|(id, _)| *id).collect())
     }
 
-    fn mark_committed(&self, event_id: &Hash32, round: u32, canonical_hash: Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn mark_committed(
+        &self,
+        event_id: &EventId,
+        round: u32,
+        canonical_hash: TxTemplateHash,
+        now_ns: u64,
+    ) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Proposing, now_ns));
 
@@ -533,7 +597,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(true)
     }
 
-    fn mark_completed(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+    fn mark_completed(&self, event_id: &EventId, now_ns: u64) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
         state.phase = EventPhase::Completed;
@@ -541,7 +605,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(())
     }
 
-    fn fail_and_bump_round(&self, event_id: &Hash32, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn fail_and_bump_round(&self, event_id: &EventId, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
         let mut inner = self.lock_inner()?;
         let Some(state) = inner.phase.get_mut(event_id) else {
             return Ok(false);
@@ -561,7 +625,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(true)
     }
 
-    fn mark_abandoned(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+    fn mark_abandoned(&self, event_id: &EventId, now_ns: u64) -> Result<(), ThresholdError> {
         let mut inner = self.lock_inner()?;
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Unknown, now_ns));
         state.phase = EventPhase::Abandoned;
@@ -569,7 +633,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(())
     }
 
-    fn clear_stale_proposals(&self, event_id: &Hash32, before_round: u32) -> Result<usize, ThresholdError> {
+    fn clear_stale_proposals(&self, event_id: &EventId, before_round: u32) -> Result<usize, ThresholdError> {
         let mut inner = self.lock_inner()?;
         let keys =
             inner.proposals.keys().filter(|(eid, round, _)| eid == event_id && *round < before_round).cloned().collect::<Vec<_>>();
@@ -596,7 +660,7 @@ impl PhaseStorage for MemoryStorage {
         Ok(deleted)
     }
 
-    fn has_proposal_from(&self, event_id: &Hash32, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
+    fn has_proposal_from(&self, event_id: &EventId, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
         let inner = self.lock_inner()?;
         Ok(inner.proposals.contains_key(&(*event_id, round, peer_id.clone())))
     }

@@ -71,6 +71,7 @@ def write_keyset(keyset_out: pathlib.Path, data: dict, generated_ts: str) -> Non
         "source_addresses": data.get("source_addresses", []),
         "change_address": data.get("change_address", ""),
         "hyperlane_keys": data.get("hyperlane_keys", []),
+        "evm": data.get("evm", {}),
         "group_id": data.get("group_id", ""),
         "multisig_address": data.get("multisig_address", ""),
     }

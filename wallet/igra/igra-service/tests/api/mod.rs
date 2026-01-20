@@ -37,8 +37,9 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
     use igra_core::domain::coordination::TwoPhaseConfig;
     use igra_core::domain::validation::NoopVerifier;
     use igra_core::domain::GroupPolicy;
-    use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+    use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
+    use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
     use igra_core::infrastructure::storage::RocksStorage;
@@ -69,7 +70,7 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
             Ok(())
         }
 
-        async fn subscribe_group(&self, _group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+        async fn subscribe_group(&self, _group_id: GroupId) -> Result<TransportSubscription, ThresholdError> {
             Ok(TransportSubscription::new(Box::pin(stream::empty())))
         }
     }
@@ -95,6 +96,7 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
         event_ctx: ctx,
         rpc_token: None,
         node_rpc_url: "grpc://127.0.0.1:16110".to_string(),
+        kaspa_query: Arc::new(KaspaGrpcQueryClient::unimplemented()),
         metrics,
         rate_limiter: Arc::new(igra_service::api::RateLimiter::new()),
         hyperlane_ism: None,
@@ -103,5 +105,6 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
         rate_limit_rps: 30,
         rate_limit_burst: 60,
         session_expiry_seconds: 600,
+        hyperlane_mailbox_wait_seconds: 10,
     })
 }

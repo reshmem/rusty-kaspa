@@ -2,6 +2,7 @@
 
 use crate::fixtures::{TEST_DESTINATION_ADDRESS, TEST_EXTERNAL_ID_RAW};
 use igra_core::domain::{Event, EventAuditData, SourceType, StoredEvent};
+use igra_core::foundation::ExternalId;
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
 use std::collections::BTreeMap;
@@ -48,11 +49,12 @@ impl StoredEventBuilder {
         let raw = self.destination_raw.trim();
         let address = Address::try_from(raw).expect("test destination address");
         let destination = pay_to_address_script(&address);
-        let external_id = hex::decode(self.external_id_raw.trim_start_matches("0x"))
+        let external_id: [u8; 32] = hex::decode(self.external_id_raw.trim_start_matches("0x"))
             .expect("test external id")
             .as_slice()
             .try_into()
             .expect("external id is 32 bytes");
+        let external_id = ExternalId::new(external_id);
 
         let event = Event { external_id, source: self.source, destination, amount_sompi: self.amount_sompi };
         let audit = EventAuditData {

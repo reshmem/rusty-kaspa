@@ -47,12 +47,12 @@ macro_rules! define_id_type {
     };
 
     (hash $name:ident) => {
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Deserialize, Serialize)]
+        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord, Deserialize, Serialize)]
         #[serde(transparent)]
         pub struct $name(Hash32);
 
         impl $name {
-            pub fn new(value: Hash32) -> Self {
+            pub const fn new(value: Hash32) -> Self {
                 Self(value)
             }
 
@@ -63,7 +63,53 @@ macro_rules! define_id_type {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}", hex::encode(self.0))
+                for byte in self.0 {
+                    write!(f, "{:02x}", byte)?;
+                }
+                Ok(())
+            }
+        }
+
+        impl fmt::LowerHex for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                if f.alternate() {
+                    f.write_str("0x")?;
+                }
+                for byte in self.0 {
+                    write!(f, "{:02x}", byte)?;
+                }
+                Ok(())
+            }
+        }
+
+        impl fmt::UpperHex for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                if f.alternate() {
+                    f.write_str("0x")?;
+                }
+                for byte in self.0 {
+                    write!(f, "{:02X}", byte)?;
+                }
+                Ok(())
+            }
+        }
+
+        impl AsRef<Hash32> for $name {
+            fn as_ref(&self) -> &Hash32 {
+                &self.0
+            }
+        }
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        impl Deref for $name {
+            type Target = Hash32;
+            fn deref(&self) -> &Self::Target {
+                &self.0
             }
         }
 
@@ -82,8 +128,13 @@ macro_rules! define_id_type {
 }
 
 define_id_type!(string PeerId);
+define_id_type!(hash ExternalId);
+define_id_type!(hash EventId);
+define_id_type!(hash GroupId);
+define_id_type!(hash PayloadHash);
 define_id_type!(hash SessionId);
 define_id_type!(hash TransactionId);
+define_id_type!(hash TxTemplateHash);
 
 impl From<kaspa_consensus_core::tx::TransactionId> for TransactionId {
     fn from(value: kaspa_consensus_core::tx::TransactionId) -> Self {

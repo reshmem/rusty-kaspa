@@ -4,10 +4,10 @@ use igra_core::application::{LifecycleObserver, NoopObserver};
 use igra_core::domain::pskt::multisig as pskt_multisig;
 use igra_core::domain::signing::aggregation;
 use igra_core::domain::validation::MessageVerifier;
-use igra_core::foundation::Hash32;
-use igra_core::foundation::ThresholdError;
+use igra_core::foundation::{EventId, ThresholdError};
 use igra_core::infrastructure::config::ServiceConfig;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
+use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
 use igra_core::infrastructure::rpc::NodeRpc;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{SignatureSigner, SignatureVerifier, Transport};
@@ -23,6 +23,7 @@ pub struct ServiceFlow {
     storage: Arc<dyn Storage>,
     transport: Arc<dyn Transport>,
     rpc: Arc<dyn NodeRpc>,
+    kaspa_query: Arc<KaspaGrpcQueryClient>,
     message_verifier: Arc<dyn MessageVerifier>,
     metrics: Arc<Metrics>,
     lifecycle: Arc<dyn LifecycleObserver>,
@@ -37,15 +38,17 @@ impl ServiceFlow {
     ) -> Result<Self, ThresholdError> {
         info!("initializing service flow rpc_url={}", redact_url(&config.node_rpc_url));
         let rpc = Arc::new(GrpcNodeRpc::connect_with_config(config.node_rpc_url.clone(), config.node_rpc_circuit_breaker).await?);
+        let kaspa_query = Arc::new(KaspaGrpcQueryClient::connect(config.node_rpc_url.clone()).await?);
         debug!("grpc rpc connected");
         let metrics = Arc::new(Metrics::new()?);
         debug!("metrics initialized");
         let lifecycle = Arc::new(NoopObserver);
-        Ok(Self { storage, transport, rpc, message_verifier, metrics, lifecycle })
+        Ok(Self { storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
     }
 
     pub fn new_with_rpc(
         rpc: Arc<dyn NodeRpc>,
+        kaspa_query: Arc<KaspaGrpcQueryClient>,
         storage: Arc<dyn Storage>,
         transport: Arc<dyn Transport>,
         message_verifier: Arc<dyn MessageVerifier>,
@@ -53,7 +56,7 @@ impl ServiceFlow {
         info!("initializing service flow with injected rpc");
         let metrics = Arc::new(Metrics::new()?);
         let lifecycle = Arc::new(NoopObserver);
-        Ok(Self { storage, transport, rpc, message_verifier, metrics, lifecycle })
+        Ok(Self { storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
     }
 
     pub async fn new_with_iroh(
@@ -66,26 +69,30 @@ impl ServiceFlow {
         message_verifier: Arc<dyn MessageVerifier>,
     ) -> Result<Self, ThresholdError> {
         info!(
-            "initializing iroh transport network_id={} group_id={} bootstrap_nodes={}",
+            "initializing iroh transport network_id={} group_id={:#x} bootstrap_nodes={}",
             iroh_config.network_id,
-            hex::encode(iroh_config.group_id),
+            iroh_config.group_id,
             iroh_config.bootstrap_nodes.len()
         );
         let transport = Arc::new(IrohTransport::new(gossip, signer, verifier, storage.clone(), iroh_config)?);
         Self::new(config, storage, transport, message_verifier).await
     }
 
+    pub fn message_verifier_ref(&self) -> &dyn MessageVerifier {
+        self.message_verifier.as_ref()
+    }
+
     pub async fn finalize_and_submit(
         &self,
-        event_id: Hash32,
+        event_id: EventId,
         pskt: kaspa_wallet_pskt::prelude::PSKT<kaspa_wallet_pskt::prelude::Combiner>,
         required_signatures: usize,
         ordered_pubkeys: &[secp256k1::PublicKey],
         params: &kaspa_consensus_core::config::params::Params,
     ) -> Result<kaspa_consensus_core::tx::TransactionId, ThresholdError> {
         info!(
-            "finalizing and submitting transaction event_id={} required_signatures={} pubkey_count={}",
-            hex::encode(event_id),
+            "finalizing and submitting transaction event_id={:#x} required_signatures={} pubkey_count={}",
+            event_id,
             required_signatures,
             ordered_pubkeys.len()
         );
@@ -118,37 +125,28 @@ impl ServiceFlow {
             attempt += 1;
             match self.rpc.submit_transaction(final_tx.clone()).await {
                 Ok(id) => {
-                    info!("submit_transaction ok event_id={} tx_id={} mass={}", hex::encode(event_id), id, tx_result.mass);
+                    info!("submit_transaction ok event_id={:#x} tx_id={} mass={}", event_id, id, tx_result.mass);
                     break id;
                 }
                 Err(err) if is_duplicate_submission(&err) => {
                     info!(
-                        "submit_transaction already accepted; treating as success event_id={} tx_id={} error={}",
-                        hex::encode(event_id),
-                        expected_tx_id,
-                        err
+                        "submit_transaction already accepted; treating as success event_id={:#x} tx_id={} error={}",
+                        event_id, expected_tx_id, err
                     );
                     break expected_tx_id;
                 }
                 Err(err) if is_non_retryable_submission(&err) => {
                     warn!(
-                        "submit_transaction rejected as non-retryable; not retrying event_id={} tx_id={} mass={} error={}",
-                        hex::encode(event_id),
-                        expected_tx_id,
-                        tx_result.mass,
-                        err
+                        "submit_transaction rejected as non-retryable; not retrying event_id={:#x} tx_id={} mass={} error={}",
+                        event_id, expected_tx_id, tx_result.mass, err
                     );
                     return Err(err);
                 }
                 Err(err) if attempt < MAX_SUBMIT_TX_ATTEMPTS => {
-                    let backoff_ms =
-                        TX_RETRY_BASE_BACKOFF_MS.saturating_mul(TX_RETRY_BACKOFF_MULTIPLIER.saturating_pow(attempt - 1));
+                    let backoff_ms = TX_RETRY_BASE_BACKOFF_MS.saturating_mul(TX_RETRY_BACKOFF_MULTIPLIER.saturating_pow(attempt - 1));
                     warn!(
-                        "submit_transaction failed; retrying event_id={} attempt={} backoff_ms={} error={}",
-                        hex::encode(event_id),
-                        attempt,
-                        backoff_ms,
-                        err
+                        "submit_transaction failed; retrying event_id={:#x} attempt={} backoff_ms={} error={}",
+                        event_id, attempt, backoff_ms, err
                     );
                     tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
@@ -168,6 +166,10 @@ impl ServiceFlow {
 
     pub fn rpc(&self) -> Arc<dyn NodeRpc> {
         self.rpc.clone()
+    }
+
+    pub fn kaspa_query(&self) -> Arc<KaspaGrpcQueryClient> {
+        self.kaspa_query.clone()
     }
 
     pub fn message_verifier(&self) -> Arc<dyn MessageVerifier> {

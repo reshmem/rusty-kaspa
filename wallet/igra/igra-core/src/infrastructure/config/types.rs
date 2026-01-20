@@ -148,6 +148,9 @@ pub struct RpcConfig {
     pub rate_limit_rps: Option<u32>,
     #[serde(default)]
     pub rate_limit_burst: Option<u32>,
+    /// How long `hyperlane.mailbox_process` waits for transaction completion before returning.
+    #[serde(default)]
+    pub hyperlane_mailbox_wait_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

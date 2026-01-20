@@ -50,10 +50,10 @@ pub fn open_db_with_cfs(path: impl AsRef<Path>) -> Result<DB, ThresholdError> {
         ColumnFamilyDescriptor::new(CF_EVENT_SIGNED_HASH, RocksOptions::default()),
         ColumnFamilyDescriptor::new(CF_VOLUME, volume_options),
         ColumnFamilyDescriptor::new(CF_SEEN, RocksOptions::default()),
+        ColumnFamilyDescriptor::new(CF_HYPERLANE_MESSAGE, RocksOptions::default()),
+        ColumnFamilyDescriptor::new(CF_HYPERLANE_DELIVERY, RocksOptions::default()),
     ];
 
-    DB::open_cf_descriptors(&options, path, cfs).map_err(|err| ThresholdError::StorageError {
-        operation: "rocksdb open_cf_descriptors".to_string(),
-        details: err.to_string(),
-    })
+    DB::open_cf_descriptors(&options, path, cfs)
+        .map_err(|err| ThresholdError::StorageError { operation: "rocksdb open_cf_descriptors".to_string(), details: err.to_string() })
 }

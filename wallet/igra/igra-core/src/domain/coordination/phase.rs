@@ -1,4 +1,4 @@
-use crate::foundation::Hash32;
+use crate::foundation::TxTemplateHash;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -50,8 +50,8 @@ pub struct EventPhaseState {
     pub phase: EventPhase,
     pub phase_started_at_ns: u64,
     pub round: u32,
-    pub canonical_hash: Option<Hash32>,
-    pub own_proposal_hash: Option<Hash32>,
+    pub canonical_hash: Option<TxTemplateHash>,
+    pub own_proposal_hash: Option<TxTemplateHash>,
     pub retry_count: u32,
 }
 

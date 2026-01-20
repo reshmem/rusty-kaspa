@@ -80,12 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
     let iroh_secret = setup::derive_iroh_secret(&app_config.iroh.signer_seed_hex.clone().unwrap_or_else(|| "".to_string()))?;
 
-    info!(
-        "iroh identity ready peer_id={} group_id={} bootstrap_addrs={}",
-        identity.peer_id,
-        hex::encode(group_id),
-        static_addrs.len()
-    );
+    info!("iroh identity ready peer_id={} group_id={:#x} bootstrap_addrs={}", identity.peer_id, group_id, static_addrs.len());
     let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
 
     let iroh_config =
@@ -110,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = flow.transport();
     let peer_id = identity.peer_id;
     let peer_id_for_state = peer_id.clone();
-    let group_id_hex = Some(hex::encode(group_id));
+    let group_id_hex = Some(group_id.to_string());
 
     let app_config_for_loop = app_config.clone();
     let two_phase_for_loop = two_phase.clone();
@@ -120,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let phase_storage_for_loop = phase_storage.clone();
     let group_id_for_loop = group_id;
     tokio::spawn(async move {
-        info!("starting coordination loop peer_id={} group_id={}", peer_id, hex::encode(group_id_for_loop));
+        info!("starting coordination loop peer_id={} group_id={:#x}", peer_id, group_id_for_loop);
         if let Err(err) = run_coordination_loop(
             app_config_for_loop,
             two_phase_for_loop,
@@ -163,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             event_ctx,
             rpc_token: app_config.rpc.token.clone(),
             node_rpc_url: app_config.service.node_rpc_url.clone(),
+            kaspa_query: flow.kaspa_query(),
             metrics,
             rate_limiter: Arc::new(igra_service::api::RateLimiter::new()),
             hyperlane_ism,
@@ -171,6 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rate_limit_rps: app_config.rpc.rate_limit_rps.unwrap_or(30),
             rate_limit_burst: app_config.rpc.rate_limit_burst.unwrap_or(60),
             session_expiry_seconds: app_config.runtime.session_expiry_seconds.unwrap_or(600),
+            hyperlane_mailbox_wait_seconds: app_config.rpc.hyperlane_mailbox_wait_seconds.unwrap_or(10),
         });
 
         let rpc_state_for_server = rpc_state.clone();

@@ -98,20 +98,30 @@ impl Metrics {
         )
         .map_err(|err| metrics_err("tx_template_hash_mismatches_total", err))?;
 
-        registry.register(Box::new(signing_sessions_total.clone())).map_err(|err| metrics_err("register signing_sessions_total", err))?;
+        registry
+            .register(Box::new(signing_sessions_total.clone()))
+            .map_err(|err| metrics_err("register signing_sessions_total", err))?;
         registry.register(Box::new(signer_acks_total.clone())).map_err(|err| metrics_err("register signer_acks_total", err))?;
         registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| metrics_err("register partial_sigs_total", err))?;
         registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| metrics_err("register rpc_requests_total", err))?;
-        registry.register(Box::new(crdt_event_crdts_total.clone())).map_err(|err| metrics_err("register crdt_event_crdts_total", err))?;
-        registry.register(Box::new(crdt_event_crdts_pending.clone())).map_err(|err| metrics_err("register crdt_event_crdts_pending", err))?;
+        registry
+            .register(Box::new(crdt_event_crdts_total.clone()))
+            .map_err(|err| metrics_err("register crdt_event_crdts_total", err))?;
+        registry
+            .register(Box::new(crdt_event_crdts_pending.clone()))
+            .map_err(|err| metrics_err("register crdt_event_crdts_pending", err))?;
         registry
             .register(Box::new(crdt_event_crdts_completed.clone()))
             .map_err(|err| metrics_err("register crdt_event_crdts_completed", err))?;
-        registry.register(Box::new(crdt_cf_estimated_num_keys.clone())).map_err(|err| metrics_err("register crdt_cf_estimated_num_keys", err))?;
+        registry
+            .register(Box::new(crdt_cf_estimated_num_keys.clone()))
+            .map_err(|err| metrics_err("register crdt_cf_estimated_num_keys", err))?;
         registry
             .register(Box::new(crdt_cf_estimated_live_data_size_bytes.clone()))
             .map_err(|err| metrics_err("register crdt_cf_estimated_live_data_size_bytes", err))?;
-        registry.register(Box::new(crdt_gc_deleted_total.clone())).map_err(|err| metrics_err("register crdt_gc_deleted_total", err))?;
+        registry
+            .register(Box::new(crdt_gc_deleted_total.clone()))
+            .map_err(|err| metrics_err("register crdt_gc_deleted_total", err))?;
         registry
             .register(Box::new(tx_template_hash_mismatches_total.clone()))
             .map_err(|err| metrics_err("register tx_template_hash_mismatches_total", err))?;

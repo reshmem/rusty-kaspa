@@ -92,9 +92,11 @@ impl NodeRpc for UnimplementedRpc {
 pub mod circuit_breaker;
 pub mod grpc;
 pub mod kaspa_integration;
+pub mod query;
 pub mod retry;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use grpc::GrpcNodeRpc;
 pub use kaspa_integration::*;
+pub use query::KaspaGrpcQueryClient;
 pub use retry::retry;

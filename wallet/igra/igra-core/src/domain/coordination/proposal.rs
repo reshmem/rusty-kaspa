@@ -1,14 +1,14 @@
 use crate::domain::coordination::config::{MAX_KPSBT_SIZE, MAX_OUTPUTS_PER_PROPOSAL, MAX_UTXOS_PER_PROPOSAL};
 use crate::domain::pskt::params::{PsktOutputParams, UtxoInput};
 use crate::domain::CrdtSigningMaterial;
-use crate::foundation::{Hash32, PeerId, ThresholdError};
+use crate::foundation::{EventId, PeerId, ThresholdError, TxTemplateHash};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proposal {
-    pub event_id: Hash32,
+    pub event_id: EventId,
     pub round: u32,
-    pub tx_template_hash: Hash32,
+    pub tx_template_hash: TxTemplateHash,
     pub kpsbt_blob: Vec<u8>,
     pub utxos_used: Vec<UtxoInput>,
     pub outputs: Vec<PsktOutputParams>,
@@ -55,7 +55,7 @@ impl Proposal {
         Ok(())
     }
 
-    pub fn computed_template_hash(&self) -> Result<Hash32, ThresholdError> {
+    pub fn computed_template_hash(&self) -> Result<TxTemplateHash, ThresholdError> {
         let pskt = crate::domain::pskt::multisig::deserialize_pskt_signer(&self.kpsbt_blob)?;
         crate::domain::pskt::multisig::tx_template_hash(&pskt)
     }

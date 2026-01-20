@@ -1,13 +1,14 @@
 use igra_core::domain::group_id::compute_group_id;
 use igra_core::domain::hashes::{compute_event_id, validation_hash};
 use igra_core::domain::{Event, GroupConfig, GroupMetadata, GroupPolicy, SourceType};
+use igra_core::foundation::{ExternalId, TxTemplateHash};
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
 
 fn sample_event() -> Event {
     let address = Address::try_from("kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m").unwrap();
     let destination = pay_to_address_script(&address);
-    Event { external_id: [7u8; 32], source: SourceType::Api, destination, amount_sompi: 123 }
+    Event { external_id: ExternalId::new([7u8; 32]), source: SourceType::Api, destination, amount_sompi: 123 }
 }
 
 #[test]
@@ -21,7 +22,7 @@ fn test_event_id_when_same_event_then_is_stable() {
 #[test]
 fn test_validation_hash_when_inputs_change_then_changes() {
     let ev_hash = compute_event_id(&sample_event());
-    let tx_hash = [9u8; 32];
+    let tx_hash = TxTemplateHash::new([9u8; 32]);
     let per_input_a = vec![[1u8; 32], [2u8; 32]];
     let per_input_b = vec![[3u8; 32], [4u8; 32]];
     let a = validation_hash(&ev_hash, &tx_hash, &per_input_a);

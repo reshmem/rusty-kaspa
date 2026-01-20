@@ -1,5 +1,5 @@
 use igra_core::domain::crdt::{merge_event_states, EventCrdt, GSet, LWWRegister, SignatureRecord};
-use igra_core::foundation::{Hash32, PeerId, TransactionId};
+use igra_core::foundation::{EventId, PeerId, TransactionId, TxTemplateHash};
 
 #[test]
 fn test_gset_merge_properties() {
@@ -29,8 +29,8 @@ fn test_lww_register_basic() {
 
 #[test]
 fn test_event_crdt_threshold_and_merge() {
-    let event_hash: Hash32 = [1u8; 32];
-    let tx_hash: Hash32 = [2u8; 32];
+    let event_hash = EventId::new([1u8; 32]);
+    let tx_hash = TxTemplateHash::new([2u8; 32]);
     let mut crdt_a = EventCrdt::new(event_hash, tx_hash);
     let mut crdt_b = EventCrdt::new(event_hash, tx_hash);
 

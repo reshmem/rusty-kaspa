@@ -38,6 +38,14 @@ pub enum AuditEvent {
         validation_hash: String,
         timestamp_nanos: u64,
     },
+    ProposalEquivocationDetected {
+        event_id: String,
+        round: u32,
+        proposer_peer_id: String,
+        existing_tx_template_hash: String,
+        new_tx_template_hash: String,
+        timestamp_nanos: u64,
+    },
     PartialSignatureCreated {
         event_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

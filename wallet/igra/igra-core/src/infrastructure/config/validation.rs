@@ -33,10 +33,7 @@ impl AppConfig {
             errors.push("runtime.session_timeout_seconds must be > 0".to_string());
         }
         if self.runtime.session_timeout_seconds > MAX_SESSION_TIMEOUT_SECONDS {
-            errors.push(format!(
-                "runtime.session_timeout_seconds should not exceed {}",
-                MAX_SESSION_TIMEOUT_SECONDS
-            ));
+            errors.push(format!("runtime.session_timeout_seconds should not exceed {}", MAX_SESSION_TIMEOUT_SECONDS));
         }
 
         if let Some(group) = self.group.as_ref() {

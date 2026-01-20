@@ -12,10 +12,10 @@ pub use shared::validate_source_data;
 pub use shared::{canonical_external_id_from_raw, parse_destination, parse_external_id, ExpectedNetwork};
 
 use crate::domain::{Event, EventAuditData, SourceType, StoredEvent};
-use crate::foundation::{Hash32, ThresholdError};
+use crate::foundation::{EventId, ThresholdError};
 
 pub struct NormalizationResult {
-    pub event_id: Hash32,
+    pub event_id: EventId,
     pub event: Event,
     pub audit: EventAuditData,
     pub proof: Option<Vec<u8>>,

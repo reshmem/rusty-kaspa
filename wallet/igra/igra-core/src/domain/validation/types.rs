@@ -1,11 +1,11 @@
 //! Rich result types for message verification (no logging in domain).
 
-use crate::foundation::Hash32;
+use crate::foundation::EventId;
 
 #[derive(Debug, Clone)]
 pub struct HyperlaneVerificationResult {
     pub valid: bool,
-    pub event_id: Hash32,
+    pub event_id: EventId,
     pub validator_count: usize,
     pub signatures_checked: usize,
     pub valid_signatures: usize,
@@ -27,7 +27,7 @@ pub enum HyperlaneVerificationFailure {
 #[derive(Debug, Clone)]
 pub struct LayerZeroVerificationResult {
     pub valid: bool,
-    pub event_id: Hash32,
+    pub event_id: EventId,
     pub validator_count: usize,
     pub matching_validator_index: Option<usize>,
     pub failure_reason: Option<LayerZeroVerificationFailure>,

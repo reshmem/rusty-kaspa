@@ -1,4 +1,4 @@
-use crate::foundation::{Hash32, PeerId, TransactionId};
+use crate::foundation::{EventId, ExternalId, PeerId, TransactionId, TxTemplateHash};
 use kaspa_consensus_core::tx::ScriptPublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Event {
     /// External identifier in canonical bytes (e.g. Hyperlane message_id).
-    pub external_id: Hash32,
+    pub external_id: ExternalId,
     /// External source type + parameters.
     pub source: SourceType,
     /// Destination script (canonical bytes).
@@ -120,9 +120,9 @@ pub enum FeePaymentMode {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StoredEventCrdt {
     /// The cross-chain event being processed.
-    pub event_id: Hash32,
+    pub event_id: EventId,
     /// The specific transaction being signed (deterministically constructed).
-    pub tx_template_hash: Hash32,
+    pub tx_template_hash: TxTemplateHash,
     /// The canonical event payload (for reference / mid-flight joiners).
     pub signing_material: Option<CrdtSigningMaterial>,
     /// The KPSBT blob (for finalization).

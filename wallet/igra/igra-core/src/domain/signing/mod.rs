@@ -1,5 +1,4 @@
-use crate::foundation::Hash32;
-use crate::foundation::ThresholdError;
+use crate::foundation::{EventId, ThresholdError};
 use std::str::FromStr;
 
 pub mod aggregation;
@@ -54,5 +53,5 @@ impl FromStr for SigningBackendKind {
 
 pub trait SignerBackend: Send + Sync {
     fn kind(&self) -> SigningBackendKind;
-    fn sign(&self, kpsbt_blob: &[u8], event_id: &Hash32) -> Result<SigningResult, ThresholdError>;
+    fn sign(&self, kpsbt_blob: &[u8], event_id: &EventId) -> Result<SigningResult, ThresholdError>;
 }

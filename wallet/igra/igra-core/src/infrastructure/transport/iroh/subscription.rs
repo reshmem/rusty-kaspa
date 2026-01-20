@@ -1,5 +1,6 @@
 use super::traits::{SignatureVerifier, TransportSubscription};
 use super::{encoding, filtering};
+use crate::foundation::hx;
 use crate::foundation::ThresholdError;
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
@@ -57,7 +58,7 @@ where
                             warn!(
                                 "iroh gossip decode error error={} message_hash={} size={}",
                                 err,
-                                hex::encode(msg_hash.as_bytes()),
+                                hx(msg_hash.as_bytes()),
                                 message.content.len()
                             );
                             yield Err(err);

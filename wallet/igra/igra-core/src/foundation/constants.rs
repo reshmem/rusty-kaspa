@@ -164,6 +164,20 @@ pub const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
 /// Default CRDT completed-state retention TTL (seconds).
 pub const DEFAULT_CRDT_GC_TTL_SECS: u64 = 24 * 60 * 60;
 
+/// Hyperlane domainId for Kaspa mainnet (`"KASM"` as big-endian ASCII).
+///
+/// Hyperlane domain IDs are a `u32` namespace and are not required to match any chain-native ID.
+pub const HYPERLANE_DOMAIN_ID_KASPA_MAINNET: u32 = 0x4B41_534D;
+
+/// Hyperlane domainId for Kaspa testnet (`"KAST"` as big-endian ASCII).
+pub const HYPERLANE_DOMAIN_ID_KASPA_TESTNET: u32 = 0x4B41_5354;
+
+/// Hyperlane domainId for Kaspa devnet (`"KASD"` as big-endian ASCII).
+///
+/// Note: our local devnet currently uses the legacy value `7` for compatibility with existing
+/// scripts and configs. Use this constant for any future migration to an explicit namespace.
+pub const HYPERLANE_DOMAIN_ID_KASPA_DEVNET: u32 = 0x4B41_5344;
+
 #[cfg(test)]
 pub mod test {
     use super::*;

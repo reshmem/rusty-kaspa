@@ -1,9 +1,9 @@
 use igra_core::domain::coordination::{EventPhase, PhaseContext};
 use igra_core::domain::validation::{MessageVerifier, ValidationSource, VerificationReport};
 use igra_core::domain::{CrdtSigningMaterial, Event, EventAuditData, SourceType, StoredEvent};
-use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{ExternalId, GroupId, PeerId, ThresholdError, TxTemplateHash};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, ServiceConfig};
-use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
+use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
@@ -81,7 +81,7 @@ fn minimal_material() -> CrdtSigningMaterial {
     let destination = pay_to_script_hash_script(&redeem);
     CrdtSigningMaterial {
         event: Event {
-            external_id: [9u8; 32],
+            external_id: ExternalId::new([9u8; 32]),
             source: SourceType::Hyperlane { origin_domain: 1 },
             destination,
             amount_sompi: 25_000_000,
@@ -97,18 +97,19 @@ fn minimal_material() -> CrdtSigningMaterial {
 
 #[tokio::test]
 async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
-    let group_id: Hash32 = [7u8; 32];
+    let group_id = GroupId::new([7u8; 32]);
     let hub = Arc::new(MockHub::new());
     let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), group_id, 2));
     let store = Arc::new(MemoryStorage::new());
     let storage: Arc<dyn Storage> = store.clone();
     let phase_storage: Arc<dyn PhaseStorage> = store.clone();
     let rpc = Arc::new(UnimplementedRpc::new());
-    let flow = ServiceFlow::new_with_rpc(rpc, storage.clone(), transport.clone(), Arc::new(DenyAllVerifier))?;
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
+    let flow = ServiceFlow::new_with_rpc(rpc, kaspa_query, storage.clone(), transport.clone(), Arc::new(DenyAllVerifier))?;
 
     let material = minimal_material();
     let event_id = igra_core::domain::hashes::compute_event_id(&material.event);
-    let tx_template_hash: Hash32 = [2u8; 32];
+    let tx_template_hash = TxTemplateHash::new([2u8; 32]);
     let broadcast = EventStateBroadcast {
         event_id,
         tx_template_hash,
@@ -117,17 +118,16 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
         phase_context: Some(PhaseContext { round: 0, phase: EventPhase::Committed }),
     };
 
-    let err = handle_crdt_broadcast(
-        &AppConfig::default(),
-        &flow,
-        &transport,
-        &storage,
-        &phase_storage,
-        &PeerId::from("signer-1"),
-        broadcast,
-    )
-    .await
-    .expect_err("should reject invalid proof");
+    let local_peer_id = PeerId::from("signer-1");
+    let ctx = igra_service::service::coordination::crdt_handler::CrdtHandlerContext {
+        app_config: &AppConfig::default(),
+        flow: &flow,
+        transport: &transport,
+        storage: &storage,
+        phase_storage: &phase_storage,
+        local_peer_id: &local_peer_id,
+    };
+    let err = handle_crdt_broadcast(&ctx, broadcast).await.expect_err("should reject invalid proof");
     assert!(matches!(err, ThresholdError::EventSignatureInvalid));
 
     assert!(storage.get_event_crdt(&event_id, &tx_template_hash)?.is_none());
@@ -136,7 +136,7 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
 
 #[tokio::test]
 async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError> {
-    let group_id: Hash32 = [7u8; 32];
+    let group_id = GroupId::new([7u8; 32]);
     let hub = Arc::new(MockHub::new());
     let transport: Arc<dyn Transport> = Arc::new(MockTransport::new(hub, PeerId::from("signer-1"), group_id, 2));
     let store = Arc::new(MemoryStorage::new());
@@ -172,11 +172,12 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         ..Default::default()
     };
     let app_config = AppConfig { service, ..Default::default() };
-    let flow = ServiceFlow::new_with_rpc(rpc, storage.clone(), transport.clone(), Arc::new(AllowAllVerifier))?;
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
+    let flow = ServiceFlow::new_with_rpc(rpc, kaspa_query, storage.clone(), transport.clone(), Arc::new(AllowAllVerifier))?;
 
     let material = minimal_material();
     let event_id = igra_core::domain::hashes::compute_event_id(&material.event);
-    let tx_template_hash: Hash32 = [0u8; 32]; // malicious / wrong
+    let tx_template_hash = TxTemplateHash::new([0u8; 32]); // malicious / wrong
     let broadcast = EventStateBroadcast {
         event_id,
         tx_template_hash,
@@ -185,9 +186,16 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         phase_context: Some(PhaseContext { round: 0, phase: EventPhase::Committed }),
     };
 
-    let err = handle_crdt_broadcast(&app_config, &flow, &transport, &storage, &phase_storage, &PeerId::from("signer-1"), broadcast)
-        .await
-        .expect_err("should reject tx template hash mismatch");
+    let local_peer_id = PeerId::from("signer-1");
+    let ctx = igra_service::service::coordination::crdt_handler::CrdtHandlerContext {
+        app_config: &app_config,
+        flow: &flow,
+        transport: &transport,
+        storage: &storage,
+        phase_storage: &phase_storage,
+        local_peer_id: &local_peer_id,
+    };
+    let err = handle_crdt_broadcast(&ctx, broadcast).await.expect_err("should reject tx template hash mismatch");
     match err {
         ThresholdError::PsktMismatch { .. } => {}
         other => return Err(other),

@@ -2,10 +2,8 @@ use super::traits::{
     EventStateBroadcast, MessageEnvelope, ProposalBroadcast, SignatureSigner, SignatureVerifier, StateSyncRequest, StateSyncResponse,
     Transport, TransportMessage, TransportSubscription,
 };
-use crate::foundation::Hash32;
-use crate::foundation::SessionId;
-use crate::foundation::ThresholdError;
-use crate::foundation::GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS;
+use crate::foundation::{hx, hx32};
+use crate::foundation::{GroupId, Hash32, SessionId, ThresholdError, GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS};
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::iroh::{config::IrohConfig, encoding, subscription};
 use crate::infrastructure::transport::RateLimiter;
@@ -59,9 +57,9 @@ impl IrohTransport {
             )));
         }
         info!(
-            "creating iroh transport network_id={} group_id={} bootstrap_nodes={}",
+            "creating iroh transport network_id={} group_id={:#x} bootstrap_nodes={}",
             config.network_id,
-            hex::encode(config.group_id),
+            config.group_id,
             config.bootstrap_nodes.len()
         );
         let bootstrap = config
@@ -113,11 +111,11 @@ impl IrohTransport {
         })
     }
 
-    fn group_topic_id(group_id: &Hash32, network_id: u8) -> Hash32 {
+    fn group_topic_id(group_id: &GroupId, network_id: u8) -> Hash32 {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"kaspa-sign/v1");
         hasher.update(&[network_id]);
-        hasher.update(group_id);
+        hasher.update(group_id.as_hash());
         *hasher.finalize().as_bytes()
     }
 
@@ -142,12 +140,12 @@ impl IrohTransport {
         }
 
         info!(
-            "gossip publish stats ok_msgs={} ok_bytes={} interval_secs={} network_id={} group_id={}",
+            "gossip publish stats ok_msgs={} ok_bytes={} interval_secs={} network_id={} group_id={:#x}",
             ok_msgs,
             ok_bytes,
             GOSSIP_PUBLISH_INFO_REPORT_INTERVAL_NANOS / crate::foundation::NANOS_PER_SECOND,
             self.config.network_id,
-            hex::encode(self.config.group_id)
+            self.config.group_id
         );
     }
 
@@ -168,12 +166,12 @@ impl IrohTransport {
         let mut last_err: Option<String> = None;
         debug!(
             "publishing gossip message topic={} byte_len={} bootstrap_peers={}",
-            hex::encode(topic_id.as_bytes()),
+            hx(topic_id.as_bytes()),
             bytes.len(),
             self.bootstrap.len()
         );
         for attempt in 0..PUBLISH_RETRY_ATTEMPTS {
-            trace!("publish attempt attempt={} topic={} byte_len={}", attempt + 1, hex::encode(topic_id.as_bytes()), bytes.len());
+            trace!("publish attempt attempt={} topic={} byte_len={}", attempt + 1, hx(topic_id.as_bytes()), bytes.len());
             let mut topic = match self.gossip.subscribe(topic_id, self.bootstrap.clone()).await {
                 Ok(topic) => topic,
                 Err(err) => {
@@ -182,7 +180,7 @@ impl IrohTransport {
                     warn!(
                         "failed to subscribe for publish attempt={} topic={} error={}",
                         attempt + 1,
-                        hex::encode(topic_id.as_bytes()),
+                        hx(topic_id.as_bytes()),
                         err_str
                     );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
@@ -200,16 +198,11 @@ impl IrohTransport {
                             "published gossip message after retry kind={} attempt={} topic={} byte_len={}",
                             kind,
                             attempt + 1,
-                            hex::encode(topic_id.as_bytes()),
+                            hx(topic_id.as_bytes()),
                             bytes.len()
                         );
                     } else {
-                        debug!(
-                            "published gossip message kind={} topic={} byte_len={}",
-                            kind,
-                            hex::encode(topic_id.as_bytes()),
-                            bytes.len()
-                        );
+                        debug!("published gossip message kind={} topic={} byte_len={}", kind, hx(topic_id.as_bytes()), bytes.len());
                     }
 
                     self.publish_ok_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -223,7 +216,7 @@ impl IrohTransport {
                     warn!(
                         "failed to broadcast gossip message attempt={} topic={} error={}",
                         attempt + 1,
-                        hex::encode(topic_id.as_bytes()),
+                        hx(topic_id.as_bytes()),
                         err_str
                     );
                     if attempt + 1 < PUBLISH_RETRY_ATTEMPTS {
@@ -245,9 +238,9 @@ impl Transport for IrohTransport {
     async fn publish_event_state(&self, broadcast: EventStateBroadcast) -> Result<(), ThresholdError> {
         let topic = Self::group_topic_id(&self.config.group_id, self.config.network_id);
         debug!(
-            "publishing CRDT state event_id={} tx_template_hash={} sig_count={} completed={}",
-            hex::encode(broadcast.event_id),
-            hex::encode(broadcast.tx_template_hash),
+            "publishing CRDT state event_id={:#x} tx_template_hash={:#x} sig_count={} completed={}",
+            broadcast.event_id,
+            broadcast.tx_template_hash,
             broadcast.state.signatures.len(),
             broadcast.state.completion.is_some()
         );
@@ -327,10 +320,10 @@ impl Transport for IrohTransport {
         self.publish_bytes(topic, bytes, "state_sync_response").await
     }
 
-    async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+    async fn subscribe_group(&self, group_id: GroupId) -> Result<TransportSubscription, ThresholdError> {
         let topic = Self::group_topic_id(&group_id, self.config.network_id);
         let topic_id = TopicId::from(topic);
-        info!("subscribing to group gossip topic={} bootstrap_peers={}", hex::encode(topic), self.bootstrap.len());
+        info!("subscribing to group gossip topic={:#x} bootstrap_peers={}", hx32(&topic), self.bootstrap.len());
         let topic = self.gossip.subscribe(topic_id, self.bootstrap.clone()).await.map_err(|err| ThresholdError::TransportError {
             operation: "iroh gossip subscribe".to_string(),
             details: err.to_string(),

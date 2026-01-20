@@ -1,16 +1,16 @@
 use crate::domain::coordination::Proposal;
-use crate::foundation::{Hash32, PeerId};
+use crate::foundation::{EventId, PeerId, TxTemplateHash};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 struct HashVoteStats {
-    hash: Hash32,
+    hash: TxTemplateHash,
     vote_count: usize,
     lowest_proposer: PeerId,
 }
 
 impl HashVoteStats {
-    fn selection_key(&self) -> (std::cmp::Reverse<usize>, Hash32, &str) {
+    fn selection_key(&self) -> (std::cmp::Reverse<usize>, TxTemplateHash, &str) {
         (std::cmp::Reverse(self.vote_count), self.hash, self.lowest_proposer.as_str())
     }
 }
@@ -21,12 +21,12 @@ impl HashVoteStats {
 /// - Higher vote count wins
 /// - On ties, numerically-lower `tx_template_hash` wins
 /// - On ties, lowest `proposer_peer_id` wins
-pub fn quorum_hash(proposals: &[Proposal], commit_quorum: usize) -> Option<Hash32> {
+pub fn quorum_hash(proposals: &[Proposal], commit_quorum: usize) -> Option<TxTemplateHash> {
     if proposals.is_empty() || commit_quorum == 0 {
         return None;
     }
 
-    let mut stats_by_hash: HashMap<Hash32, HashVoteStats> = HashMap::new();
+    let mut stats_by_hash: HashMap<TxTemplateHash, HashVoteStats> = HashMap::new();
     for proposal in proposals {
         let stats = stats_by_hash.entry(proposal.tx_template_hash).or_insert_with(|| HashVoteStats {
             hash: proposal.tx_template_hash,
@@ -52,11 +52,11 @@ pub fn select_canonical_proposal_for_commit<'a>(proposals: &'a [Proposal], commi
         .min_by_key(|p| canonical_proposal_score(&event_id, p.round, &p.proposer_peer_id))
 }
 
-fn canonical_proposal_score(event_id: &Hash32, round: u32, proposer_peer_id: &PeerId) -> [u8; 32] {
+fn canonical_proposal_score(event_id: &EventId, round: u32, proposer_peer_id: &PeerId) -> [u8; 32] {
     const DOMAIN: &[u8] = b"igra:two_phase:canonical_proposal:v1:";
     let mut hasher = blake3::Hasher::new();
     hasher.update(DOMAIN);
-    hasher.update(event_id);
+    hasher.update(event_id.as_ref());
     hasher.update(&round.to_le_bytes());
     hasher.update(proposer_peer_id.as_str().as_bytes());
     let digest = hasher.finalize();
@@ -69,12 +69,13 @@ fn canonical_proposal_score(event_id: &Hash32, round: u32, proposer_peer_id: &Pe
 mod tests {
     use super::*;
     use crate::domain::model::{CrdtSigningMaterial, Event, EventAuditData, SourceType};
+    use crate::foundation::ExternalId;
     use kaspa_consensus_core::tx::ScriptPublicKey;
     use std::collections::BTreeMap;
 
-    fn proposal(hash: Hash32, peer: &str) -> Proposal {
+    fn proposal(hash: TxTemplateHash, peer: &str) -> Proposal {
         Proposal {
-            event_id: [1u8; 32],
+            event_id: EventId::new([1u8; 32]),
             round: 0,
             tx_template_hash: hash,
             kpsbt_blob: vec![],
@@ -82,7 +83,7 @@ mod tests {
             outputs: vec![],
             signing_material: CrdtSigningMaterial {
                 event: Event {
-                    external_id: [2u8; 32],
+                    external_id: ExternalId::new([2u8; 32]),
                     source: SourceType::Api,
                     destination: ScriptPublicKey::from_vec(0, vec![1]),
                     amount_sompi: 1,
@@ -101,7 +102,11 @@ mod tests {
 
     #[test]
     fn select_canonical_proposal_requires_single_hash_quorum() {
-        let proposals = vec![proposal([1u8; 32], "peer-1"), proposal([2u8; 32], "peer-2"), proposal([3u8; 32], "peer-3")];
+        let proposals = vec![
+            proposal(TxTemplateHash::new([1u8; 32]), "peer-1"),
+            proposal(TxTemplateHash::new([2u8; 32]), "peer-2"),
+            proposal(TxTemplateHash::new([3u8; 32]), "peer-3"),
+        ];
 
         let out = select_canonical_proposal_for_commit(&proposals, 3);
         assert!(out.is_none());
@@ -109,8 +114,8 @@ mod tests {
 
     #[test]
     fn select_canonical_proposal_is_deterministic_for_quorum_hash() {
-        let h = [9u8; 32];
-        let proposals = vec![proposal(h, "peer-b"), proposal(h, "peer-a"), proposal([8u8; 32], "peer-c")];
+        let h = TxTemplateHash::new([9u8; 32]);
+        let proposals = vec![proposal(h, "peer-b"), proposal(h, "peer-a"), proposal(TxTemplateHash::new([8u8; 32]), "peer-c")];
 
         let out = select_canonical_proposal_for_commit(&proposals, 2).expect("winner");
         assert_eq!(out.tx_template_hash, h);

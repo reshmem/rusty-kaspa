@@ -34,7 +34,7 @@ pub fn verify_event(event: &StoredEvent, validators: &[PublicKey]) -> Result<Lay
             failure_reason: Some(LayerZeroVerificationFailure::NoSignatureProvided),
         });
     };
-    let message = Message::from_digest_slice(&event_id)?;
+    let message = Message::from_digest_slice(event_id.as_ref())?;
     let sig = match signature.len() {
         64 => match SecpSignature::from_compact(signature) {
             Ok(sig) => sig,

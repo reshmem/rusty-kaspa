@@ -1,7 +1,7 @@
-use crate::service::coordination::two_phase_handler::try_commit_and_sign;
+use crate::service::coordination::two_phase_handler::{try_commit_and_sign, TwoPhaseHandlerContext};
 use crate::service::flow::ServiceFlow;
 use igra_core::domain::coordination::{EventPhase, TwoPhaseConfig};
-use igra_core::foundation::{now_nanos, Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{now_nanos, EventId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
@@ -44,6 +44,7 @@ async fn on_tick(
     local_peer_id: &PeerId,
 ) -> Result<(), ThresholdError> {
     let now = now_nanos();
+    let ctx = TwoPhaseHandlerContext { app_config, two_phase, flow, transport, storage, phase_storage, local_peer_id };
 
     // Proposing events: check for timeout.
     for event_id in phase_storage.get_events_in_phase(EventPhase::Proposing)? {
@@ -56,15 +57,10 @@ async fn on_tick(
         }
 
         // Last chance: commit if quorum formed.
-        if let Err(err) =
-            try_commit_and_sign(app_config, two_phase, flow, transport, storage, phase_storage, local_peer_id, event_id, phase.round)
-                .await
-        {
+        if let Err(err) = try_commit_and_sign(&ctx, event_id, phase.round).await {
             warn!(
-                "two-phase commit attempt failed; will retry via timeout path event_id={} round={} error={}",
-                hex::encode(event_id),
-                phase.round,
-                err
+                "two-phase commit attempt failed; will retry via timeout path event_id={:#x} round={} error={}",
+                event_id, phase.round, err
             );
         }
 
@@ -75,20 +71,21 @@ async fn on_tick(
         }
 
         if after.retry_count >= two_phase.retry.max_retries {
-            info!("two-phase abandon after max retries event_id={} retries={}", hex::encode(event_id), after.retry_count);
+            info!("two-phase abandon after max retries event_id={:#x} retries={}", event_id, after.retry_count);
             phase_storage.mark_abandoned(&event_id, now)?;
             continue;
         }
 
-        info!(
-            "two-phase timeout without quorum event_id={} round={} retry_count={}",
-            hex::encode(event_id),
-            after.round,
-            after.retry_count
-        );
+        info!("two-phase timeout without quorum event_id={:#x} round={} retry_count={}", event_id, after.round, after.retry_count);
         let bumped = phase_storage.fail_and_bump_round(&event_id, after.round, now)?;
         if bumped {
-            let _ = phase_storage.clear_stale_proposals(&event_id, after.round.saturating_add(1))?;
+            let cleared = phase_storage.clear_stale_proposals(&event_id, after.round.saturating_add(1))?;
+            debug!(
+                "two-phase cleared stale proposals after bump event_id={:#x} before_round={} cleared={}",
+                event_id,
+                after.round.saturating_add(1),
+                cleared
+            );
         }
     }
 
@@ -106,7 +103,7 @@ async fn on_tick(
         }
 
         let Some(event) = storage.get_event(&event_id)? else {
-            debug!("two-phase retry skipped: missing event event_id={}", hex::encode(event_id));
+            debug!("two-phase retry skipped: missing event event_id={:#x}", event_id);
             continue;
         };
 
@@ -123,55 +120,46 @@ async fn on_tick(
             Ok(out) => out,
             Err(err) => {
                 warn!(
-                    "two-phase failed to build local proposal on retry event_id={} round={} error={}",
-                    hex::encode(event_id),
-                    phase.round,
-                    err
+                    "two-phase failed to build local proposal on retry event_id={:#x} round={} error={}",
+                    event_id, phase.round, err
                 );
                 continue;
             }
         };
 
-        let _ = phase_storage.store_proposal(&proposal)?;
+        let store_result = phase_storage.store_proposal(&proposal)?;
+        if matches!(store_result, igra_core::infrastructure::storage::phase::StoreProposalResult::Stored) {
+            debug!(
+                "two-phase stored retry proposal event_id={:#x} round={} tx_template_hash={:#x}",
+                event_id, phase.round, proposal.tx_template_hash
+            );
+        }
         phase_storage.set_own_proposal_hash(&event_id, proposal.tx_template_hash)?;
         if let Err(err) = transport.publish_proposal(proposal.clone()).await {
-            warn!(
-                "two-phase failed to publish local proposal on retry event_id={} round={} error={}",
-                hex::encode(event_id),
-                phase.round,
-                err
-            );
+            warn!("two-phase failed to publish local proposal on retry event_id={:#x} round={} error={}", event_id, phase.round, err);
             continue;
         }
         info!(
-            "two-phase published local proposal (retry) event_id={} round={} retry_count={} tx_template_hash={}",
-            hex::encode(event_id),
-            phase.round,
-            phase.retry_count,
-            hex::encode(proposal.tx_template_hash)
+            "two-phase published local proposal (retry) event_id={:#x} round={} retry_count={} tx_template_hash={:#x}",
+            event_id, phase.round, phase.retry_count, proposal.tx_template_hash
         );
 
-        if let Err(err) =
-            try_commit_and_sign(app_config, two_phase, flow, transport, storage, phase_storage, local_peer_id, event_id, phase.round)
-                .await
-        {
-            warn!(
-                "two-phase commit attempt failed after retry proposal event_id={} round={} error={}",
-                hex::encode(event_id),
-                phase.round,
-                err
-            );
+        if let Err(err) = try_commit_and_sign(&ctx, event_id, phase.round).await {
+            warn!("two-phase commit attempt failed after retry proposal event_id={:#x} round={} error={}", event_id, phase.round, err);
         }
     }
 
     // Optional GC (very lightweight for now): clean terminal phases after 1 hour.
     let cutoff = now.saturating_sub(TERMINAL_PHASE_TTL_NS);
-    let _ = phase_storage.gc_events_older_than(cutoff)?;
+    let gc_deleted = phase_storage.gc_events_older_than(cutoff)?;
+    if gc_deleted > 0 {
+        debug!("two-phase GC deleted terminal events deleted={} cutoff_nanos={}", gc_deleted, cutoff);
+    }
 
     Ok(())
 }
 
-fn jittered_delay_ms(two_phase: &TwoPhaseConfig, event_id: &Hash32, local_peer_id: &PeerId, retry_count: u32) -> u64 {
+fn jittered_delay_ms(two_phase: &TwoPhaseConfig, event_id: &EventId, local_peer_id: &PeerId, retry_count: u32) -> u64 {
     let base = two_phase.retry.delay_for_retry(retry_count);
     let jitter = two_phase.retry.jitter_ms;
     if jitter == 0 {
@@ -179,7 +167,7 @@ fn jittered_delay_ms(two_phase: &TwoPhaseConfig, event_id: &Hash32, local_peer_i
     }
 
     let mut hasher = blake3::Hasher::new();
-    hasher.update(event_id);
+    hasher.update(event_id.as_hash());
     hasher.update(local_peer_id.as_str().as_bytes());
     hasher.update(&retry_count.to_le_bytes());
     let digest = hasher.finalize();

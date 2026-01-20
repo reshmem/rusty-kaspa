@@ -38,6 +38,8 @@ tokio = { workspace = true, features = ["fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo.git", branch = "main" }
 uuid = { version = "1.11.0", features = ["v4"] }
+alloy = { version = "0.7.3", features = ["full"] }
+serde_yaml = "0.9"
 
 [features]
 default = []
@@ -68,3 +70,7 @@ path = "src/bin/kaspa-threshold-service.rs"
 [[bin]]
 name = "fake_hyperlane_ism_api"
 path = "src/bin/fake_hyperlane_ism_api.rs"
+
+[[bin]]
+name = "hyperlane_anvil_sender"
+path = "src/bin/hyperlane_anvil_sender.rs"

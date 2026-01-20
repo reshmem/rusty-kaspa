@@ -1,4 +1,4 @@
-use crate::foundation::{Hash32, PeerId, ThresholdError};
+use crate::foundation::{EventId, PeerId, ThresholdError, TxTemplateHash};
 use crate::infrastructure::storage::Storage;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ impl CrdtCoordinator {
         Self { storage, local_peer_id }
     }
 
-    pub fn process_event(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<CrdtAction, ThresholdError> {
+    pub fn process_event(&self, event_id: &EventId, tx_template_hash: &TxTemplateHash) -> Result<CrdtAction, ThresholdError> {
         let state = self.storage.get_event_crdt(event_id, tx_template_hash)?;
         match state {
             Some(s) if s.completion.is_some() => Ok(CrdtAction::AlreadyComplete),
@@ -34,8 +34,8 @@ impl CrdtCoordinator {
 
     pub fn check_threshold(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         input_count: usize,
         required: usize,
     ) -> Result<bool, ThresholdError> {

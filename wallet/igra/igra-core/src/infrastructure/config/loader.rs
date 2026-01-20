@@ -155,7 +155,7 @@ fn figment_base(path: &Path, data_dir: &Path) -> Figment {
     }
     // Always seed data_dir into service.data_dir if the config doesn't set it.
     // (Done post-extraction to keep the figment pipeline simple.)
-    let _ = data_dir;
+    let _data_dir = data_dir;
     figment
 }
 

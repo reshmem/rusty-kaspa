@@ -1,7 +1,6 @@
 use crate::domain::pskt::results::{PsktBuildResult, PsktFinalizeResult, PsktSignResult, TransactionExtractionResult};
 use crate::domain::PartialSigRecord;
-use crate::foundation::Hash32;
-use crate::foundation::ThresholdError;
+use crate::foundation::{Hash32, ThresholdError, TxTemplateHash};
 use borsh::to_vec as borsh_to_vec;
 use kaspa_consensus_core::hashing::sighash::{calc_schnorr_signature_hash, SigHashReusedValuesUnsync};
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
@@ -118,13 +117,22 @@ pub fn apply_partial_sigs(pskt_blob: &[u8], partials: &[PartialSigRecord]) -> Re
     Ok(PSKT::from(inner))
 }
 
-pub fn tx_template_hash(pskt: &PSKT<Signer>) -> Result<Hash32, ThresholdError> {
+pub fn tx_template_hash(pskt: &PSKT<Signer>) -> Result<TxTemplateHash, ThresholdError> {
     let inner: &Inner = pskt;
     let tx = signable_tx_from_inner(inner);
     let bytes =
         borsh_to_vec(&tx.tx).map_err(|err| ThresholdError::SerializationError { format: "borsh".into(), details: err.to_string() })?;
     let hash = *blake3::hash(&bytes).as_bytes();
-    Ok(hash)
+    Ok(TxTemplateHash::from(hash))
+}
+
+pub fn validate_kpsbt_blob_matches_tx_template_hash(kpsbt_blob: &[u8], expected: &TxTemplateHash) -> Result<(), ThresholdError> {
+    let pskt = deserialize_pskt_signer(kpsbt_blob)?;
+    let computed = tx_template_hash(&pskt)?;
+    if computed != *expected {
+        return Err(ThresholdError::PsktMismatch { expected: expected.to_string(), actual: computed.to_string() });
+    }
+    Ok(())
 }
 
 pub fn input_hashes(pskt: &PSKT<Signer>) -> Result<Vec<Hash32>, ThresholdError> {

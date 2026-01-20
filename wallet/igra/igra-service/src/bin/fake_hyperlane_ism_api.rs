@@ -2,9 +2,9 @@ use blake3::Hash;
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneProof;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
 use kaspa_addresses::Address;
+use rand::seq::SliceRandom;
 use reqwest::Client;
 use reqwest::StatusCode;
-use rand::seq::SliceRandom;
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{Secp256k1, SecretKey};
 use serde::Deserialize;
@@ -142,10 +142,7 @@ fn parse_cli_unordered_events() -> Result<Option<u16>, String> {
 
 fn validate_unordered_events(value: u16) -> Result<(), String> {
     if !(UNORDERED_EVENTS_MIN..=UNORDERED_EVENTS_MAX).contains(&value) {
-        return Err(format!(
-            "--unordered-events must be between {} and {}",
-            UNORDERED_EVENTS_MIN, UNORDERED_EVENTS_MAX
-        ));
+        return Err(format!("--unordered-events must be between {} and {}", UNORDERED_EVENTS_MIN, UNORDERED_EVENTS_MAX));
     }
     Ok(())
 }
@@ -274,7 +271,7 @@ async fn main() -> Result<(), String> {
     if destination_address.is_empty() {
         return Err("HYPERLANE_DESTINATION must be set".to_string());
     }
-    let _ = Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
+    Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
     let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD").unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
     let recipient_bytes: [u8; 32] = hex::decode(recipient_payload.trim_start_matches("0x"))
         .map_err(|e| format!("invalid recipient payload: {e}"))?

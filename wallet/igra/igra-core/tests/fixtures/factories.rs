@@ -2,6 +2,7 @@
 
 use crate::fixtures::{TEST_COORDINATOR_PEER_ID, TEST_DESTINATION_ADDRESS, TEST_EXTERNAL_ID_RAW};
 use igra_core::domain::{Event, EventAuditData, GroupConfig, GroupMetadata, GroupPolicy, SourceType, StoredEvent};
+use igra_core::foundation::ExternalId;
 use kaspa_addresses::Address;
 use kaspa_txscript::pay_to_address_script;
 use std::collections::BTreeMap;
@@ -14,6 +15,7 @@ pub fn stored_event() -> StoredEvent {
         .as_slice()
         .try_into()
         .expect("external id is 32 bytes");
+    let external_id = ExternalId::new(external_id);
 
     StoredEvent {
         event: Event { external_id, source: SourceType::Api, destination, amount_sompi: 123 },

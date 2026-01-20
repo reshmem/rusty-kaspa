@@ -1,3 +1,4 @@
+use super::hyperlane_wire::RpcHyperlaneMessage;
 use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
 use blake3::Hasher;
@@ -6,14 +7,13 @@ use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Sign
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventResult, SigningEventWire};
 use igra_core::domain::SourceType;
 use igra_core::foundation::ThresholdError;
-use igra_core::infrastructure::hyperlane::{IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
+use igra_core::infrastructure::hyperlane::{decode_proof_metadata_hex, IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
 use kaspa_addresses::Address;
 use log::{debug, info, warn};
 use secp256k1::PublicKey;
-use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 struct ValidatorsAndThresholdParams {
@@ -33,37 +33,18 @@ struct ValidatorsAndThresholdResult {
 }
 
 #[derive(Debug, Deserialize)]
-struct RpcHyperlaneMessage {
-    pub version: u8,
-    pub nonce: u32,
-    pub origin: u32,
-    pub sender: H256,
-    pub destination: u32,
-    pub recipient: H256,
-    #[serde(deserialize_with = "deserialize_body_bytes")]
-    pub body: Vec<u8>,
-}
-
-impl From<RpcHyperlaneMessage> for HyperlaneMessage {
-    fn from(value: RpcHyperlaneMessage) -> Self {
-        HyperlaneMessage {
-            version: value.version,
-            nonce: value.nonce,
-            origin: value.origin,
-            sender: value.sender,
-            destination: value.destination,
-            recipient: value.recipient,
-            body: value.body,
-        }
-    }
+struct MailboxProcessParams {
+    pub message: RpcHyperlaneMessage,
+    pub metadata: MailboxMetadataParam,
+    #[serde(default)]
+    pub mode: Option<IsmMode>,
 }
 
 #[derive(Debug, Deserialize)]
-struct MailboxProcessParams {
-    pub message: RpcHyperlaneMessage,
-    pub metadata: MailboxMetadataParams,
-    #[serde(default)]
-    pub mode: Option<IsmMode>,
+#[serde(untagged)]
+enum MailboxMetadataParam {
+    Hex(String),
+    Structured(MailboxMetadataParams),
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,17 +75,12 @@ struct RpcMerkleProof {
 }
 
 #[derive(Debug, Serialize)]
-struct MailboxProcessResult {
-    pub status: &'static str,
-    pub message_id: String,
-    pub event_id: String,
-    pub root: String,
-    pub quorum: usize,
-    pub validators_used: Vec<String>,
-    pub config_hash: String,
-    pub mode: IsmMode,
-    pub session_id: String,
-    pub signing_submitted: bool,
+struct ProcessMessageResponse {
+    pub transaction_id: String,
+    pub transaction_hash: String,
+    pub gas_used: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 impl RpcCheckpointWithMessageId {
@@ -150,50 +126,6 @@ impl MailboxMetadataParams {
     }
 }
 
-fn deserialize_body_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct BodyVisitor;
-
-    impl<'de> Visitor<'de> for BodyVisitor {
-        type Value = Vec<u8>;
-
-        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.write_str("byte array or 0x-prefixed hex string")
-        }
-
-        fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            parse_body_str(v).map_err(E::custom)
-        }
-
-        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            self.visit_str(&v)
-        }
-    }
-
-    deserializer.deserialize_any(BodyVisitor)
-}
-
-fn parse_body_str(value: &str) -> Result<Vec<u8>, String> {
-    let stripped = value.trim();
-    let hex_str = stripped.trim_start_matches("0x");
-    hex::decode(hex_str).map_err(|_| "invalid message body hex".to_string())
-}
-
 fn parse_signature_hex(value: &str) -> Result<Signature, String> {
     let stripped = value.trim_start_matches("0x");
     let bytes = hex::decode(stripped).map_err(|_| "invalid signature hex".to_string())?;
@@ -211,14 +143,22 @@ fn format_h256(value: H256) -> String {
     format!("0x{}", hex::encode(value.as_bytes()))
 }
 
-fn format_pubkey(key: &PublicKey) -> String {
-    format!("0x{}", hex::encode(key.serialize_uncompressed()))
+fn pubkey_to_evm_address_h256(key: &PublicKey) -> [u8; 32] {
+    let uncompressed = key.serialize_uncompressed();
+    let digest = alloy::primitives::keccak256(&uncompressed[1..]);
+    let mut out = [0u8; 32];
+    out[12..].copy_from_slice(&digest.as_slice()[12..]);
+    out
+}
+
+fn format_validator_address(key: &PublicKey) -> String {
+    format!("0x{}", hex::encode(pubkey_to_evm_address_h256(key)))
 }
 
 fn format_config_hash(set: &ValidatorSet) -> String {
     let mut hasher = Hasher::new();
     for pk in &set.validators {
-        hasher.update(pk.serialize().as_slice());
+        hasher.update(&pubkey_to_evm_address_h256(pk)[12..]);
     }
     hasher.update(&[set.threshold]);
     hasher.update(ism_mode_str(&set.mode).as_bytes());
@@ -247,7 +187,7 @@ fn extract_signing_payload(message: &HyperlaneMessage) -> Result<SigningPayload,
     let rest = &body[8..];
     let recipient = String::from_utf8(rest.to_vec()).map_err(|_| "recipient must be utf8".to_string())?;
 
-    let _ = Address::try_from(recipient.as_str()).map_err(|_| "invalid recipient address".to_string())?;
+    Address::try_from(recipient.as_str()).map_err(|_| "invalid recipient address".to_string())?;
 
     Ok(SigningPayload { destination_address: recipient, amount_sompi })
 }
@@ -390,7 +330,7 @@ pub async fn handle_validators_and_threshold(
 
     let result = ValidatorsAndThresholdResult {
         domain,
-        validators: set.validators.iter().map(format_pubkey).collect(),
+        validators: set.validators.iter().map(format_validator_address).collect(),
         threshold: set.threshold,
         mode: set.mode.clone(),
         config_hash: format_config_hash(&set),
@@ -439,97 +379,231 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
     };
     let mode = params.mode.unwrap_or(set.mode.clone());
     debug!("selected ism mode mode={:?} threshold={} validator_count={}", mode, set.threshold, set.validators.len());
-    let metadata = match params.metadata.into_core(message.id(), mode.clone()) {
-        Ok(meta) => meta,
+    let message_id = message.id();
+    let message_id = {
+        let bytes = message_id.as_bytes();
+        if bytes.len() != 32 {
+            state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            return json_ok(
+                id,
+                ProcessMessageResponse {
+                    transaction_id: String::new(),
+                    transaction_hash: String::new(),
+                    gas_used: None,
+                    success: false,
+                    error: Some(format!("invalid message_id length {}", bytes.len())),
+                },
+            );
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(bytes);
+        igra_core::foundation::ExternalId::from(out)
+    };
+
+    // Fast-path idempotency: if already delivered, return success with known tx id.
+    match state.event_ctx.storage.hyperlane_get_delivery(&message_id) {
+        Ok(Some(delivery)) => {
+            state.metrics.inc_rpc_request("hyperlane.mailbox_process", "ok");
+            return json_ok(
+                id,
+                ProcessMessageResponse {
+                    transaction_id: format!("0x{}", delivery.tx_id),
+                    transaction_hash: format!("0x{}", delivery.tx_id),
+                    gas_used: None,
+                    success: true,
+                    error: None,
+                },
+            );
+        }
+        Ok(None) => {}
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-            debug!("invalid mailbox metadata error={}", err);
-            return json_err(id, RpcErrorCode::InvalidParams, err);
+            return json_ok(
+                id,
+                ProcessMessageResponse {
+                    transaction_id: String::new(),
+                    transaction_hash: String::new(),
+                    gas_used: None,
+                    success: false,
+                    error: Some(err.to_string()),
+                },
+            );
         }
     };
 
-    match ism.verify_proof(&message, &metadata, mode.clone()) {
-        Ok(report) => {
-            debug!(
-                "hyperlane proof verified message_id={} root={} quorum={} validators_used={}",
-                format_h256(report.message_id),
-                format_h256(report.root),
-                report.quorum,
-                report.validators_used.len()
-            );
-            let session_id = derive_session_id_hex(state.group_id_hex.as_deref(), report.message_id);
-            if session_id.is_empty() {
+    let metadata = match params.metadata {
+        MailboxMetadataParam::Hex(hex_value) => match decode_proof_metadata_hex(mode.clone(), &message, &hex_value) {
+            Ok(meta) => meta,
+            Err(err) => {
                 state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-                debug!("missing or invalid group_id for session derivation");
-                return json_err(id, RpcErrorCode::MissingGroupId, "missing or invalid group_id for session derivation");
+                debug!("invalid mailbox metadata hex error={}", err);
+                return json_ok(
+                    id,
+                    ProcessMessageResponse {
+                        transaction_id: String::new(),
+                        transaction_hash: String::new(),
+                        gas_used: None,
+                        success: false,
+                        error: Some(err.to_string()),
+                    },
+                );
             }
-            let signing_submitted = match submit_signing_from_hyperlane(
-                &state.event_ctx,
-                &message,
-                &metadata,
-                &session_id,
-                &set,
-                &state.coordinator_peer_id,
-                state.session_expiry_seconds,
-                Some(format_h256(report.message_id)),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
-                    // Log validation errors at debug to avoid spam from repeated requests
-                    // Real errors (RPC failures, storage errors) stay at warn
-                    let err_string = err.to_string();
-                    let is_validation_error = err_string.contains("invalid recipient")
-                        || err_string.contains("destination_address")
-                        || err_string.contains("amount_sompi")
-                        || err_string.contains("body too short")
-                        || err_string.contains("event already processed");
-                    if is_validation_error {
-                        debug!("hyperlane signing event rejected message_id={} error={}", format_h256(message.id()), err_string);
-                    } else {
-                        warn!(
-                            "failed to submit signing event from hyperlane message_id={} session_id={} error={}",
-                            format_h256(message.id()),
-                            session_id,
-                            err_string
-                        );
-                    }
-                    return json_err(id, RpcErrorCode::SigningFailed, err_string);
-                }
-            };
-            info!(
-                "hyperlane signing event submitted session_id={} event_id={} tx_template_hash={}",
-                session_id, signing_submitted.event_id_hex, signing_submitted.tx_template_hash_hex
-            );
+        },
+        MailboxMetadataParam::Structured(params) => match params.into_core(message.id(), mode.clone()) {
+            Ok(meta) => meta,
+            Err(err) => {
+                state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+                debug!("invalid mailbox metadata error={}", err);
+                return json_err(id, RpcErrorCode::InvalidParams, err);
+            }
+        },
+    };
 
-            let result = MailboxProcessResult {
-                status: "proven",
-                message_id: format_h256(report.message_id),
-                event_id: format!("0x{}", signing_submitted.event_id_hex),
-                root: format_h256(report.root),
-                quorum: report.quorum,
-                validators_used: report.validators_used.iter().map(format_pubkey).collect(),
-                config_hash: format_config_hash(&set),
-                mode,
-                session_id,
-                signing_submitted: true,
-            };
-            state.metrics.inc_rpc_request("hyperlane.mailbox_process", "ok");
-            json_ok(id, result)
-        }
+    let message_id_h256 = message.id();
+    let report = match ism.verify_proof(&message, &metadata, mode.clone()) {
+        Ok(report) => report,
         Err(err) => {
             state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
             warn!(
                 "hyperlane proof verification failed message_id={} origin_domain={} destination_domain={} error={}",
-                format_h256(message.id()),
+                format_h256(message_id_h256),
                 message.origin,
                 message.destination,
                 err
             );
-            json_err(id, RpcErrorCode::InternalError, err)
+            return json_ok(
+                id,
+                ProcessMessageResponse {
+                    transaction_id: String::new(),
+                    transaction_hash: String::new(),
+                    gas_used: None,
+                    success: false,
+                    error: Some(err),
+                },
+            );
         }
+    };
+    debug!(
+        "hyperlane proof verified message_id={} root={} quorum={} validators_used={}",
+        format_h256(report.message_id),
+        format_h256(report.root),
+        report.quorum,
+        report.validators_used.len()
+    );
+
+    let session_id = derive_session_id_hex(state.group_id_hex.as_deref(), report.message_id);
+    if session_id.is_empty() {
+        state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+        debug!("missing or invalid group_id for session derivation");
+        return json_err(id, RpcErrorCode::MissingGroupId, "missing or invalid group_id for session derivation");
+    }
+
+    let submit_result = submit_signing_from_hyperlane(
+        &state.event_ctx,
+        &message,
+        &metadata,
+        &session_id,
+        &set,
+        &state.coordinator_peer_id,
+        state.session_expiry_seconds,
+        Some(format_h256(report.message_id)),
+    )
+    .await;
+
+    match submit_result {
+        Ok(signing_submitted) => {
+            info!(
+                "hyperlane signing event submitted session_id={} event_id={} tx_template_hash={}",
+                session_id, signing_submitted.event_id_hex, signing_submitted.tx_template_hash_hex
+            );
+        }
+        Err(err) => {
+            let err_string = err.to_string();
+            let is_validation_error = err_string.contains("invalid recipient")
+                || err_string.contains("destination_address")
+                || err_string.contains("amount_sompi")
+                || err_string.contains("body too short")
+                || err_string.contains("event already processed");
+            if is_validation_error {
+                debug!("hyperlane signing event rejected message_id={} error={}", format_h256(message_id_h256), err_string);
+            } else {
+                warn!(
+                    "failed to submit signing event from hyperlane message_id={} session_id={} error={}",
+                    format_h256(message_id_h256),
+                    session_id,
+                    err_string
+                );
+            }
+            // If already completed, we still might be able to return the tx id via the delivery index.
+            if matches!(err, ThresholdError::EventReplayed(_)) {
+                debug!(
+                    "hyperlane mailbox_process observed EventReplayed; waiting for delivery index message_id={}",
+                    format_h256(message_id_h256)
+                );
+            } else {
+                state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+                return json_ok(
+                    id,
+                    ProcessMessageResponse {
+                        transaction_id: String::new(),
+                        transaction_hash: String::new(),
+                        gas_used: None,
+                        success: false,
+                        error: Some(err_string),
+                    },
+                );
+            }
+        }
+    }
+
+    // Wait for CRDT completion to propagate and be indexed as a Hyperlane delivery record.
+    const POLL_INTERVAL_MS: u64 = 250;
+    let wait_seconds = state.hyperlane_mailbox_wait_seconds.max(1);
+    let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+    loop {
+        match state.event_ctx.storage.hyperlane_get_delivery(&message_id) {
+            Ok(Some(delivery)) => {
+                state.metrics.inc_rpc_request("hyperlane.mailbox_process", "ok");
+                return json_ok(
+                    id,
+                    ProcessMessageResponse {
+                        transaction_id: format!("0x{}", delivery.tx_id),
+                        transaction_hash: format!("0x{}", delivery.tx_id),
+                        gas_used: Some("100000".to_string()),
+                        success: true,
+                        error: None,
+                    },
+                );
+            }
+            Ok(None) => {}
+            Err(err) => {
+                state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+                return json_ok(
+                    id,
+                    ProcessMessageResponse {
+                        transaction_id: String::new(),
+                        transaction_hash: String::new(),
+                        gas_used: None,
+                        success: false,
+                        error: Some(err.to_string()),
+                    },
+                );
+            }
+        }
+        if Instant::now() >= deadline {
+            state.metrics.inc_rpc_request("hyperlane.mailbox_process", "error");
+            return json_ok(
+                id,
+                ProcessMessageResponse {
+                    transaction_id: String::new(),
+                    transaction_hash: String::new(),
+                    gas_used: None,
+                    success: false,
+                    error: Some("pending: signing ceremony not completed yet".to_string()),
+                },
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -543,8 +617,9 @@ mod tests {
     use igra_core::domain::coordination::TwoPhaseConfig;
     use igra_core::domain::validation::NoopVerifier;
     use igra_core::domain::GroupPolicy;
-    use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+    use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
+    use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
     use igra_core::infrastructure::storage::RocksStorage;
@@ -575,7 +650,7 @@ mod tests {
             Ok(())
         }
 
-        async fn subscribe_group(&self, _group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+        async fn subscribe_group(&self, _group_id: GroupId) -> Result<TransportSubscription, ThresholdError> {
             Ok(TransportSubscription::new(Box::pin(stream::empty())))
         }
     }
@@ -600,6 +675,7 @@ mod tests {
             event_ctx: ctx,
             rpc_token: None,
             node_rpc_url: "grpc://127.0.0.1:16110".to_string(),
+            kaspa_query: Arc::new(KaspaGrpcQueryClient::unimplemented()),
             metrics: Arc::new(Metrics::new().expect("metrics")),
             rate_limiter: Arc::new(crate::api::RateLimiter::new()),
             hyperlane_ism: None,
@@ -608,6 +684,7 @@ mod tests {
             rate_limit_rps: 30,
             rate_limit_burst: 60,
             session_expiry_seconds: 600,
+            hyperlane_mailbox_wait_seconds: 10,
         }
     }
 

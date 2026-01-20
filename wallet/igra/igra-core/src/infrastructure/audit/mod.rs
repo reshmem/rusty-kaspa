@@ -11,7 +11,13 @@ pub struct StructuredAuditLogger;
 
 impl AuditLogger for StructuredAuditLogger {
     fn log(&self, event: AuditEvent) {
-        let json = serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"serialize_failed\"}".to_string());
+        let json = match serde_json::to_string(&event) {
+            Ok(json) => json,
+            Err(err) => {
+                warn!("audit: failed to serialize audit event error={}", err);
+                "{\"type\":\"serialize_failed\"}".to_string()
+            }
+        };
         debug!(target: "igra::audit::json", "audit event audit_event={}", json);
         info!(target: "igra::audit::human", "audit summary={}", human_summary(&event));
     }
@@ -32,10 +38,26 @@ impl AuditLogger for FileAuditLogger {
     fn log(&self, event: AuditEvent) {
         use std::io::Write;
 
-        let json = serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"serialize_failed\"}".to_string());
-        if let Ok(mut file) = self.file.lock() {
-            let _ = writeln!(file, "{}", json);
-            let _ = file.flush();
+        let json = match serde_json::to_string(&event) {
+            Ok(json) => json,
+            Err(err) => {
+                warn!("audit: failed to serialize audit event for file logger error={}", err);
+                "{\"type\":\"serialize_failed\"}".to_string()
+            }
+        };
+        match self.file.lock() {
+            Ok(mut file) => {
+                if let Err(err) = writeln!(file, "{}", json) {
+                    warn!("audit: failed to write audit event to file error={}", err);
+                    return;
+                }
+                if let Err(err) = file.flush() {
+                    warn!("audit: failed to flush audit event to file error={}", err);
+                }
+            }
+            Err(err) => {
+                warn!("audit: failed to lock audit file mutex error={}", err);
+            }
         }
     }
 }
@@ -130,6 +152,21 @@ fn human_summary(event: &AuditEvent) -> String {
                 reason.clone().unwrap_or_else(|| "-".to_string())
             )
         }
+        AuditEvent::ProposalEquivocationDetected {
+            event_id,
+            round,
+            proposer_peer_id,
+            existing_tx_template_hash,
+            new_tx_template_hash,
+            ..
+        } => format!(
+            "AUDIT: proposal equivocation detected - proposer={} round={} event_id={} existing_hash={} new_hash={}",
+            proposer_peer_id,
+            round,
+            short_id(event_id),
+            short_id(existing_tx_template_hash),
+            short_id(new_tx_template_hash)
+        ),
         AuditEvent::PartialSignatureCreated { event_id, external_request_id, signer_peer_id, input_count, .. } => format!(
             "AUDIT: partial signatures created - signer={} inputs={} (external_request: {}, event_id: {})",
             signer_peer_id,

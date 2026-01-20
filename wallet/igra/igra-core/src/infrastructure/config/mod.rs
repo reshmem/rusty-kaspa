@@ -70,10 +70,8 @@ pub fn resolve_data_dir() -> Result<PathBuf, ThresholdError> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    let cwd = std::env::current_dir().map_err(|err| ThresholdError::StorageError {
-        operation: "env::current_dir".to_string(),
-        details: err.to_string(),
-    })?;
+    let cwd = std::env::current_dir()
+        .map_err(|err| ThresholdError::StorageError { operation: "env::current_dir".to_string(), details: err.to_string() })?;
     Ok(cwd.join(".igra"))
 }
 

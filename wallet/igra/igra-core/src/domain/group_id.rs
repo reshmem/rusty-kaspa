@@ -1,10 +1,10 @@
 use crate::domain::model::GroupConfig;
-use crate::foundation::{Hash32, ThresholdError};
+use crate::foundation::{GroupId, ThresholdError};
 use bincode::Options;
 
 #[derive(Debug, Clone)]
 pub struct GroupIdComputationResult {
-    pub group_id: Hash32,
+    pub group_id: GroupId,
     pub member_count: usize,
     pub threshold_m: u16,
     pub threshold_n: u16,
@@ -14,8 +14,8 @@ pub struct GroupIdComputationResult {
 #[derive(Debug, Clone)]
 pub struct GroupIdVerificationResult {
     pub matches: bool,
-    pub computed: Hash32,
-    pub expected: Hash32,
+    pub computed: GroupId,
+    pub expected: GroupId,
 }
 
 pub fn compute_group_id(config: &GroupConfig) -> Result<GroupIdComputationResult, ThresholdError> {
@@ -44,7 +44,7 @@ pub fn compute_group_id(config: &GroupConfig) -> Result<GroupIdComputationResult
     hasher.update(&policy);
 
     Ok(GroupIdComputationResult {
-        group_id: *hasher.finalize().as_bytes(),
+        group_id: GroupId::from(*hasher.finalize().as_bytes()),
         member_count: config.member_pubkeys.len(),
         threshold_m: config.threshold_m,
         threshold_n: config.threshold_n,
@@ -52,7 +52,7 @@ pub fn compute_group_id(config: &GroupConfig) -> Result<GroupIdComputationResult
     })
 }
 
-pub fn verify_group_id(config: &GroupConfig, expected: &Hash32) -> Result<GroupIdVerificationResult, ThresholdError> {
+pub fn verify_group_id(config: &GroupConfig, expected: &GroupId) -> Result<GroupIdVerificationResult, ThresholdError> {
     let computed = compute_group_id(config)?.group_id;
     Ok(GroupIdVerificationResult { matches: &computed == expected, computed, expected: *expected })
 }

@@ -1,9 +1,10 @@
 //! Event-level CRDT state for signature collection.
 
 use super::{LWWRegister, SignatureKey, SignatureRecord};
-use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
+use crate::foundation::{EventId, TxTemplateHash};
 use hex;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -14,10 +15,10 @@ use super::CompletionInfo;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct EventCrdt {
     /// The cross-chain event being processed (for grouping/audit).
-    pub event_id: Hash32,
+    pub event_id: EventId,
 
     /// The specific transaction being signed (for signature compatibility).
-    pub tx_template_hash: Hash32,
+    pub tx_template_hash: TxTemplateHash,
 
     /// G-Set of signatures keyed by (input_index, pubkey).
     signatures: HashMap<SignatureKey, SignatureRecord>,
@@ -31,7 +32,7 @@ pub struct EventCrdt {
 
 impl EventCrdt {
     /// Create a new EventCrdt for the given (event_id, tx_template_hash) pair.
-    pub fn new(event_id: Hash32, tx_template_hash: Hash32) -> Self {
+    pub fn new(event_id: EventId, tx_template_hash: TxTemplateHash) -> Self {
         Self { event_id, tx_template_hash, signatures: HashMap::new(), completion: LWWRegister::new(), version: 0 }
     }
 
@@ -100,23 +101,39 @@ impl EventCrdt {
     /// Returns the number of changes made.
     pub fn merge(&mut self, other: &EventCrdt) -> usize {
         if self.event_id != other.event_id || self.tx_template_hash != other.tx_template_hash {
+            debug!(
+                "crdt: merge rejected event_id_match={} tx_template_hash_match={} self_event_id={:#x} other_event_id={:#x} self_tx_template_hash={:#x} other_tx_template_hash={:#x}",
+                self.event_id == other.event_id,
+                self.tx_template_hash == other.tx_template_hash,
+                self.event_id,
+                other.event_id,
+                self.tx_template_hash,
+                other.tx_template_hash
+            );
             return 0;
         }
 
         let mut changes = 0usize;
+        let mut signature_changes = 0usize;
         for (key, record) in &other.signatures {
             if !self.signatures.contains_key(key) {
                 self.signatures.insert(key.clone(), record.clone());
                 changes += 1;
+                signature_changes += 1;
             }
         }
 
-        if self.completion.merge(&other.completion) {
+        let completion_changed = self.completion.merge(&other.completion);
+        if completion_changed {
             changes += 1;
         }
 
         if changes > 0 {
             self.version += 1;
+            debug!(
+                "crdt: merge applied event_id={:#x} tx_template_hash={:#x} signature_changes={} completion_changed={}",
+                self.event_id, self.tx_template_hash, signature_changes, completion_changed
+            );
         }
         changes
     }
@@ -128,13 +145,13 @@ impl EventCrdt {
 
     /// Validate that the CRDT is self-consistent.
     pub fn validate(&self) -> Result<(), ThresholdError> {
-        if self.event_id == [0u8; 32] {
+        if self.event_id == EventId::default() {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
                 details: format!("missing event_id, tx_template_hash={}", hex::encode(self.tx_template_hash)),
             });
         }
-        if self.tx_template_hash == [0u8; 32] {
+        if self.tx_template_hash == TxTemplateHash::default() {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
                 details: format!("missing tx_template_hash, event_id={}", hex::encode(self.event_id)),
@@ -166,9 +183,9 @@ mod tests {
         }
     }
 
-    const EVENT_HASH: Hash32 = [1u8; 32];
-    const TX_HASH: Hash32 = [2u8; 32];
-    const DIFFERENT_TX_HASH: Hash32 = [3u8; 32];
+    const EVENT_HASH: EventId = EventId::new([1u8; 32]);
+    const TX_HASH: TxTemplateHash = TxTemplateHash::new([2u8; 32]);
+    const DIFFERENT_TX_HASH: TxTemplateHash = TxTemplateHash::new([3u8; 32]);
 
     #[test]
     fn test_add_signature() {

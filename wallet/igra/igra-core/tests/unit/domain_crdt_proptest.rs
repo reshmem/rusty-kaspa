@@ -1,5 +1,5 @@
 use igra_core::domain::crdt::{merge_event_states, CompletionInfo, EventCrdt, SignatureRecord};
-use igra_core::foundation::{Hash32, PeerId, TransactionId};
+use igra_core::foundation::{EventId, PeerId, TransactionId, TxTemplateHash};
 use std::collections::BTreeSet;
 
 fn next_u64(state: &mut u64) -> u64 {
@@ -31,14 +31,14 @@ fn sig_key_set(crdt: &EventCrdt) -> BTreeSet<(u32, Vec<u8>)> {
     crdt.signatures().map(|s| (s.input_index, s.pubkey.clone())).collect()
 }
 
-fn completion_key(crdt: &EventCrdt) -> Option<(Hash32, PeerId, u64)> {
-    crdt.completion().map(|c| (*c.tx_id.as_hash(), c.submitter_peer_id.clone(), c.timestamp_nanos))
+fn completion_key(crdt: &EventCrdt) -> Option<(TransactionId, PeerId, u64)> {
+    crdt.completion().map(|c| (c.tx_id, c.submitter_peer_id.clone(), c.timestamp_nanos))
 }
 
 #[test]
 fn merge_commutative_for_signatures_and_completion() {
-    let event_hash: Hash32 = [1u8; 32];
-    let tx_hash: Hash32 = [2u8; 32];
+    let event_hash = EventId::new([1u8; 32]);
+    let tx_hash = TxTemplateHash::new([2u8; 32]);
 
     for seed in 0u64..100u64 {
         let mut a = EventCrdt::new(event_hash, tx_hash);
@@ -88,8 +88,8 @@ fn merge_commutative_for_signatures_and_completion() {
 
 #[test]
 fn merge_idempotent_for_signatures_and_completion() {
-    let event_hash: Hash32 = [9u8; 32];
-    let tx_hash: Hash32 = [8u8; 32];
+    let event_hash = EventId::new([9u8; 32]);
+    let tx_hash = TxTemplateHash::new([8u8; 32]);
 
     for seed in 0u64..100u64 {
         let mut crdt = EventCrdt::new(event_hash, tx_hash);

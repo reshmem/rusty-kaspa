@@ -1,18 +1,18 @@
 use crate::domain::{Event, SourceType};
-use crate::foundation::Hash32;
+use crate::foundation::{EventId, Hash32, TxTemplateHash};
 use blake3::Hasher;
 
 const EVENT_ID_DOMAIN_V1: &[u8] = b"igra:event:v1:";
 
-pub fn compute_event_id(event: &Event) -> Hash32 {
+pub fn compute_event_id(event: &Event) -> EventId {
     let mut buf = Vec::with_capacity(128);
     buf.extend_from_slice(EVENT_ID_DOMAIN_V1);
     encode_event_v1(event, &mut buf);
-    *blake3::hash(&buf).as_bytes()
+    EventId::from(*blake3::hash(&buf).as_bytes())
 }
 
 fn encode_event_v1(event: &Event, out: &mut Vec<u8>) {
-    out.extend_from_slice(&event.external_id);
+    out.extend_from_slice(event.external_id.as_hash());
     encode_source_v1(&event.source, out);
 
     out.extend_from_slice(&event.destination.version().to_le_bytes());
@@ -38,10 +38,10 @@ fn encode_source_v1(source: &SourceType, out: &mut Vec<u8>) {
     }
 }
 
-pub fn validation_hash(event_id: &Hash32, tx_template_hash: &Hash32, per_input_hashes: &[Hash32]) -> Hash32 {
+pub fn validation_hash(event_id: &EventId, tx_template_hash: &TxTemplateHash, per_input_hashes: &[Hash32]) -> Hash32 {
     let mut hasher = Hasher::new();
-    hasher.update(event_id);
-    hasher.update(tx_template_hash);
+    hasher.update(event_id.as_hash());
+    hasher.update(tx_template_hash.as_hash());
     for hash in per_input_hashes {
         hasher.update(hash);
     }
@@ -59,7 +59,7 @@ mod tests {
         let address = Address::try_from("kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw").unwrap();
         let destination = pay_to_address_script(&address);
         let event = Event {
-            external_id: [0x42; 32],
+            external_id: crate::foundation::ExternalId::from([0x42; 32]),
             source: SourceType::Hyperlane { origin_domain: 1 },
             destination,
             amount_sompi: 1_000_000,

@@ -1,5 +1,5 @@
 use igra_core::domain::{Event, EventAuditData, SourceType, StoredEvent};
-use igra_core::foundation::{Hash32, PeerId, ThresholdError, TransactionId};
+use igra_core::foundation::{EventId, ExternalId, PeerId, ThresholdError, TransactionId, TxTemplateHash};
 use igra_core::infrastructure::storage::{RocksStorage, Storage};
 use igra_core::infrastructure::transport::messages::{CrdtSignature, EventCrdtState};
 use kaspa_txscript::standard::pay_to_script_hash_script;
@@ -11,8 +11,8 @@ fn test_crdt_storage_roundtrip_and_checkpoint() -> Result<(), ThresholdError> {
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = RocksStorage::open_in_dir(temp_dir.path()).expect("open rocksdb");
 
-    let event_id: Hash32 = [1u8; 32];
-    let tx_hash: Hash32 = [2u8; 32];
+    let event_id = EventId::new([1u8; 32]);
+    let tx_hash = TxTemplateHash::new([2u8; 32]);
 
     let incoming = EventCrdtState {
         signatures: vec![CrdtSignature {
@@ -47,8 +47,8 @@ fn test_crdt_storage_roundtrip_and_checkpoint() -> Result<(), ThresholdError> {
 async fn test_concurrent_crdt_updates() -> Result<(), ThresholdError> {
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = std::sync::Arc::new(RocksStorage::open_in_dir(temp_dir.path()).expect("open rocksdb"));
-    let event_id: Hash32 = [1u8; 32];
-    let tx_hash: Hash32 = [2u8; 32];
+    let event_id = EventId::new([1u8; 32]);
+    let tx_hash = TxTemplateHash::new([2u8; 32]);
 
     let mut handles = Vec::new();
     for i in 0..10u8 {
@@ -85,8 +85,8 @@ fn test_mark_completed_is_idempotent() -> Result<(), ThresholdError> {
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = RocksStorage::open_in_dir(temp_dir.path()).expect("open rocksdb");
 
-    let event_id: Hash32 = [7u8; 32];
-    let tx_hash: Hash32 = [8u8; 32];
+    let event_id = EventId::new([7u8; 32]);
+    let tx_hash = TxTemplateHash::new([8u8; 32]);
 
     let incoming = EventCrdtState { signatures: vec![], completion: None, signing_material: None, kpsbt_blob: None, version: 0 };
     storage.merge_event_crdt(&event_id, &tx_hash, &incoming, None, None)?;
@@ -107,20 +107,20 @@ fn test_daily_volume_requires_event_record() -> Result<(), ThresholdError> {
     let storage = RocksStorage::open_in_dir(temp_dir.path()).expect("open rocksdb");
 
     // Case 1: completion is recorded, but the event record is missing => volume does not update.
-    let event_id_1: Hash32 = [11u8; 32];
-    let tx_hash_1: Hash32 = [12u8; 32];
+    let event_id_1 = EventId::new([11u8; 32]);
+    let tx_hash_1 = TxTemplateHash::new([12u8; 32]);
     let submitter = PeerId::from("submitter");
     let tx_id = TransactionId::from([13u8; 32]);
     storage.mark_crdt_completed(&event_id_1, &tx_hash_1, tx_id, &submitter, 10, None)?;
     assert_eq!(storage.get_volume_since(0)?, 0);
 
     // Case 2: event exists before completion => volume updates on first completion.
-    let event_id_2: Hash32 = [21u8; 32];
-    let tx_hash_2: Hash32 = [22u8; 32];
+    let event_id_2 = EventId::new([21u8; 32]);
+    let tx_hash_2 = TxTemplateHash::new([22u8; 32]);
     let redeem = vec![1u8, 2, 3];
     let destination = pay_to_script_hash_script(&redeem);
     let stored_event = StoredEvent {
-        event: Event { external_id: [99u8; 32], source: SourceType::Api, destination, amount_sompi: 4242 },
+        event: Event { external_id: ExternalId::new([99u8; 32]), source: SourceType::Api, destination, amount_sompi: 4242 },
         received_at_nanos: 0,
         audit: EventAuditData { external_id_raw: "x".to_string(), destination_raw: "y".to_string(), source_data: BTreeMap::new() },
         proof: None,

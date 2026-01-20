@@ -1,5 +1,5 @@
 use igra_core::domain::coordination::EventPhase;
-use igra_core::foundation::{now_nanos, Hash32, ThresholdError};
+use igra_core::foundation::{now_nanos, EventId, ThresholdError};
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use log::{info, warn};
@@ -27,7 +27,7 @@ fn report_unfinalized_events(storage: &dyn Storage, phase_storage: &dyn PhaseSto
 
     let phases = [EventPhase::Proposing, EventPhase::Committed, EventPhase::Failed, EventPhase::Abandoned];
     let mut counts_by_phase: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut unfinalized: Vec<(Hash32, EventPhase, u32, u32, u64)> = Vec::new();
+    let mut unfinalized: Vec<(EventId, EventPhase, u32, u32, u64)> = Vec::new();
 
     for phase in phases {
         let event_ids = phase_storage.get_events_in_phase(phase)?;
@@ -78,8 +78,8 @@ fn report_unfinalized_events(storage: &dyn Storage, phase_storage: &dyn PhaseSto
         let event = storage.get_event(&event_id)?;
         let external_id = event.as_ref().map(|e| e.audit.external_id_raw.as_str()).unwrap_or("-");
         warn!(
-            "unfinalized event event_id={} phase={} round={} retry_count={} age_seconds={} external_id={}",
-            hex::encode(event_id),
+            "unfinalized event event_id={:#x} phase={} round={} retry_count={} age_seconds={} external_id={}",
+            event_id,
             phase_label(phase),
             round,
             retry_count,
@@ -101,4 +101,3 @@ fn phase_label(phase: EventPhase) -> &'static str {
         EventPhase::Abandoned => "abandoned",
     }
 }
-

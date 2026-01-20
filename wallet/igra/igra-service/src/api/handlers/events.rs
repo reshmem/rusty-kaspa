@@ -59,19 +59,13 @@ pub async fn handle_events_status(
     let min_age_seconds = params.min_age_seconds.unwrap_or(0);
 
     let phases = if include_completed {
-        vec![
-            EventPhase::Proposing,
-            EventPhase::Committed,
-            EventPhase::Failed,
-            EventPhase::Abandoned,
-            EventPhase::Completed,
-        ]
+        vec![EventPhase::Proposing, EventPhase::Committed, EventPhase::Failed, EventPhase::Abandoned, EventPhase::Completed]
     } else {
         vec![EventPhase::Proposing, EventPhase::Committed, EventPhase::Failed, EventPhase::Abandoned]
     };
 
     let mut counts_by_phase: BTreeMap<String, u64> = BTreeMap::new();
-    let mut event_ids: BTreeSet<igra_core::foundation::Hash32> = BTreeSet::new();
+    let mut event_ids: BTreeSet<igra_core::foundation::EventId> = BTreeSet::new();
     for phase in phases {
         match state.event_ctx.phase_storage.get_events_in_phase(phase) {
             Ok(ids) => {
@@ -110,12 +104,12 @@ pub async fn handle_events_status(
         };
 
         let active_template_hash_hex = match state.event_ctx.storage.get_event_active_template_hash(&event_id) {
-            Ok(value) => value.map(hex::encode),
+            Ok(value) => value.map(|hash| hash.to_string()),
             Err(err) => return json_err(id, RpcErrorCode::InternalError, err.to_string()),
         };
 
         unfinalized.push(EventStatusItem {
-            event_id_hex: hex::encode(event_id),
+            event_id_hex: event_id.to_string(),
             phase: phase_to_string(phase_state.phase),
             round: phase_state.round,
             retry_count: phase_state.retry_count,
@@ -124,8 +118,8 @@ pub async fn handle_events_status(
             external_id: event.as_ref().map(|e| e.audit.external_id_raw.clone()),
             source: event.as_ref().map(|e| format!("{:?}", e.event.source)),
             active_template_hash_hex,
-            canonical_hash_hex: phase_state.canonical_hash.map(hex::encode),
-            own_proposal_hash_hex: phase_state.own_proposal_hash.map(hex::encode),
+            canonical_hash_hex: phase_state.canonical_hash.map(|hash| hash.to_string()),
+            own_proposal_hash_hex: phase_state.own_proposal_hash.map(|hash| hash.to_string()),
             completion_tx_id_hex: completion.map(|c| c.tx_id.to_string()),
         });
     }
@@ -135,11 +129,7 @@ pub async fn handle_events_status(
         unfinalized.truncate(limit);
     }
 
-    debug!(
-        "events.status tracked={} unfinalized_returned={}",
-        counts_by_phase.values().sum::<u64>(),
-        unfinalized.len()
-    );
+    debug!("events.status tracked={} unfinalized_returned={}", counts_by_phase.values().sum::<u64>(), unfinalized.len());
 
     json_ok(id, EventsStatusResult { now_ns, counts_by_phase, unfinalized })
 }

@@ -1,11 +1,12 @@
+use igra_core::foundation::{EventId, TxTemplateHash};
 use igra_core::infrastructure::storage::{MemoryStorage, PhaseStorage, RecordSignedHashResult};
 
 #[test]
 fn signed_hash_record_is_set_once_and_detects_conflicts() {
     let storage = MemoryStorage::new();
-    let event_id = [7u8; 32];
-    let h1 = [1u8; 32];
-    let h2 = [2u8; 32];
+    let event_id = EventId::new([7u8; 32]);
+    let h1 = TxTemplateHash::new([1u8; 32]);
+    let h2 = TxTemplateHash::new([2u8; 32]);
 
     assert_eq!(storage.get_signed_hash(&event_id).expect("get"), None);
 
@@ -21,4 +22,3 @@ fn signed_hash_record_is_set_once_and_detects_conflicts() {
     assert_eq!(r3, RecordSignedHashResult::Conflict { existing: h1, attempted: h2 });
     assert_eq!(storage.get_signed_hash(&event_id).expect("get"), Some(h1));
 }
-

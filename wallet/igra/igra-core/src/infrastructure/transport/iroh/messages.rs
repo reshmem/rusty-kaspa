@@ -2,18 +2,18 @@ use crate::domain::coordination::PhaseContext;
 use crate::domain::{
     coordination::ProposalBroadcast, CrdtSignatureRecord, CrdtSigningMaterial, StoredCompletionRecord, StoredEventCrdt,
 };
-use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::foundation::{EventId, GroupId, PayloadHash, PeerId, SessionId, TransactionId, TxTemplateHash};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MessageEnvelope {
     pub sender_peer_id: PeerId,
-    pub group_id: Hash32,
+    pub group_id: GroupId,
     pub session_id: SessionId,
     pub seq_no: u64,
     pub timestamp_nanos: u64,
     pub payload: TransportMessage,
-    pub payload_hash: Hash32,
+    pub payload_hash: PayloadHash,
     pub signature: Vec<u8>,
 }
 
@@ -34,9 +34,9 @@ pub enum TransportMessage {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventStateBroadcast {
     /// The cross-chain event being processed (for grouping/audit).
-    pub event_id: Hash32,
+    pub event_id: EventId,
     /// The specific transaction being signed (for signature compatibility).
-    pub tx_template_hash: Hash32,
+    pub tx_template_hash: TxTemplateHash,
     /// The CRDT state.
     pub state: EventCrdtState,
     /// Who sent this broadcast (redundant with envelope, but helpful for debug/audit).
@@ -90,7 +90,7 @@ pub struct CrdtSignature {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CompletionRecord {
-    pub tx_id: Hash32,
+    pub tx_id: TransactionId,
     pub submitter_peer_id: PeerId,
     pub timestamp_nanos: u64,
     pub blue_score: Option<u64>,
@@ -99,7 +99,7 @@ pub struct CompletionRecord {
 impl From<&StoredCompletionRecord> for CompletionRecord {
     fn from(value: &StoredCompletionRecord) -> Self {
         Self {
-            tx_id: *value.tx_id.as_hash(),
+            tx_id: value.tx_id,
             submitter_peer_id: value.submitter_peer_id.clone(),
             timestamp_nanos: value.timestamp_nanos,
             blue_score: value.blue_score,
@@ -110,7 +110,7 @@ impl From<&StoredCompletionRecord> for CompletionRecord {
 impl From<&CompletionRecord> for StoredCompletionRecord {
     fn from(value: &CompletionRecord) -> Self {
         Self {
-            tx_id: TransactionId::from(value.tx_id),
+            tx_id: value.tx_id,
             submitter_peer_id: value.submitter_peer_id.clone(),
             timestamp_nanos: value.timestamp_nanos,
             blue_score: value.blue_score,
@@ -134,11 +134,9 @@ impl std::convert::TryFrom<&CrdtSignature> for CrdtSignatureRecord {
     type Error = crate::foundation::ThresholdError;
 
     fn try_from(value: &CrdtSignature) -> Result<Self, Self::Error> {
-        let signer_peer_id = value.signer_peer_id.clone().ok_or_else(|| {
-            crate::foundation::ThresholdError::SerializationError {
-                format: "crdt_signature".to_string(),
-                details: format!("missing signer_peer_id input_index={}", value.input_index),
-            }
+        let signer_peer_id = value.signer_peer_id.clone().ok_or_else(|| crate::foundation::ThresholdError::SerializationError {
+            format: "crdt_signature".to_string(),
+            details: format!("missing signer_peer_id input_index={}", value.input_index),
         })?;
 
         Ok(Self {
@@ -154,12 +152,12 @@ impl std::convert::TryFrom<&CrdtSignature> for CrdtSignatureRecord {
 /// Request state for specific events (anti-entropy).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StateSyncRequest {
-    pub event_ids: Vec<Hash32>,
+    pub event_ids: Vec<EventId>,
     pub requester_peer_id: PeerId,
 }
 
 /// Response with full CRDT states.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StateSyncResponse {
-    pub states: Vec<(Hash32, Hash32, EventCrdtState)>, // (event_id, tx_template_hash, state)
+    pub states: Vec<(EventId, TxTemplateHash, EventCrdtState)>, // (event_id, tx_template_hash, state)
 }

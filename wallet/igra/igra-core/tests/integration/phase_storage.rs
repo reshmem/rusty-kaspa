@@ -1,5 +1,5 @@
 use igra_core::domain::coordination::EventPhase;
-use igra_core::foundation::{Hash32, ThresholdError};
+use igra_core::foundation::{EventId, ThresholdError, TxTemplateHash};
 use igra_core::infrastructure::storage::{PhaseStorage, RocksStorage};
 use tempfile::TempDir;
 
@@ -8,8 +8,8 @@ fn mark_committed_is_idempotent_for_same_hash_even_if_round_differs() -> Result<
     let temp_dir = TempDir::new().expect("temp dir");
     let storage = RocksStorage::open_in_dir(temp_dir.path()).expect("open rocksdb");
 
-    let event_id: Hash32 = [42u8; 32];
-    let canonical_hash: Hash32 = [77u8; 32];
+    let event_id = EventId::new([42u8; 32]);
+    let canonical_hash = TxTemplateHash::new([77u8; 32]);
     let now = 1;
 
     assert!(storage.mark_committed(&event_id, 0, canonical_hash, now)?);
@@ -24,4 +24,3 @@ fn mark_committed_is_idempotent_for_same_hash_even_if_round_differs() -> Result<
 
     Ok(())
 }
-

@@ -15,10 +15,10 @@ pub fn split_fee(fee: u64, mode: &FeePaymentMode) -> Result<(u64, u64), Threshol
                     recipient_parts, signer_parts
                 )));
             }
-            let recipient_fee = fee
-                .checked_mul(*recipient_parts as u64)
-                .and_then(|v| v.checked_div(total_parts as u64))
-                .ok_or_else(|| ThresholdError::PsktError { operation: "split_fee".to_string(), details: "fee split overflow".to_string() })?;
+            let recipient_fee =
+                fee.checked_mul(*recipient_parts as u64).and_then(|v| v.checked_div(total_parts as u64)).ok_or_else(|| {
+                    ThresholdError::PsktError { operation: "split_fee".to_string(), details: "fee split overflow".to_string() }
+                })?;
             Ok((recipient_fee, fee.saturating_sub(recipient_fee)))
         }
     }
@@ -31,7 +31,10 @@ pub fn apply_recipient_fee(outputs: &mut [MultisigOutput], recipient_fee: u64) -
     }
     let outputs_len = outputs.len();
     let first = outputs.first_mut().ok_or_else(|| {
-        ThresholdError::PsktValidationFailed(format!("missing recipient output (outputs_len={}, recipient_fee={})", outputs_len, recipient_fee))
+        ThresholdError::PsktValidationFailed(format!(
+            "missing recipient output (outputs_len={}, recipient_fee={})",
+            outputs_len, recipient_fee
+        ))
     })?;
     if first.amount < recipient_fee {
         return Err(ThresholdError::InsufficientUTXOs);

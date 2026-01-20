@@ -1,5 +1,5 @@
 use crate::foundation::ThresholdError;
-use crate::foundation::{Hash32, PeerId};
+use crate::foundation::{GroupId, PayloadHash, PeerId};
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
@@ -33,18 +33,18 @@ impl TransportSubscription {
 
 pub trait SignatureSigner: Send + Sync {
     fn sender_peer_id(&self) -> &PeerId;
-    fn sign(&self, payload_hash: &Hash32) -> Vec<u8>;
+    fn sign(&self, payload_hash: &PayloadHash) -> Vec<u8>;
 }
 
 pub trait SignatureVerifier: Send + Sync {
-    fn verify(&self, sender_peer_id: &PeerId, payload_hash: &Hash32, signature: &[u8]) -> bool;
+    fn verify(&self, sender_peer_id: &PeerId, payload_hash: &PayloadHash, signature: &[u8]) -> bool;
 }
 
 #[derive(Clone, Debug)]
 pub struct NoopSignatureVerifier;
 
 impl SignatureVerifier for NoopSignatureVerifier {
-    fn verify(&self, _sender_peer_id: &PeerId, _payload_hash: &Hash32, _signature: &[u8]) -> bool {
+    fn verify(&self, _sender_peer_id: &PeerId, _payload_hash: &PayloadHash, _signature: &[u8]) -> bool {
         true
     }
 }
@@ -55,5 +55,5 @@ pub trait Transport: Send + Sync {
     async fn publish_proposal(&self, proposal: ProposalBroadcast) -> Result<()>;
     async fn publish_state_sync_request(&self, request: StateSyncRequest) -> Result<()>;
     async fn publish_state_sync_response(&self, response: StateSyncResponse) -> Result<()>;
-    async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription>;
+    async fn subscribe_group(&self, group_id: GroupId) -> Result<TransportSubscription>;
 }

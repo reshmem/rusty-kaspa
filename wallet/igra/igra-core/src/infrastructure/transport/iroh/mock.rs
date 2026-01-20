@@ -2,9 +2,8 @@ use super::traits::{
     EventStateBroadcast, MessageEnvelope, ProposalBroadcast, StateSyncRequest, StateSyncResponse, Transport, TransportMessage,
     TransportSubscription,
 };
-use crate::foundation::Hash32;
 use crate::foundation::ThresholdError;
-use crate::foundation::{PeerId, SessionId};
+use crate::foundation::{GroupId, Hash32, PayloadHash, PeerId, SessionId};
 use async_trait::async_trait;
 use bincode::Options;
 use std::collections::HashMap;
@@ -38,13 +37,13 @@ impl Default for MockHub {
 pub struct MockTransport {
     hub: Arc<MockHub>,
     sender_peer_id: PeerId,
-    group_id: Hash32,
+    group_id: GroupId,
     network_id: u8,
     seq: AtomicU64,
 }
 
 impl MockTransport {
-    pub fn new(hub: Arc<MockHub>, sender_peer_id: PeerId, group_id: Hash32, network_id: u8) -> Self {
+    pub fn new(hub: Arc<MockHub>, sender_peer_id: PeerId, group_id: GroupId, network_id: u8) -> Self {
         Self { hub, sender_peer_id, group_id, network_id, seq: AtomicU64::new(1) }
     }
 
@@ -52,16 +51,16 @@ impl MockTransport {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"kaspa-sign/v1");
         hasher.update(&[self.network_id]);
-        hasher.update(&self.group_id);
+        hasher.update(self.group_id.as_hash());
         *hasher.finalize().as_bytes()
     }
 
-    fn payload_hash(payload: &TransportMessage) -> Result<Hash32, ThresholdError> {
+    fn payload_hash(payload: &TransportMessage) -> Result<PayloadHash, ThresholdError> {
         let bytes = bincode::DefaultOptions::new()
             .with_fixint_encoding()
             .serialize(payload)
             .map_err(|err| crate::serde_err!("bincode", err))?;
-        Ok(*blake3::hash(&bytes).as_bytes())
+        Ok(PayloadHash::from(*blake3::hash(&bytes).as_bytes()))
     }
 
     async fn publish(&self, topic: Hash32, payload: TransportMessage) -> Result<(), ThresholdError> {
@@ -79,7 +78,9 @@ impl MockTransport {
         let sender = self.hub.topic(topic).await;
         // `tokio::sync::broadcast::Sender::send` returns an error when there are no active receivers.
         // In real transports, publishing to a topic with no peers is not an error, so treat it as success.
-        let _ = sender.send(envelope);
+        if sender.send(envelope).is_err() {
+            // No active receivers.
+        }
         Ok(())
     }
 
@@ -130,7 +131,7 @@ impl Transport for MockTransport {
         self.publish(topic, payload).await
     }
 
-    async fn subscribe_group(&self, _group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+    async fn subscribe_group(&self, _group_id: GroupId) -> Result<TransportSubscription, ThresholdError> {
         let topic = self.group_topic_id();
         self.subscribe(topic).await
     }

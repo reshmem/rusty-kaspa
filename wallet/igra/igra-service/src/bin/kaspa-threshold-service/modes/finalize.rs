@@ -1,6 +1,6 @@
 use igra_core::domain::pskt::multisig as pskt_multisig;
 use igra_core::domain::PartialSigRecord;
-use igra_core::foundation::{Hash32, PeerId, ThresholdError, TransactionId};
+use igra_core::foundation::{EventId, Hash32, PeerId, ThresholdError, TransactionId};
 use igra_core::infrastructure::config;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::NodeRpc;
@@ -29,14 +29,14 @@ pub async fn finalize_from_json(
     let json = std::fs::read_to_string(json_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let payload: FinalizePayload = serde_json::from_str(&json)?;
 
-    let event_id = parse_hash32_hex(&payload.event_id)?;
+    let event_id = EventId::from(parse_hash32_hex(&payload.event_id)?);
     let pskt_blob = hex::decode(payload.pskt_blob.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let signer_pskt = pskt_multisig::deserialize_pskt_signer(&pskt_blob)?;
     let tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
 
     let state = storage
         .get_event_crdt(&event_id, &tx_template_hash)?
-        .ok_or_else(|| ThresholdError::KeyNotFound(format!("missing CRDT state for event_id={}", hex::encode(event_id))))?;
+        .ok_or_else(|| ThresholdError::KeyNotFound(format!("missing CRDT state for event_id={}", event_id)))?;
 
     let partial_sigs = state
         .signatures

@@ -1,6 +1,6 @@
 use super::traits::{MessageEnvelope, SignatureVerifier, TransportSubscription};
 use crate::foundation::ThresholdError;
-use crate::foundation::{now_nanos, SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES, SEEN_MESSAGE_TTL_NANOS};
+use crate::foundation::{hx32, now_nanos, SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES, SEEN_MESSAGE_TTL_NANOS};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::storage::Storage;
 use crate::infrastructure::transport::RateLimiter;
@@ -33,7 +33,7 @@ pub fn filter_stream(
                 debug!(
                     "rate limit blocked message peer_id={} session_id={} seq_no={}",
                     envelope.sender_peer_id,
-                    hex::encode(envelope.session_id.as_hash()),
+                    envelope.session_id,
                     envelope.seq_no
                 );
                 audit(AuditEvent::RateLimitExceeded {
@@ -54,34 +54,34 @@ pub fn filter_stream(
                     continue;
                 }
             };
-            let payload_hash_match = expected.ct_eq(&envelope.payload_hash);
+            let payload_hash_match = expected.as_hash().ct_eq(envelope.payload_hash.as_hash());
             if !bool::from(payload_hash_match) {
                 warn!(
-                    "payload hash mismatch peer_id={} expected_hash={} actual_hash={}",
+                    "payload hash mismatch peer_id={} expected_hash={:#x} actual_hash={:#x}",
                     envelope.sender_peer_id,
-                    hex::encode(expected),
-                    hex::encode(envelope.payload_hash)
+                    hx32(expected.as_hash()),
+                    hx32(envelope.payload_hash.as_hash())
                 );
                 yield Err(ThresholdError::TransportError {
                     operation: "payload_hash_mismatch".to_string(),
                     details: format!(
-                        "peer_id={} expected_hash={} actual_hash={}",
+                        "peer_id={} expected_hash={:#x} actual_hash={:#x}",
                         envelope.sender_peer_id,
-                        hex::encode(expected),
-                        hex::encode(envelope.payload_hash)
+                        hx32(expected.as_hash()),
+                        hx32(envelope.payload_hash.as_hash())
                     ),
                 });
                 continue;
             }
             if !verifier.verify(&envelope.sender_peer_id, &envelope.payload_hash, envelope.signature.as_slice()) {
                 warn!(
-                    "invalid signature peer_id={} payload_hash={}",
+                    "invalid signature peer_id={} payload_hash={:#x}",
                     envelope.sender_peer_id,
-                    hex::encode(envelope.payload_hash)
+                    hx32(envelope.payload_hash.as_hash())
                 );
                 yield Err(ThresholdError::TransportError {
                     operation: "signature_verification".to_string(),
-                    details: format!("peer_id={} payload_hash={}", envelope.sender_peer_id, hex::encode(envelope.payload_hash)),
+                    details: format!("peer_id={} payload_hash={:#x}", envelope.sender_peer_id, hx32(envelope.payload_hash.as_hash())),
                 });
                 continue;
             }
@@ -96,7 +96,7 @@ pub fn filter_stream(
                     debug!(
                         "accepted new message peer_id={} session_id={} seq_no={}",
                         envelope.sender_peer_id,
-                        hex::encode(envelope.session_id.as_hash()),
+                        envelope.session_id,
                         envelope.seq_no
                     );
                     if cleanup_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SEEN_MESSAGE_CLEANUP_INTERVAL_MESSAGES == 0 {
@@ -117,7 +117,7 @@ pub fn filter_stream(
                     debug!(
                         "duplicate message ignored peer_id={} session_id={} seq_no={}",
                         envelope.sender_peer_id,
-                        hex::encode(envelope.session_id.as_hash()),
+                        envelope.session_id,
                         envelope.seq_no
                     );
                     continue;

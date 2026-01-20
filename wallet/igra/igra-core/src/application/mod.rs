@@ -4,6 +4,8 @@ pub mod crdt_coordinator;
 pub mod event_processor;
 pub mod lifecycle;
 pub mod monitoring;
+pub mod pskt_signing;
+pub mod signing_pipeline;
 pub mod two_phase;
 
 pub use crdt_coordinator::{CrdtAction, CrdtCoordinator};

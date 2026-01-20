@@ -19,7 +19,7 @@ pub struct VerificationReport {
     pub valid_signatures: usize,
     pub threshold_required: usize,
     pub failure_reason: Option<String>,
-    pub event_id: Option<crate::foundation::Hash32>,
+    pub event_id: Option<crate::foundation::EventId>,
 }
 
 pub trait MessageVerifier: Send + Sync {

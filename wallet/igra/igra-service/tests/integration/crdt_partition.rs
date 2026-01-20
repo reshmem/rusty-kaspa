@@ -4,9 +4,9 @@ use igra_core::domain::coordination::EventPhase;
 use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::NoopVerifier;
 use igra_core::domain::{GroupPolicy, SourceType};
-use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{EventId, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
-use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
+use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::rocks::RocksStorage;
@@ -103,7 +103,7 @@ fn signing_event(label: &str) -> SigningEventWire {
     }
 }
 
-async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], event_id: &Hash32, timeout: Duration) -> Result<(), ThresholdError> {
+async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], event_id: &EventId, timeout: Duration) -> Result<(), ThresholdError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() > deadline {
@@ -123,7 +123,7 @@ async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], event_id: &Hash32,
     }
 }
 
-async fn wait_for_complete(storage: &Arc<dyn Storage>, event_id: &Hash32, timeout: Duration) -> Result<(), ThresholdError> {
+async fn wait_for_complete(storage: &Arc<dyn Storage>, event_id: &EventId, timeout: Duration) -> Result<(), ThresholdError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() > deadline {
@@ -199,7 +199,7 @@ impl Transport for FilteringTransport {
         self.inner.publish_state_sync_response(response).await
     }
 
-    async fn subscribe_group(&self, group_id: Hash32) -> Result<TransportSubscription, ThresholdError> {
+    async fn subscribe_group(&self, group_id: GroupId) -> Result<TransportSubscription, ThresholdError> {
         let mut subscription = self.inner.subscribe_group(group_id).await?;
         let partitioned = self.partitioned.clone();
         let local_peer_id = self.local_peer_id.clone();
@@ -244,7 +244,7 @@ impl Transport for FilteringTransport {
 async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError> {
     ensure_wallet_secret();
 
-    let group_id: Hash32 = [11u8; 32];
+    let group_id = GroupId::new([11u8; 32]);
     let hub = Arc::new(MockHub::new());
 
     let mnemonics = [
@@ -299,10 +299,29 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         configs.push(Arc::new(app));
     }
 
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[0].clone(),
+            transports[0].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[1].clone(),
+            transports[1].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[2].clone(),
+            transports[2].clone(),
+            Arc::new(NoopVerifier),
+        )?),
     ];
 
     let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
@@ -370,7 +389,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     }
     let event_id_hex = event_id_hex.expect("event id");
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
-    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+    let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Nodes 1 and 2 should complete without node 3 seeing their messages.
     wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], &event_id, Duration::from_secs(10)).await?;
@@ -398,7 +417,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
 async fn chaos_random_message_loss_eventual_convergence() -> Result<(), ThresholdError> {
     ensure_wallet_secret();
 
-    let group_id: Hash32 = [12u8; 32];
+    let group_id = GroupId::new([12u8; 32]);
     let hub = Arc::new(MockHub::new());
 
     let mnemonics = [
@@ -451,10 +470,29 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
         configs.push(Arc::new(app));
     }
 
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[0].clone(),
+            transports[0].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[1].clone(),
+            transports[1].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[2].clone(),
+            transports[2].clone(),
+            Arc::new(NoopVerifier),
+        )?),
     ];
 
     let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
@@ -521,7 +559,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     }
     let event_id_hex = event_id_hex.expect("event id");
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
-    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+    let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Force a sync round to compensate for dropped broadcasts.
     for (idx, raw) in raw_transports.iter().enumerate() {
@@ -545,7 +583,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
 async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     ensure_wallet_secret();
 
-    let group_id: Hash32 = [13u8; 32];
+    let group_id = GroupId::new([13u8; 32]);
     let hub = Arc::new(MockHub::new());
 
     let mnemonics = [
@@ -596,10 +634,29 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
         configs.push(Arc::new(app));
     }
 
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[0].clone(),
+            transports[0].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[1].clone(),
+            transports[1].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[2].clone(),
+            transports[2].clone(),
+            Arc::new(NoopVerifier),
+        )?),
     ];
 
     let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
@@ -667,7 +724,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
 
     let event_id_hex = event_id_hex.expect("event id");
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
-    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+    let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], &event_id, Duration::from_secs(10))
         .await?;
@@ -682,7 +739,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
 async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdError> {
     ensure_wallet_secret();
 
-    let group_id: Hash32 = [14u8; 32];
+    let group_id = GroupId::new([14u8; 32]);
     let hub = Arc::new(MockHub::new());
 
     let mnemonics = [
@@ -738,9 +795,28 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         configs.push(Arc::new(app));
     }
 
-    let flow1 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage1.clone(), transports[0].clone(), Arc::new(NoopVerifier))?);
-    let flow2 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage2.clone(), transports[1].clone(), Arc::new(NoopVerifier))?);
-    let flow3 = Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
+    let flow1 = Arc::new(ServiceFlow::new_with_rpc(
+        rpc.clone(),
+        kaspa_query.clone(),
+        storage1.clone(),
+        transports[0].clone(),
+        Arc::new(NoopVerifier),
+    )?);
+    let flow2 = Arc::new(ServiceFlow::new_with_rpc(
+        rpc.clone(),
+        kaspa_query.clone(),
+        storage2.clone(),
+        transports[1].clone(),
+        Arc::new(NoopVerifier),
+    )?);
+    let flow3 = Arc::new(ServiceFlow::new_with_rpc(
+        rpc.clone(),
+        kaspa_query.clone(),
+        storage3.clone(),
+        transports[2].clone(),
+        Arc::new(NoopVerifier),
+    )?);
 
     let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
 
@@ -811,7 +887,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     }
     let event_id_hex = event_id_hex.expect("event id");
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
-    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+    let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Crash node 3 after it has had a chance to persist its local signature.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -829,8 +905,14 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let store3_restarted = Arc::new(RocksStorage::open(node3_dir.path())?);
     let storage3_restarted: Arc<dyn Storage> = store3_restarted.clone();
     let phase3_restarted: Arc<dyn PhaseStorage> = store3_restarted.clone();
-    let flow3_restarted =
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storage3_restarted.clone(), transports[2].clone(), Arc::new(NoopVerifier))?);
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
+    let flow3_restarted = Arc::new(ServiceFlow::new_with_rpc(
+        rpc.clone(),
+        kaspa_query.clone(),
+        storage3_restarted.clone(),
+        transports[2].clone(),
+        Arc::new(NoopVerifier),
+    )?);
     let loop3_restarted = tokio::spawn(run_coordination_loop(
         configs[2].clone(),
         two_phase.clone(),

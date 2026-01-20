@@ -1,5 +1,6 @@
 use ed25519_dalek::VerifyingKey;
 use igra_core::domain::group_id::verify_group_id;
+use igra_core::foundation::GroupId;
 use igra_core::foundation::Hash32;
 use igra_core::foundation::PeerId;
 use igra_core::foundation::ThresholdError;
@@ -103,12 +104,12 @@ pub fn init_signer_identity(app_config: &AppConfig) -> Result<SignerIdentity, Th
     Ok(SignerIdentity { peer_id, signer, verifier })
 }
 
-pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError> {
+pub fn resolve_group_id(app_config: &AppConfig) -> Result<GroupId, ThresholdError> {
     let group_id_hex = app_config.iroh.group_id.clone().unwrap_or_default();
     if group_id_hex.is_empty() {
         return Err(ThresholdError::ConfigError("missing group_id".to_string()));
     }
-    let group_id = parse_hash32_hex(&group_id_hex)?;
+    let group_id = GroupId::from(parse_hash32_hex(&group_id_hex)?);
     if let Some(group_config) = app_config.group.as_ref() {
         let verification = verify_group_id(group_config, &group_id)?;
         if !verification.matches {
@@ -125,7 +126,7 @@ pub fn resolve_group_id(app_config: &AppConfig) -> Result<Hash32, ThresholdError
     Ok(group_id)
 }
 
-pub fn log_startup_banner(app_config: &AppConfig, peer_id: &PeerId, group_id: &Hash32) {
+pub fn log_startup_banner(app_config: &AppConfig, peer_id: &PeerId, group_id: &GroupId) {
     let (threshold_m, threshold_n, finality_blue_score) = match app_config.group.as_ref() {
         Some(group) => (group.threshold_m, group.threshold_n, group.finality_blue_score_threshold),
         None => (0, 0, 0),
@@ -137,7 +138,7 @@ pub fn log_startup_banner(app_config: &AppConfig, peer_id: &PeerId, group_id: &H
     info!("║              IGRA Threshold Signing Service                ║");
     info!("╠════════════════════════════════════════════════════════════╣");
     info!("║ Peer ID:    {:<45} ║", peer_id.to_string());
-    info!("║ Group ID:   {:<45} ║", hex::encode(group_id));
+    info!("║ Group ID:   {:<45} ║", format!("{group_id:#x}"));
     info!("║ Threshold:  {:<45} ║", format!("{}/{} signers", threshold_m, threshold_n));
     info!("║ Network ID: {:<45} ║", app_config.iroh.network_id);
     info!("║ RPC:        {:<45} ║", if rpc_enabled { rpc_addr } else { "disabled" });

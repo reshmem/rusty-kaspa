@@ -11,7 +11,10 @@ use crate::foundation::ThresholdError;
 use crate::infrastructure::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode};
 
 pub mod ism_client;
+pub mod metadata_bytes;
 pub mod types;
+
+pub use metadata_bytes::{decode_proof_metadata_bytes, decode_proof_metadata_hex};
 
 /// ISM verification mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +92,10 @@ impl ConfiguredIsm {
         Ok(Self { domains })
     }
 
+    pub fn default_mode(&self) -> Option<IsmMode> {
+        self.domains.values().next().map(|set| set.mode.clone())
+    }
+
     fn build_set(cfg: &HyperlaneDomainConfig) -> Result<ValidatorSet, ThresholdError> {
         let mut validators = Vec::new();
         for val in &cfg.validators {
@@ -148,8 +155,8 @@ impl IsmVerifier for ConfiguredIsm {
             let depth = proof.path.len();
             let checkpoint_index: usize =
                 metadata.checkpoint.index.try_into().map_err(|_| "checkpoint index too large".to_string())?;
-            if proof.index != checkpoint_index {
-                return Err("merkle proof index mismatch checkpoint index".to_string());
+            if proof.index > checkpoint_index {
+                return Err("merkle proof index beyond checkpoint index".to_string());
             }
             if !hyperlane_core::accumulator::merkle::verify_merkle_proof(
                 proof.leaf,
@@ -207,4 +214,76 @@ fn recover_validator(secp: &Secp256k1<secp256k1::VerifyOnly>, sig: &Signature, m
     let rid = secp256k1::ecdsa::RecoveryId::from_i32(rid_i32).map_err(|e| format!("recovery id: {e}"))?;
     let rec_sig = RecoverableSignature::from_compact(&sig_bytes[0..64], rid).map_err(|e| format!("signature parse: {e}"))?;
     secp.recover_ecdsa(msg, &rec_sig).map_err(|e| format!("recover: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyperlane_core::accumulator::merkle::MerkleTree;
+    use hyperlane_core::{Checkpoint, U256};
+    use secp256k1::{Secp256k1, SecretKey};
+
+    #[test]
+    fn merkle_root_multisig_allows_proof_index_below_checkpoint_index() {
+        let origin_domain = 123u32;
+        let message = HyperlaneMessage {
+            version: 1,
+            nonce: 0,
+            origin: origin_domain,
+            sender: H256::from([0x01; 32]),
+            destination: 456,
+            recipient: H256::from([0x02; 32]),
+            body: vec![0xAA, 0xBB],
+        };
+        let message_id = message.id();
+
+        let tree = MerkleTree::create(&[message_id, H256::from([0x11; 32])], hyperlane_core::accumulator::TREE_DEPTH);
+        let (leaf, branch) = tree.generate_proof(0, hyperlane_core::accumulator::TREE_DEPTH);
+        let mut path = [H256::zero(); hyperlane_core::accumulator::TREE_DEPTH];
+        for (idx, item) in branch.iter().enumerate() {
+            path[idx] = *item;
+        }
+        let proof = HyperlaneMerkleProof { leaf, index: 0, path };
+
+        let checkpoint = CheckpointWithMessageId {
+            checkpoint: Checkpoint {
+                merkle_tree_hook_address: H256::zero(),
+                mailbox_domain: origin_domain,
+                root: tree.hash(),
+                index: 1, // checkpoint for 2 leaves, proof for the first leaf
+            },
+            message_id,
+        };
+
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[0x03; 32]).expect("secret key");
+        let validator_pk = PublicKey::from_secret_key(&secp, &secret);
+
+        let signing_hash = checkpoint.signing_hash();
+        let msg = Message::from_digest_slice(signing_hash.as_ref()).expect("signing hash");
+        let sig = secp.sign_ecdsa_recoverable(&msg, &secret);
+        let (rid, sig64) = sig.serialize_compact();
+
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        r.copy_from_slice(&sig64[0..32]);
+        s.copy_from_slice(&sig64[32..64]);
+        let signature = Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: rid.to_i32() as u64 };
+
+        let metadata = ProofMetadata { checkpoint, merkle_proof: Some(proof), signatures: vec![signature] };
+
+        let config = HyperlaneConfig {
+            domains: vec![HyperlaneDomainConfig {
+                domain: origin_domain,
+                validators: vec![format!("0x{}", hex::encode(validator_pk.serialize()))],
+                threshold: 1,
+                mode: HyperlaneIsmMode::MerkleRootMultisig,
+            }],
+            ..Default::default()
+        };
+        let ism = ConfiguredIsm::from_config(&config).expect("configured ism");
+
+        let report = ism.verify_proof(&message, &metadata, IsmMode::MerkleRootMultisig).expect("proof should verify");
+        assert_eq!(report.message_id, message_id);
+    }
 }

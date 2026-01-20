@@ -44,6 +44,20 @@ struct HyperlaneKeyOut {
 }
 
 #[derive(Serialize)]
+struct EvmOut {
+    /// Devnet EVM mnemonic (Anvil default).
+    mnemonic: String,
+    /// Anvil prefunded deployer private key (hex, no 0x prefix).
+    private_key_hex: String,
+    /// Uncompressed secp256k1 public key (65 bytes, hex, no 0x prefix).
+    public_key_uncompressed_hex: String,
+    /// EVM address (20 bytes, hex, no 0x prefix).
+    address_hex: String,
+    /// Chain id for Anvil.
+    chain_id: u64,
+}
+
+#[derive(Serialize)]
 struct Output {
     wallet: WalletOut,
     signers: Vec<SignerOut>,
@@ -53,6 +67,7 @@ struct Output {
     source_addresses: Vec<String>,
     change_address: String,
     hyperlane_keys: Vec<HyperlaneKeyOut>,
+    evm: EvmOut,
     group_id: String,
     multisig_address: String,
 }
@@ -179,8 +194,7 @@ fn main() -> Result<(), ThresholdError> {
         xpubs: &[],
         derivation_path: None,
         payment_secret: payment_secret.as_ref(),
-    })
-    ?;
+    })?;
 
     // Match `derive_redeem_script_hex()` determinism: sort pubkeys before building the redeem script.
     let mut ordered_pubkeys = pubkeys.clone();
@@ -226,6 +240,29 @@ fn main() -> Result<(), ThresholdError> {
         });
     }
 
+    // Anvil prefunded deployer account (default Foundry/Anvil account #0).
+    //
+    // This is used by orchestration to:
+    // - deploy Hyperlane core contracts to Anvil
+    // - fund validator accounts so they can self-announce to ValidatorAnnounce
+    const ANVIL_DEFAULT_MNEMONIC: &str = "test test test test test test test test test test test junk";
+    const ANVIL_DEPLOYER_PRIVATE_KEY_HEX: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    const ANVIL_DEPLOYER_ADDRESS_HEX: &str = "f39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+    const ANVIL_CHAIN_ID: u64 = 31_337;
+
+    let deployer_secret = SecretKey::from_slice(
+        &hex::decode(ANVIL_DEPLOYER_PRIVATE_KEY_HEX).map_err(|e| ThresholdError::Message(format!("anvil deployer key hex: {e}")))?,
+    )
+    .map_err(|e| ThresholdError::Message(format!("anvil deployer key: {e}")))?;
+    let deployer_pub = PublicKey::from_secret_key(&secp, &deployer_secret);
+    let evm = EvmOut {
+        mnemonic: ANVIL_DEFAULT_MNEMONIC.to_string(),
+        private_key_hex: ANVIL_DEPLOYER_PRIVATE_KEY_HEX.to_string(),
+        public_key_uncompressed_hex: hex::encode(deployer_pub.serialize_uncompressed()),
+        address_hex: ANVIL_DEPLOYER_ADDRESS_HEX.to_string(),
+        chain_id: ANVIL_CHAIN_ID,
+    };
+
     // Build policy to match the devnet template (empty allowlist, devnet limits).
     let policy = GroupPolicy {
         allowed_destinations: Vec::new(),
@@ -245,6 +282,7 @@ fn main() -> Result<(), ThresholdError> {
         source_addresses: vec![multisig_address.clone()],
         change_address,
         hyperlane_keys,
+        evm,
         group_id: {
             let member_pubkeys_bytes: Vec<Vec<u8>> =
                 member_pubkeys.iter().map(|hex_pk| hex::decode(hex_pk).map_err(ThresholdError::from)).collect::<Result<_, _>>()?;

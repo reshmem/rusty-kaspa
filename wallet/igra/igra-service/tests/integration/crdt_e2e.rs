@@ -2,9 +2,9 @@ use igra_core::application::{submit_signing_event, EventContext, SigningEventPar
 use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::NoopVerifier;
 use igra_core::domain::{GroupPolicy, SourceType};
-use igra_core::foundation::{Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{EventId, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
-use igra_core::infrastructure::rpc::{UnimplementedRpc, UtxoWithOutpoint};
+use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
@@ -101,7 +101,7 @@ fn signing_event(label: &str) -> SigningEventWire {
 async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdError> {
     ensure_wallet_secret();
 
-    let group_id: Hash32 = [9u8; 32];
+    let group_id = GroupId::new([9u8; 32]);
     let hub = Arc::new(MockHub::new());
 
     // Key material for 3 signers.
@@ -148,10 +148,29 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
         configs.push(Arc::new(app));
     }
 
+    let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
     let flows = [
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[0].clone(), transports[0].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[1].clone(), transports[1].clone(), Arc::new(NoopVerifier))?),
-        Arc::new(ServiceFlow::new_with_rpc(rpc.clone(), storages[2].clone(), transports[2].clone(), Arc::new(NoopVerifier))?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[0].clone(),
+            transports[0].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[1].clone(),
+            transports[1].clone(),
+            Arc::new(NoopVerifier),
+        )?),
+        Arc::new(ServiceFlow::new_with_rpc(
+            rpc.clone(),
+            kaspa_query.clone(),
+            storages[2].clone(),
+            transports[2].clone(),
+            Arc::new(NoopVerifier),
+        )?),
     ];
 
     let two_phase = TwoPhaseConfig { commit_quorum: 2, min_input_score_depth: 0, ..TwoPhaseConfig::default() };
@@ -220,7 +239,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
 
     let event_id_hex = event_id_hex.expect("event id");
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
-    let event_id: Hash32 = event_id_bytes.as_slice().try_into().expect("hash32");
+    let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Wait for a completion record to appear on all nodes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

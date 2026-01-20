@@ -1,12 +1,12 @@
 use crate::service::coordination::crdt_handler::{
-    handle_crdt_broadcast, handle_state_sync_request, handle_state_sync_response, run_anti_entropy_loop,
+    handle_crdt_broadcast, handle_state_sync_request, handle_state_sync_response, run_anti_entropy_loop, CrdtHandlerContext,
 };
-use crate::service::coordination::two_phase_handler::handle_proposal_broadcast;
+use crate::service::coordination::two_phase_handler::{handle_proposal_broadcast, TwoPhaseHandlerContext};
 use crate::service::coordination::two_phase_timeout::run_two_phase_tick_loop;
 use crate::service::coordination::unfinalized_reporter::run_unfinalized_event_reporter_loop;
 use crate::service::flow::ServiceFlow;
 use igra_core::domain::coordination::TwoPhaseConfig;
-use igra_core::foundation::{day_start_nanos, now_nanos, Hash32, PeerId, ThresholdError};
+use igra_core::foundation::{day_start_nanos, hx, now_nanos, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_core::infrastructure::transport::iroh::traits::{Transport, TransportMessage};
@@ -24,13 +24,13 @@ pub async fn run_coordination_loop(
     storage: Arc<dyn Storage>,
     phase_storage: Arc<dyn PhaseStorage>,
     local_peer_id: PeerId,
-    group_id: Hash32,
+    group_id: GroupId,
 ) -> Result<(), ThresholdError> {
     let mut subscription = transport.subscribe_group(group_id).await?;
 
     info!(
-        "coordination loop started (CRDT) group_id={} peer_id={} network_id={} session_timeout_secs={} session_expiry_secs={:?} sig_op_count={} data_dir_set={} bootstrap_addr_count={}",
-        hex::encode(group_id),
+        "coordination loop started (CRDT) group_id={:#x} peer_id={} network_id={} session_timeout_secs={} session_expiry_secs={:?} sig_op_count={} data_dir_set={} bootstrap_addr_count={}",
+        group_id,
         local_peer_id,
         app_config.iroh.network_id,
         app_config.runtime.session_timeout_seconds,
@@ -109,7 +109,8 @@ pub async fn run_coordination_loop(
         None
     };
 
-    let _unfinalized_report_guard = AbortOnDrop(tokio::spawn(run_unfinalized_event_reporter_loop(storage.clone(), phase_storage.clone())));
+    let _unfinalized_report_guard =
+        AbortOnDrop(tokio::spawn(run_unfinalized_event_reporter_loop(storage.clone(), phase_storage.clone())));
 
     let mut last_activity = Instant::now();
     let mut idle_ticker = tokio::time::interval(Duration::from_secs(IDLE_TICKER_INTERVAL_SECS));
@@ -123,7 +124,7 @@ pub async fn run_coordination_loop(
                     info!(
                         "service idle, waiting for CRDT messages idle_seconds={} group_id_prefix={} peer_id={}",
                         idle.as_secs(),
-                        hex::encode(&group_id[..8]),
+                        hx(&group_id[..8]),
                         local_peer_id
                     );
                 }
@@ -158,15 +159,15 @@ pub async fn run_coordination_loop(
                             );
                             continue;
                         }
-                        if let Err(err) = handle_crdt_broadcast(
-                            &app_config,
-                            &flow,
-                            &transport,
-                            &storage,
-                            &phase_storage,
-                            &local_peer_id,
-                            broadcast,
-                        ).await {
+                        let ctx = CrdtHandlerContext {
+                            app_config: &app_config,
+                            flow: &flow,
+                            transport: &transport,
+                            storage: &storage,
+                            phase_storage: &phase_storage,
+                            local_peer_id: &local_peer_id,
+                        };
+                        if let Err(err) = handle_crdt_broadcast(&ctx, broadcast).await {
                             warn!("CRDT handler error error={}", err);
                         }
                     }
@@ -179,19 +180,16 @@ pub async fn run_coordination_loop(
                             );
                             continue;
                         }
-                        if let Err(err) = handle_proposal_broadcast(
-                            &app_config,
-                            &two_phase,
-                            &flow,
-                            &transport,
-                            &storage,
-                            &phase_storage,
-                            &local_peer_id,
-                            &sender_peer_id,
-                            proposal,
-                        )
-                        .await
-                        {
+                        let ctx = TwoPhaseHandlerContext {
+                            app_config: &app_config,
+                            two_phase: &two_phase,
+                            flow: &flow,
+                            transport: &transport,
+                            storage: &storage,
+                            phase_storage: &phase_storage,
+                            local_peer_id: &local_peer_id,
+                        };
+                        if let Err(err) = handle_proposal_broadcast(&ctx, &sender_peer_id, proposal).await {
                             warn!("proposal handler error error={}", err);
                         }
                     }

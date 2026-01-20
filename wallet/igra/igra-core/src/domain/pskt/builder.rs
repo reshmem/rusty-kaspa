@@ -71,6 +71,11 @@ pub fn build_pskt_from_utxos(
                 .then(a.outpoint.transaction_id.as_bytes().cmp(&b.outpoint.transaction_id.as_bytes()))
                 .then(a.outpoint.index.cmp(&b.outpoint.index))
         } else {
+            // Fallback ordering when no deterministic seed is provided.
+            //
+            // Protocol usage (two-phase coordination) always sets `selection_seed`, so this branch is
+            // intended for manual/tools usage only. Ordering by amount can increase divergence if
+            // peers observe different UTXO sets.
             b.entry
                 .amount
                 .cmp(&a.entry.amount)
@@ -342,9 +347,9 @@ impl FeeConfig {
                 if total_parts == 0 {
                     return Err(ThresholdError::ConfigError("fee split parts must not both be zero".to_string()));
                 }
-                fee.checked_mul(*recipient_parts as u64)
-                    .and_then(|v| v.checked_div(total_parts as u64))
-                    .ok_or_else(|| ThresholdError::PsktError { operation: "fee_split".to_string(), details: "fee split overflow".to_string() })?
+                fee.checked_mul(*recipient_parts as u64).and_then(|v| v.checked_div(total_parts as u64)).ok_or_else(|| {
+                    ThresholdError::PsktError { operation: "fee_split".to_string(), details: "fee split overflow".to_string() }
+                })?
             }
         };
 

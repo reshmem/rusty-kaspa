@@ -1,8 +1,8 @@
 use crate::domain::coordination::{EventPhase, EventPhaseState, Proposal};
-use crate::domain::pskt::multisig as pskt_multisig;
 use crate::domain::{CrdtSignatureRecord, CrdtSigningMaterial, GroupConfig, StoredCompletionRecord, StoredEvent, StoredEventCrdt};
 use crate::foundation::ThresholdError;
-use crate::foundation::{Hash32, PeerId, SessionId, TransactionId};
+use crate::foundation::{EventId, ExternalId, GroupId, PeerId, SessionId, TransactionId, TxTemplateHash};
+use crate::infrastructure::storage::hyperlane::{HyperlaneDeliveredMessage, HyperlaneDeliveryRecord, HyperlaneMessageRecord};
 use crate::infrastructure::storage::phase::{PhaseStorage, RecordSignedHashResult, StoreProposalResult};
 use crate::infrastructure::storage::rocks::migration::open_db_with_cfs;
 use crate::infrastructure::storage::rocks::schema::*;
@@ -21,6 +21,7 @@ pub struct RocksStorage {
     db: Arc<DB>,
     crdt_lock: std::sync::Mutex<()>,
     phase_lock: std::sync::Mutex<()>,
+    hyperlane_lock: std::sync::Mutex<()>,
 }
 
 impl RocksStorage {
@@ -32,7 +33,12 @@ impl RocksStorage {
         let path = path.as_ref();
         debug!("opening RocksStorage path={}", path.display());
         let db = open_db_with_cfs(path)?;
-        let storage = Self { db: Arc::new(db), crdt_lock: std::sync::Mutex::new(()), phase_lock: std::sync::Mutex::new(()) };
+        let storage = Self {
+            db: Arc::new(db),
+            crdt_lock: std::sync::Mutex::new(()),
+            phase_lock: std::sync::Mutex::new(()),
+            hyperlane_lock: std::sync::Mutex::new(()),
+        };
         if let Err(err) = storage.maybe_run_migrations() {
             if allow_schema_wipe {
                 if let ThresholdError::SchemaMismatch { stored, current } = err {
@@ -128,11 +134,10 @@ impl RocksStorage {
         let cf = self.cf_handle(CF_METADATA)?;
         match self.db.get_cf(cf, b"schema_version") {
             Ok(Some(bytes)) if bytes.len() == 4 => {
-                let array: [u8; 4] =
-                    bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
-                        operation: "schema_version decode".to_string(),
-                        details: "corrupt schema version".to_string(),
-                    })?;
+                let array: [u8; 4] = bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
+                    operation: "schema_version decode".to_string(),
+                    details: "corrupt schema version".to_string(),
+                })?;
                 Ok(Some(u32::from_be_bytes(array)))
             }
             Ok(Some(_)) => Err(ThresholdError::StorageError {
@@ -157,61 +162,61 @@ impl RocksStorage {
         bincode::DefaultOptions::new().with_fixint_encoding().deserialize(bytes).map_err(|err| err.into())
     }
 
-    fn key_group(group_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(4 + group_id.len()).prefix(b"grp:").hash32(group_id).build()
+    fn key_group(group_id: &GroupId) -> Vec<u8> {
+        KeyBuilder::with_capacity(4 + group_id.as_hash().len()).prefix(b"grp:").hash32(group_id.as_hash()).build()
     }
 
-    fn key_event(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(4 + event_id.len()).prefix(b"evt:").hash32(event_id).build()
+    fn key_event(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(4 + event_id.as_hash().len()).prefix(b"evt:").hash32(event_id.as_hash()).build()
     }
 
-    fn key_event_active_template(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(11 + event_id.len()).prefix(b"evt_active:").hash32(event_id).build()
+    fn key_event_active_template(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(11 + event_id.as_hash().len()).prefix(b"evt_active:").hash32(event_id.as_hash()).build()
     }
 
-    fn key_event_completion(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(15 + event_id.len()).prefix(b"evt_completion:").hash32(event_id).build()
+    fn key_event_completion(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(15 + event_id.as_hash().len()).prefix(b"evt_completion:").hash32(event_id.as_hash()).build()
     }
 
-    fn key_event_crdt(event_id: &Hash32, tx_template_hash: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + event_id.len() + 1 + tx_template_hash.len())
+    fn key_event_crdt(event_id: &EventId, tx_template_hash: &TxTemplateHash) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.as_hash().len() + 1 + tx_template_hash.as_hash().len())
             .prefix(b"evt_crdt:")
-            .hash32(event_id)
+            .hash32(event_id.as_hash())
             .sep()
-            .hash32(tx_template_hash)
+            .hash32(tx_template_hash.as_hash())
             .build()
     }
 
-    fn key_event_crdt_prefix(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + event_id.len() + 1).prefix(b"evt_crdt:").hash32(event_id).sep().build()
+    fn key_event_crdt_prefix(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.as_hash().len() + 1).prefix(b"evt_crdt:").hash32(event_id.as_hash()).sep().build()
     }
 
-    fn key_event_phase(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(10 + event_id.len()).prefix(b"evt_phase:").hash32(event_id).build()
+    fn key_event_phase(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(10 + event_id.as_hash().len()).prefix(b"evt_phase:").hash32(event_id.as_hash()).build()
     }
 
-    fn key_event_signed_hash(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(17 + event_id.len()).prefix(b"evt_signed_hash:").hash32(event_id).build()
+    fn key_event_signed_hash(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(17 + event_id.as_hash().len()).prefix(b"evt_signed_hash:").hash32(event_id.as_hash()).build()
     }
 
-    fn key_event_proposal_prefix(event_id: &Hash32) -> Vec<u8> {
-        KeyBuilder::with_capacity(9 + event_id.len() + 1).prefix(b"evt_prop:").hash32(event_id).sep().build()
+    fn key_event_proposal_prefix(event_id: &EventId) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.as_hash().len() + 1).prefix(b"evt_prop:").hash32(event_id.as_hash()).sep().build()
     }
 
-    fn key_event_proposal_round_prefix(event_id: &Hash32, round: u32) -> Vec<u8> {
-        KeyBuilder::with_capacity(9 + event_id.len() + 1 + 4 + 1)
+    fn key_event_proposal_round_prefix(event_id: &EventId, round: u32) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.as_hash().len() + 1 + 4 + 1)
             .prefix(b"evt_prop:")
-            .hash32(event_id)
+            .hash32(event_id.as_hash())
             .sep()
             .u32_be(round)
             .sep()
             .build()
     }
 
-    fn key_event_proposal(event_id: &Hash32, round: u32, proposer_peer_id: &PeerId) -> Vec<u8> {
-        KeyBuilder::with_capacity(9 + event_id.len() + 1 + 4 + 1 + proposer_peer_id.len())
+    fn key_event_proposal(event_id: &EventId, round: u32, proposer_peer_id: &PeerId) -> Vec<u8> {
+        KeyBuilder::with_capacity(9 + event_id.as_hash().len() + 1 + 4 + 1 + proposer_peer_id.len())
             .prefix(b"evt_prop:")
-            .hash32(event_id)
+            .hash32(event_id.as_hash())
             .sep()
             .u32_be(round)
             .sep()
@@ -232,6 +237,22 @@ impl RocksStorage {
 
     fn key_volume(day_start_nanos: u64) -> Vec<u8> {
         KeyBuilder::with_capacity(4 + 8).prefix(b"vol:").u64_be(day_start_nanos).build()
+    }
+
+    fn key_hyperlane_delivered_count() -> &'static [u8] {
+        b"hyperlane_delivered_count"
+    }
+
+    fn key_hyperlane_message(message_id: &ExternalId) -> Vec<u8> {
+        KeyBuilder::with_capacity(7 + message_id.as_hash().len()).prefix(b"hl_msg:").hash32(message_id.as_hash()).build()
+    }
+
+    fn key_hyperlane_delivery_index(daa_score: u64, message_id: &ExternalId) -> Vec<u8> {
+        KeyBuilder::with_capacity(7 + 8 + message_id.as_hash().len())
+            .prefix(b"hl_dlv:")
+            .u64_be(daa_score)
+            .hash32(message_id.as_hash())
+            .build()
     }
 
     fn add_to_daily_volume(&self, amount_sompi: u64, timestamp_nanos: u64) -> Result<(), ThresholdError> {
@@ -295,7 +316,7 @@ impl RocksStorage {
 }
 
 impl PhaseStorage for RocksStorage {
-    fn try_enter_proposing(&self, event_id: &Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn try_enter_proposing(&self, event_id: &EventId, now_ns: u64) -> Result<bool, ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -315,7 +336,7 @@ impl PhaseStorage for RocksStorage {
         Ok(true)
     }
 
-    fn get_phase(&self, event_id: &Hash32) -> Result<Option<EventPhaseState>, ThresholdError> {
+    fn get_phase(&self, event_id: &EventId) -> Result<Option<EventPhaseState>, ThresholdError> {
         let cf = self.cf_handle(CF_EVENT_PHASE)?;
         let key = Self::key_event_phase(event_id);
         let Some(bytes) = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_phase", err))? else {
@@ -324,7 +345,7 @@ impl PhaseStorage for RocksStorage {
         Ok(Some(Self::decode(&bytes)?))
     }
 
-    fn get_signed_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+    fn get_signed_hash(&self, event_id: &EventId) -> Result<Option<TxTemplateHash>, ThresholdError> {
         let cf = self.cf_handle(CF_EVENT_SIGNED_HASH)?;
         let key = Self::key_event_signed_hash(event_id);
         let Some(bytes) = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_signed_hash", err))? else {
@@ -338,13 +359,13 @@ impl PhaseStorage for RocksStorage {
         }
         let mut out = [0u8; 32];
         out.copy_from_slice(&bytes);
-        Ok(Some(out))
+        Ok(Some(TxTemplateHash::from(out)))
     }
 
     fn record_signed_hash(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: Hash32,
+        event_id: &EventId,
+        tx_template_hash: TxTemplateHash,
         _now_ns: u64,
     ) -> Result<RecordSignedHashResult, ThresholdError> {
         let _guard = self
@@ -364,19 +385,18 @@ impl PhaseStorage for RocksStorage {
             }
             let mut existing_hash = [0u8; 32];
             existing_hash.copy_from_slice(&existing);
+            let existing_hash = TxTemplateHash::from(existing_hash);
             if existing_hash == tx_template_hash {
                 return Ok(RecordSignedHashResult::AlreadySame);
             }
             return Ok(RecordSignedHashResult::Conflict { existing: existing_hash, attempted: tx_template_hash });
         }
 
-        self.db
-            .put_cf(cf, key, tx_template_hash)
-            .map_err(|err| storage_err!("rocksdb put_cf evt_signed_hash", err))?;
+        self.db.put_cf(cf, key, tx_template_hash.as_hash()).map_err(|err| storage_err!("rocksdb put_cf evt_signed_hash", err))?;
         Ok(RecordSignedHashResult::Set)
     }
 
-    fn adopt_round_if_behind(&self, event_id: &Hash32, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn adopt_round_if_behind(&self, event_id: &EventId, new_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -406,7 +426,7 @@ impl PhaseStorage for RocksStorage {
         Ok(true)
     }
 
-    fn set_own_proposal_hash(&self, event_id: &Hash32, tx_template_hash: Hash32) -> Result<(), ThresholdError> {
+    fn set_own_proposal_hash(&self, event_id: &EventId, tx_template_hash: TxTemplateHash) -> Result<(), ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -454,6 +474,17 @@ impl PhaseStorage for RocksStorage {
         if let Some(existing) = self.db.get_cf(cf_prop, &key).map_err(|err| storage_err!("rocksdb get_cf evt_prop", err))? {
             let existing: Proposal = Self::decode(&existing)?;
             if existing.tx_template_hash != proposal.tx_template_hash {
+                // Crash-fault model behavior: detect and record equivocation, but do not attempt to punish
+                // or “resolve” it at this layer. We keep the first stored proposal and reject conflicting
+                // votes from the same peer for the same (event_id, round).
+                crate::infrastructure::audit::audit(crate::infrastructure::audit::AuditEvent::ProposalEquivocationDetected {
+                    event_id: hex::encode(proposal.event_id),
+                    round: proposal.round,
+                    proposer_peer_id: proposal.proposer_peer_id.to_string(),
+                    existing_tx_template_hash: hex::encode(existing.tx_template_hash),
+                    new_tx_template_hash: hex::encode(proposal.tx_template_hash),
+                    timestamp_nanos: now_ns,
+                });
                 return Ok(StoreProposalResult::Equivocation {
                     existing_hash: existing.tx_template_hash,
                     new_hash: proposal.tx_template_hash,
@@ -469,7 +500,7 @@ impl PhaseStorage for RocksStorage {
         Ok(StoreProposalResult::Stored)
     }
 
-    fn get_proposals(&self, event_id: &Hash32, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
+    fn get_proposals(&self, event_id: &EventId, round: u32) -> Result<Vec<Proposal>, ThresholdError> {
         let cf = self.cf_handle(CF_EVENT_PROPOSAL)?;
         let prefix = Self::key_event_proposal_round_prefix(event_id, round);
         let iter = self.db.iterator_cf(cf, IteratorMode::From(prefix.as_slice(), Direction::Forward));
@@ -484,11 +515,11 @@ impl PhaseStorage for RocksStorage {
         Ok(out)
     }
 
-    fn proposal_count(&self, event_id: &Hash32, round: u32) -> Result<usize, ThresholdError> {
+    fn proposal_count(&self, event_id: &EventId, round: u32) -> Result<usize, ThresholdError> {
         Ok(self.get_proposals(event_id, round)?.len())
     }
 
-    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<Hash32>, ThresholdError> {
+    fn get_events_in_phase(&self, phase: EventPhase) -> Result<Vec<EventId>, ThresholdError> {
         let cf = self.cf_handle(CF_EVENT_PHASE)?;
         let mut out = Vec::new();
         let iter = self.db.iterator_cf(cf, IteratorMode::Start);
@@ -504,12 +535,18 @@ impl PhaseStorage for RocksStorage {
             let start = b"evt_phase:".len();
             let mut id = [0u8; 32];
             id.copy_from_slice(&key[start..start + 32]);
-            out.push(id);
+            out.push(EventId::from(id));
         }
         Ok(out)
     }
 
-    fn mark_committed(&self, event_id: &Hash32, round: u32, canonical_hash: Hash32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn mark_committed(
+        &self,
+        event_id: &EventId,
+        round: u32,
+        canonical_hash: TxTemplateHash,
+        now_ns: u64,
+    ) -> Result<bool, ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -543,7 +580,7 @@ impl PhaseStorage for RocksStorage {
         Ok(true)
     }
 
-    fn mark_completed(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+    fn mark_completed(&self, event_id: &EventId, now_ns: u64) -> Result<(), ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -560,7 +597,7 @@ impl PhaseStorage for RocksStorage {
         Ok(())
     }
 
-    fn fail_and_bump_round(&self, event_id: &Hash32, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
+    fn fail_and_bump_round(&self, event_id: &EventId, expected_round: u32, now_ns: u64) -> Result<bool, ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -588,7 +625,7 @@ impl PhaseStorage for RocksStorage {
         Ok(true)
     }
 
-    fn mark_abandoned(&self, event_id: &Hash32, now_ns: u64) -> Result<(), ThresholdError> {
+    fn mark_abandoned(&self, event_id: &EventId, now_ns: u64) -> Result<(), ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -605,7 +642,7 @@ impl PhaseStorage for RocksStorage {
         Ok(())
     }
 
-    fn clear_stale_proposals(&self, event_id: &Hash32, before_round: u32) -> Result<usize, ThresholdError> {
+    fn clear_stale_proposals(&self, event_id: &EventId, before_round: u32) -> Result<usize, ThresholdError> {
         let _guard = self
             .phase_lock
             .lock()
@@ -664,6 +701,7 @@ impl PhaseStorage for RocksStorage {
             let start = b"evt_phase:".len();
             let mut event_id = [0u8; 32];
             event_id.copy_from_slice(&key[start..start + 32]);
+            let event_id = EventId::from(event_id);
 
             batch.delete_cf(cf_phase, key);
 
@@ -685,7 +723,7 @@ impl PhaseStorage for RocksStorage {
         Ok(deleted)
     }
 
-    fn has_proposal_from(&self, event_id: &Hash32, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
+    fn has_proposal_from(&self, event_id: &EventId, round: u32, peer_id: &PeerId) -> Result<bool, ThresholdError> {
         let cf = self.cf_handle(CF_EVENT_PROPOSAL)?;
         let key = Self::key_event_proposal(event_id, round, peer_id);
         Ok(self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb get_cf evt_prop", err))?.is_some())
@@ -702,16 +740,16 @@ impl RocksStorage {
 }
 
 impl Storage for RocksStorage {
-    fn upsert_group_config(&self, group_id: Hash32, config: GroupConfig) -> Result<(), ThresholdError> {
-        trace!("upsert_group_config group_id={}", hex::encode(group_id));
+    fn upsert_group_config(&self, group_id: GroupId, config: GroupConfig) -> Result<(), ThresholdError> {
+        trace!("upsert_group_config group_id={:#x}", group_id);
         let key = Self::key_group(&group_id);
         let value = Self::encode(&config)?;
         let cf = self.cf_handle(CF_GROUP)?;
         self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))
     }
 
-    fn get_group_config(&self, group_id: &Hash32) -> Result<Option<GroupConfig>, ThresholdError> {
-        trace!("get_group_config group_id={}", hex::encode(group_id));
+    fn get_group_config(&self, group_id: &GroupId) -> Result<Option<GroupConfig>, ThresholdError> {
+        trace!("get_group_config group_id={:#x}", group_id);
         let key = Self::key_group(group_id);
         let cf = self.cf_handle(CF_GROUP)?;
         let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
@@ -721,8 +759,8 @@ impl Storage for RocksStorage {
         }
     }
 
-    fn insert_event(&self, event_id: Hash32, event: StoredEvent) -> Result<(), ThresholdError> {
-        debug!("insert_event event_id={} external_id={}", hex::encode(event_id), hex::encode(event.event.external_id));
+    fn insert_event(&self, event_id: EventId, event: StoredEvent) -> Result<(), ThresholdError> {
+        debug!("insert_event event_id={:#x} external_id={:#x}", event_id, event.event.external_id);
         let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
         if self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?.is_some() {
@@ -731,11 +769,11 @@ impl Storage for RocksStorage {
 
         let value = Self::encode(&event)?;
         self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))?;
-        debug!("event stored event_id={}", hex::encode(event_id));
+        debug!("event stored event_id={:#x}", event_id);
         Ok(())
     }
 
-    fn insert_event_if_not_exists(&self, event_id: Hash32, event: StoredEvent) -> Result<bool, ThresholdError> {
+    fn insert_event_if_not_exists(&self, event_id: EventId, event: StoredEvent) -> Result<bool, ThresholdError> {
         let key = Self::key_event(&event_id);
         let cf = self.cf_handle(CF_EVENT)?;
         if self.db.get_cf(cf, &key).map_err(|e| storage_err!("rocksdb get_cf event_exists", e))?.is_some() {
@@ -747,8 +785,8 @@ impl Storage for RocksStorage {
         Ok(true)
     }
 
-    fn get_event(&self, event_id: &Hash32) -> Result<Option<StoredEvent>, ThresholdError> {
-        trace!("get_event event_id={}", hex::encode(event_id));
+    fn get_event(&self, event_id: &EventId) -> Result<Option<StoredEvent>, ThresholdError> {
+        trace!("get_event event_id={:#x}", event_id);
         let key = Self::key_event(event_id);
         let cf = self.cf_handle(CF_EVENT)?;
         let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
@@ -758,7 +796,7 @@ impl Storage for RocksStorage {
         }
     }
 
-    fn get_event_active_template_hash(&self, event_id: &Hash32) -> Result<Option<Hash32>, ThresholdError> {
+    fn get_event_active_template_hash(&self, event_id: &EventId) -> Result<Option<TxTemplateHash>, ThresholdError> {
         let key = Self::key_event_active_template(event_id);
         let cf = self.cf_handle(CF_EVENT_INDEX)?;
         let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
@@ -767,26 +805,27 @@ impl Storage for RocksStorage {
             Some(bytes) => {
                 let array: [u8; 32] =
                     bytes.as_slice().try_into().map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
-                Ok(Some(array))
+                Ok(Some(TxTemplateHash::from(array)))
             }
         }
     }
 
-    fn set_event_active_template_hash(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<(), ThresholdError> {
+    fn set_event_active_template_hash(&self, event_id: &EventId, tx_template_hash: &TxTemplateHash) -> Result<(), ThresholdError> {
         let key = Self::key_event_active_template(event_id);
         let cf = self.cf_handle(CF_EVENT_INDEX)?;
         if let Some(existing) = self.db.get_cf(cf, &key).map_err(|err| storage_err!("rocksdb", err))? {
             let existing: [u8; 32] =
                 existing.as_slice().try_into().map_err(|_| storage_err!("decode active tx_template_hash", "corrupt value"))?;
-            if &existing != tx_template_hash {
-                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
+            let existing = TxTemplateHash::from(existing);
+            if existing != *tx_template_hash {
+                return Err(ThresholdError::PsktMismatch { expected: existing.to_string(), actual: tx_template_hash.to_string() });
             }
             return Ok(());
         }
-        self.db.put_cf(cf, key, tx_template_hash).map_err(|err| storage_err!("rocksdb", err))
+        self.db.put_cf(cf, key, tx_template_hash.as_hash()).map_err(|err| storage_err!("rocksdb", err))
     }
 
-    fn get_event_completion(&self, event_id: &Hash32) -> Result<Option<StoredCompletionRecord>, ThresholdError> {
+    fn get_event_completion(&self, event_id: &EventId) -> Result<Option<StoredCompletionRecord>, ThresholdError> {
         let key = Self::key_event_completion(event_id);
         let cf = self.cf_handle(CF_EVENT_INDEX)?;
         let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
@@ -796,14 +835,18 @@ impl Storage for RocksStorage {
         }
     }
 
-    fn set_event_completion(&self, event_id: &Hash32, completion: &StoredCompletionRecord) -> Result<(), ThresholdError> {
+    fn set_event_completion(&self, event_id: &EventId, completion: &StoredCompletionRecord) -> Result<(), ThresholdError> {
         let key = Self::key_event_completion(event_id);
         let cf = self.cf_handle(CF_EVENT_INDEX)?;
         let value = Self::encode(completion)?;
         self.db.put_cf(cf, key, value).map_err(|err| storage_err!("rocksdb", err))
     }
 
-    fn get_event_crdt(&self, event_id: &Hash32, tx_template_hash: &Hash32) -> Result<Option<StoredEventCrdt>, ThresholdError> {
+    fn get_event_crdt(
+        &self,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
+    ) -> Result<Option<StoredEventCrdt>, ThresholdError> {
         let key = Self::key_event_crdt(event_id, tx_template_hash);
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
         let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
@@ -815,22 +858,13 @@ impl Storage for RocksStorage {
 
     fn merge_event_crdt(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         incoming: &EventCrdtState,
         signing_material: Option<&CrdtSigningMaterial>,
         kpsbt_blob: Option<&[u8]>,
     ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
         let _guard = self.crdt_lock.lock().map_err(|_| storage_err!("rocks crdt lock", "poisoned"))?;
-
-        // Enforce a single tx template per event_id (leaderless convergence invariant).
-        // IMPORTANT: do not *set* the active template hash based on signature-only messages.
-        // Only lock the event_id -> template mapping once we have validated signing material.
-        if let Some(existing) = self.get_event_active_template_hash(event_id)? {
-            if &existing != tx_template_hash {
-                return Err(ThresholdError::PsktMismatch { expected: hex::encode(existing), actual: hex::encode(tx_template_hash) });
-            }
-        }
 
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
         let key = Self::key_event_crdt(event_id, tx_template_hash);
@@ -855,38 +889,15 @@ impl Storage for RocksStorage {
 
         if local.signing_material.is_none() {
             if let Some(ev) = signing_material {
-                crate::domain::normalization::validate_source_data(&ev.audit.source_data)?;
-                let computed_event_id = crate::domain::hashes::compute_event_id(&ev.event);
-                if computed_event_id != *event_id {
-                    warn!(
-                        "rejecting CRDT signing_material with mismatched event_id expected={} computed={}",
-                        hex::encode(event_id),
-                        hex::encode(computed_event_id)
-                    );
-                } else {
-                    local.signing_material = Some(ev.clone());
-                    changed = true;
-                }
+                local.signing_material = Some(ev.clone());
+                changed = true;
             }
         }
 
         if local.kpsbt_blob.is_none() {
             if let Some(blob) = kpsbt_blob {
-                let signer_pskt = pskt_multisig::deserialize_pskt_signer(blob)?;
-                let computed_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
-                if computed_hash != *tx_template_hash {
-                    warn!(
-                        "rejecting CRDT kpsbt_blob with mismatched tx_template_hash expected={} computed={} kpsbt_len={}",
-                        hex::encode(tx_template_hash),
-                        hex::encode(computed_hash),
-                        blob.len()
-                    );
-                } else {
-                    // Only now we can safely lock the active template hash (prevents DoS by signature-only broadcasts).
-                    self.set_event_active_template_hash(event_id, tx_template_hash)?;
-                    local.kpsbt_blob = Some(blob.to_vec());
-                    changed = true;
-                }
+                local.kpsbt_blob = Some(blob.to_vec());
+                changed = true;
             }
         }
 
@@ -944,8 +955,8 @@ impl Storage for RocksStorage {
 
     fn add_signature_to_crdt(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         input_index: u32,
         pubkey: &[u8],
         signature: &[u8],
@@ -996,8 +1007,8 @@ impl Storage for RocksStorage {
 
     fn mark_crdt_completed(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         tx_id: TransactionId,
         submitter_peer_id: &PeerId,
         timestamp_nanos: u64,
@@ -1005,12 +1016,7 @@ impl Storage for RocksStorage {
     ) -> Result<(StoredEventCrdt, bool), ThresholdError> {
         let incoming = EventCrdtState {
             signatures: vec![],
-            completion: Some(CompletionRecord {
-                tx_id: *tx_id.as_hash(),
-                submitter_peer_id: submitter_peer_id.clone(),
-                timestamp_nanos,
-                blue_score,
-            }),
+            completion: Some(CompletionRecord { tx_id, submitter_peer_id: submitter_peer_id.clone(), timestamp_nanos, blue_score }),
             signing_material: None,
             kpsbt_blob: None,
             version: 0,
@@ -1021,8 +1027,8 @@ impl Storage for RocksStorage {
 
     fn crdt_has_threshold(
         &self,
-        event_id: &Hash32,
-        tx_template_hash: &Hash32,
+        event_id: &EventId,
+        tx_template_hash: &TxTemplateHash,
         input_count: usize,
         required: usize,
     ) -> Result<bool, ThresholdError> {
@@ -1063,7 +1069,7 @@ impl Storage for RocksStorage {
         Ok(results)
     }
 
-    fn list_event_crdts_for_event(&self, event_id: &Hash32) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
+    fn list_event_crdts_for_event(&self, event_id: &EventId) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
         let prefix = Self::key_event_crdt_prefix(event_id);
         let cf = self.cf_handle(CF_EVENT_CRDT)?;
         let mut results = Vec::new();
@@ -1179,12 +1185,7 @@ impl Storage for RocksStorage {
             return Ok(false);
         }
         self.db.put_cf(cf, key, timestamp_nanos.to_be_bytes()).map_err(|err| storage_err!("rocksdb", err))?;
-        debug!(
-            "marked message seen sender_peer_id={} session_id={} seq_no={}",
-            sender_peer_id,
-            hex::encode(session_id.as_hash()),
-            seq_no
-        );
+        debug!("marked message seen sender_peer_id={} session_id={} seq_no={}", sender_peer_id, session_id, seq_no);
         Ok(true)
     }
 
@@ -1200,17 +1201,13 @@ impl Storage for RocksStorage {
                 break;
             }
             if value.len() != 8 {
-                warn!(
-                    "corrupted seen-message timestamp; skipping key_hex={} value_len={}",
-                    hex::encode(&key),
-                    value.len()
-                );
+                warn!("corrupted seen-message timestamp; skipping key_hex={} value_len={}", crate::foundation::hx(&key), value.len());
                 continue;
             }
             let timestamp: u64 = match value.as_ref().try_into() {
                 Ok(bytes) => u64::from_be_bytes(bytes),
                 Err(_) => {
-                    warn!("corrupted seen-message timestamp bytes; skipping key_hex={}", hex::encode(&key));
+                    warn!("corrupted seen-message timestamp bytes; skipping key_hex={}", crate::foundation::hx(&key));
                     continue;
                 }
             };
@@ -1225,6 +1222,175 @@ impl Storage for RocksStorage {
         }
         debug!("cleanup_seen_messages complete older_than_nanos={} deleted={}", older_than_nanos, deleted);
         Ok(deleted)
+    }
+
+    fn hyperlane_get_delivered_count(&self) -> Result<u32, ThresholdError> {
+        let cf = self.cf_handle(CF_METADATA)?;
+        let value = self.db.get_cf(cf, Self::key_hyperlane_delivered_count()).map_err(|err| storage_err!("rocksdb", err))?;
+        let Some(bytes) = value else { return Ok(0) };
+        if bytes.len() != 8 {
+            return Err(ThresholdError::StorageError {
+                operation: "hyperlane_delivered_count decode".to_string(),
+                details: format!("invalid length {}", bytes.len()),
+            });
+        }
+        let arr: [u8; 8] = bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
+            operation: "hyperlane_delivered_count decode".to_string(),
+            details: "invalid bytes".to_string(),
+        })?;
+        let count = u64::from_be_bytes(arr);
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    fn hyperlane_is_message_delivered(&self, message_id: &ExternalId) -> Result<bool, ThresholdError> {
+        let cf = self.cf_handle(CF_HYPERLANE_MESSAGE)?;
+        let key = Self::key_hyperlane_message(message_id);
+        Ok(self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?.is_some())
+    }
+
+    fn hyperlane_get_delivery(&self, message_id: &ExternalId) -> Result<Option<HyperlaneDeliveryRecord>, ThresholdError> {
+        let cf = self.cf_handle(CF_HYPERLANE_MESSAGE)?;
+        let key = Self::key_hyperlane_message(message_id);
+        let value = self.db.get_cf(cf, key).map_err(|err| storage_err!("rocksdb", err))?;
+        match value {
+            Some(bytes) => {
+                let record: HyperlaneDeliveredMessage = Self::decode(&bytes)?;
+                Ok(Some(record.delivery))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn hyperlane_get_deliveries_in_range(
+        &self,
+        from_daa_score: u64,
+        to_daa_score: u64,
+    ) -> Result<Vec<HyperlaneDeliveryRecord>, ThresholdError> {
+        if from_daa_score > to_daa_score {
+            return Ok(Vec::new());
+        }
+        let prefix = b"hl_dlv:";
+        let cf = self.cf_handle(CF_HYPERLANE_DELIVERY)?;
+        let start_key = KeyBuilder::with_capacity(prefix.len() + 8).prefix(prefix).u64_be(from_daa_score).build();
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(&start_key, Direction::Forward));
+        let mut out = Vec::new();
+        for item in iter {
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb", err))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            if key.len() < prefix.len() + 8 {
+                continue;
+            }
+            let mut daa_bytes = [0u8; 8];
+            daa_bytes.copy_from_slice(&key[prefix.len()..prefix.len() + 8]);
+            let daa_score = u64::from_be_bytes(daa_bytes);
+            if daa_score > to_daa_score {
+                break;
+            }
+            let record: HyperlaneDeliveryRecord = Self::decode(&value)?;
+            out.push(record);
+        }
+        Ok(out)
+    }
+
+    fn hyperlane_get_messages_in_range(
+        &self,
+        from_daa_score: u64,
+        to_daa_score: u64,
+    ) -> Result<Vec<HyperlaneMessageRecord>, ThresholdError> {
+        if from_daa_score > to_daa_score {
+            return Ok(Vec::new());
+        }
+        let prefix = b"hl_dlv:";
+        let cf = self.cf_handle(CF_HYPERLANE_DELIVERY)?;
+        let start_key = KeyBuilder::with_capacity(prefix.len() + 8).prefix(prefix).u64_be(from_daa_score).build();
+        let iter = self.db.iterator_cf(cf, IteratorMode::From(&start_key, Direction::Forward));
+        let mut out = Vec::new();
+        for item in iter {
+            let (key, value) = item.map_err(|err| storage_err!("rocksdb", err))?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            if key.len() < prefix.len() + 8 {
+                continue;
+            }
+            let mut daa_bytes = [0u8; 8];
+            daa_bytes.copy_from_slice(&key[prefix.len()..prefix.len() + 8]);
+            let daa_score = u64::from_be_bytes(daa_bytes);
+            if daa_score > to_daa_score {
+                break;
+            }
+            let delivery: HyperlaneDeliveryRecord = Self::decode(&value)?;
+            let cf_msg = self.cf_handle(CF_HYPERLANE_MESSAGE)?;
+            let msg_key = Self::key_hyperlane_message(&delivery.message_id);
+            let Some(bytes) = self.db.get_cf(cf_msg, msg_key).map_err(|err| storage_err!("rocksdb", err))? else {
+                continue;
+            };
+            let record: HyperlaneDeliveredMessage = Self::decode(&bytes)?;
+            out.push(record.message);
+        }
+        Ok(out)
+    }
+
+    fn hyperlane_get_latest_delivery_daa_score(&self) -> Result<Option<u64>, ThresholdError> {
+        let prefix = b"hl_dlv:";
+        let cf = self.cf_handle(CF_HYPERLANE_DELIVERY)?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::End);
+        for item in iter {
+            let (key, _value) = item.map_err(|err| storage_err!("rocksdb", err))?;
+            if !key.starts_with(prefix) {
+                continue;
+            }
+            if key.len() < prefix.len() + 8 {
+                continue;
+            }
+            let mut daa_bytes = [0u8; 8];
+            daa_bytes.copy_from_slice(&key[prefix.len()..prefix.len() + 8]);
+            return Ok(Some(u64::from_be_bytes(daa_bytes)));
+        }
+        Ok(None)
+    }
+
+    fn hyperlane_mark_delivered(&self, delivered: &HyperlaneDeliveredMessage) -> Result<bool, ThresholdError> {
+        let _guard = self
+            .hyperlane_lock
+            .lock()
+            .map_err(|_| ThresholdError::StorageError { operation: "hyperlane_lock".to_string(), details: "poisoned".to_string() })?;
+
+        let cf_msg = self.cf_handle(CF_HYPERLANE_MESSAGE)?;
+        let cf_dlv = self.cf_handle(CF_HYPERLANE_DELIVERY)?;
+        let cf_meta = self.cf_handle(CF_METADATA)?;
+
+        let message_key = Self::key_hyperlane_message(&delivered.delivery.message_id);
+        if self.db.get_cf(cf_msg, &message_key).map_err(|err| storage_err!("rocksdb", err))?.is_some() {
+            return Ok(false);
+        }
+
+        let delivery_key = Self::key_hyperlane_delivery_index(delivered.delivery.daa_score, &delivered.delivery.message_id);
+        let message_value = Self::encode(delivered)?;
+        let delivery_value = Self::encode(&delivered.delivery)?;
+
+        let count_key = Self::key_hyperlane_delivered_count();
+        let existing = self.db.get_cf(cf_meta, count_key).map_err(|err| storage_err!("rocksdb", err))?;
+        let mut count = match existing {
+            Some(bytes) if bytes.len() == 8 => {
+                let arr: [u8; 8] = bytes.as_slice().try_into().map_err(|_| ThresholdError::StorageError {
+                    operation: "hyperlane_delivered_count decode".to_string(),
+                    details: "invalid bytes".to_string(),
+                })?;
+                u64::from_be_bytes(arr)
+            }
+            _ => 0,
+        };
+        count = count.saturating_add(1);
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf_msg, message_key, message_value);
+        batch.put_cf(cf_dlv, delivery_key, delivery_value);
+        batch.put_cf(cf_meta, count_key, count.to_be_bytes());
+        self.db.write(batch).map_err(|err| storage_err!("rocksdb", err))?;
+        Ok(true)
     }
 
     fn begin_batch(&self) -> Result<Box<dyn BatchTransaction + '_>, ThresholdError> {

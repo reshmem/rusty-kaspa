@@ -1,7 +1,7 @@
 use crate::domain::pskt::multisig as pskt_multisig;
 use crate::domain::signing::results::{SignatureOutput, SigningResult};
 use crate::domain::signing::{SignerBackend, SigningBackendKind};
-use crate::foundation::Hash32;
+use crate::foundation::EventId;
 use crate::foundation::SigningKeypair;
 use crate::foundation::ThresholdError;
 
@@ -20,7 +20,7 @@ impl SignerBackend for ThresholdSigner {
         SigningBackendKind::Threshold
     }
 
-    fn sign(&self, kpsbt_blob: &[u8], event_id: &Hash32) -> Result<SigningResult, ThresholdError> {
+    fn sign(&self, kpsbt_blob: &[u8], event_id: &EventId) -> Result<SigningResult, ThresholdError> {
         let keypair = self.keypair.to_secp256k1()?;
         let canonical_pubkey = pskt_multisig::canonical_schnorr_pubkey_for_keypair(&keypair);
         let signer_pskt = pskt_multisig::deserialize_pskt_signer(kpsbt_blob)?;

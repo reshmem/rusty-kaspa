@@ -61,3 +61,5 @@ pub const CF_EVENT_PROPOSAL: &str = "event_proposal";
 pub const CF_EVENT_SIGNED_HASH: &str = "event_signed_hash";
 pub const CF_VOLUME: &str = "volume";
 pub const CF_SEEN: &str = "seen";
+pub const CF_HYPERLANE_MESSAGE: &str = "hyperlane_message";
+pub const CF_HYPERLANE_DELIVERY: &str = "hyperlane_delivery";
