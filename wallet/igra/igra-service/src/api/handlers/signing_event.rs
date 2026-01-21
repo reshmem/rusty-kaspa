@@ -36,6 +36,7 @@ pub async fn handle_signing_event_submit(
     match submit_signing_event(&state.event_ctx, params).await {
         Ok(result) => {
             state.metrics.inc_rpc_request("signing_event.submit", "ok");
+            state.metrics.inc_submitted_event("signing_event");
             info!(
                 "rpc signing_event.submit ok session_id={} event_id={} tx_template_hash={}",
                 result.session_id_hex, result.event_id_hex, result.tx_template_hash_hex

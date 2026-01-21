@@ -8,4 +8,5 @@ pub mod ism;
 pub mod mailbox;
 pub mod rpc;
 pub mod signing_event;
+pub mod stats;
 pub mod types;

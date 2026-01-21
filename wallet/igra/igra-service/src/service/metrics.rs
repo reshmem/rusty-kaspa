@@ -12,6 +12,13 @@ fn metrics_err(operation: &str, err: impl std::fmt::Display) -> ThresholdError {
 #[derive(Debug, Clone, Copy)]
 pub struct MetricsSnapshot {
     pub uptime: Duration,
+    pub submitted_events_total: u64,
+    pub submitted_events_signing_event_total: u64,
+    pub submitted_events_hyperlane_total: u64,
+    pub tx_submissions_total: u64,
+    pub tx_submissions_ok_total: u64,
+    pub tx_submissions_duplicate_total: u64,
+    pub tx_submissions_error_total: u64,
     pub sessions_proposal_received: u64,
     pub sessions_finalized: u64,
     pub sessions_timed_out: u64,
@@ -30,6 +37,8 @@ pub struct MetricsSnapshot {
 
 pub struct Metrics {
     registry: Registry,
+    submitted_events_total: IntCounterVec,
+    tx_submissions_total: IntCounterVec,
     signing_sessions_total: IntCounterVec,
     signer_acks_total: IntCounterVec,
     partial_sigs_total: IntCounter,
@@ -42,6 +51,13 @@ pub struct Metrics {
     crdt_gc_deleted_total: IntCounter,
     tx_template_hash_mismatches_total: IntCounterVec,
     started_at: Instant,
+    submitted_events_total_value: AtomicU64,
+    submitted_events_signing_event_total_value: AtomicU64,
+    submitted_events_hyperlane_total_value: AtomicU64,
+    tx_submissions_total_value: AtomicU64,
+    tx_submissions_ok_total_value: AtomicU64,
+    tx_submissions_duplicate_total_value: AtomicU64,
+    tx_submissions_error_total_value: AtomicU64,
     sessions_proposal_received: AtomicU64,
     sessions_finalized: AtomicU64,
     sessions_timed_out: AtomicU64,
@@ -62,6 +78,12 @@ impl Metrics {
     pub fn new() -> Result<Self, ThresholdError> {
         debug!("initializing prometheus metrics");
         let registry = Registry::new();
+        let submitted_events_total =
+            IntCounterVec::new(prometheus::Opts::new("submitted_events_total", "Submitted signing events by source"), &["source"])
+                .map_err(|err| metrics_err("submitted_events_total", err))?;
+        let tx_submissions_total =
+            IntCounterVec::new(prometheus::Opts::new("tx_submissions_total", "Transaction submissions by result"), &["result"])
+                .map_err(|err| metrics_err("tx_submissions_total", err))?;
         let signing_sessions_total =
             IntCounterVec::new(prometheus::Opts::new("signing_sessions_total", "Signing sessions by stage"), &["stage"])
                 .map_err(|err| metrics_err("signing_sessions_total", err))?;
@@ -99,6 +121,10 @@ impl Metrics {
         .map_err(|err| metrics_err("tx_template_hash_mismatches_total", err))?;
 
         registry
+            .register(Box::new(submitted_events_total.clone()))
+            .map_err(|err| metrics_err("register submitted_events_total", err))?;
+        registry.register(Box::new(tx_submissions_total.clone())).map_err(|err| metrics_err("register tx_submissions_total", err))?;
+        registry
             .register(Box::new(signing_sessions_total.clone()))
             .map_err(|err| metrics_err("register signing_sessions_total", err))?;
         registry.register(Box::new(signer_acks_total.clone())).map_err(|err| metrics_err("register signer_acks_total", err))?;
@@ -128,6 +154,8 @@ impl Metrics {
 
         let out = Self {
             registry,
+            submitted_events_total,
+            tx_submissions_total,
             signing_sessions_total,
             signer_acks_total,
             partial_sigs_total,
@@ -140,6 +168,13 @@ impl Metrics {
             crdt_gc_deleted_total,
             tx_template_hash_mismatches_total,
             started_at: Instant::now(),
+            submitted_events_total_value: AtomicU64::new(0),
+            submitted_events_signing_event_total_value: AtomicU64::new(0),
+            submitted_events_hyperlane_total_value: AtomicU64::new(0),
+            tx_submissions_total_value: AtomicU64::new(0),
+            tx_submissions_ok_total_value: AtomicU64::new(0),
+            tx_submissions_duplicate_total_value: AtomicU64::new(0),
+            tx_submissions_error_total_value: AtomicU64::new(0),
             sessions_proposal_received: AtomicU64::new(0),
             sessions_finalized: AtomicU64::new(0),
             sessions_timed_out: AtomicU64::new(0),
@@ -157,6 +192,37 @@ impl Metrics {
         };
         debug!("prometheus metrics registered");
         Ok(out)
+    }
+
+    pub fn inc_submitted_event(&self, source: &str) {
+        self.submitted_events_total.with_label_values(&[source]).inc();
+        self.submitted_events_total_value.fetch_add(1, Ordering::Relaxed);
+        match source {
+            "signing_event" => {
+                self.submitted_events_signing_event_total_value.fetch_add(1, Ordering::Relaxed);
+            }
+            "hyperlane" => {
+                self.submitted_events_hyperlane_total_value.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn inc_tx_submission(&self, result: &str) {
+        self.tx_submissions_total.with_label_values(&[result]).inc();
+        self.tx_submissions_total_value.fetch_add(1, Ordering::Relaxed);
+        match result {
+            "ok" => {
+                self.tx_submissions_ok_total_value.fetch_add(1, Ordering::Relaxed);
+            }
+            "duplicate" => {
+                self.tx_submissions_duplicate_total_value.fetch_add(1, Ordering::Relaxed);
+            }
+            "error" => {
+                self.tx_submissions_error_total_value.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
     }
 
     pub fn inc_session_stage(&self, stage: &str) {
@@ -235,6 +301,13 @@ impl Metrics {
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             uptime: self.started_at.elapsed(),
+            submitted_events_total: self.submitted_events_total_value.load(Ordering::Relaxed),
+            submitted_events_signing_event_total: self.submitted_events_signing_event_total_value.load(Ordering::Relaxed),
+            submitted_events_hyperlane_total: self.submitted_events_hyperlane_total_value.load(Ordering::Relaxed),
+            tx_submissions_total: self.tx_submissions_total_value.load(Ordering::Relaxed),
+            tx_submissions_ok_total: self.tx_submissions_ok_total_value.load(Ordering::Relaxed),
+            tx_submissions_duplicate_total: self.tx_submissions_duplicate_total_value.load(Ordering::Relaxed),
+            tx_submissions_error_total: self.tx_submissions_error_total_value.load(Ordering::Relaxed),
             sessions_proposal_received: self.sessions_proposal_received.load(Ordering::Relaxed),
             sessions_finalized: self.sessions_finalized.load(Ordering::Relaxed),
             sessions_timed_out: self.sessions_timed_out.load(Ordering::Relaxed),

@@ -125,10 +125,12 @@ impl ServiceFlow {
             attempt += 1;
             match self.rpc.submit_transaction(final_tx.clone()).await {
                 Ok(id) => {
+                    self.metrics.inc_tx_submission("ok");
                     info!("submit_transaction ok event_id={:#x} tx_id={} mass={}", event_id, id, tx_result.mass);
                     break id;
                 }
                 Err(err) if is_duplicate_submission(&err) => {
+                    self.metrics.inc_tx_submission("duplicate");
                     info!(
                         "submit_transaction already accepted; treating as success event_id={:#x} tx_id={} error={}",
                         event_id, expected_tx_id, err
@@ -136,6 +138,7 @@ impl ServiceFlow {
                     break expected_tx_id;
                 }
                 Err(err) if is_non_retryable_submission(&err) => {
+                    self.metrics.inc_tx_submission("error");
                     warn!(
                         "submit_transaction rejected as non-retryable; not retrying event_id={:#x} tx_id={} mass={} error={}",
                         event_id, expected_tx_id, tx_result.mass, err
@@ -150,7 +153,10 @@ impl ServiceFlow {
                     );
                     tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    self.metrics.inc_tx_submission("error");
+                    return Err(err);
+                }
             }
         };
         Ok(tx_id)

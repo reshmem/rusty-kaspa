@@ -1,5 +1,6 @@
 use super::handlers::health::{handle_health, handle_metrics, handle_ready};
 use super::handlers::rpc::handle_rpc;
+use super::handlers::stats::get_stats;
 use super::handlers::{chain, indexer, ism, mailbox};
 use super::middleware::correlation::correlation_middleware;
 use super::middleware::logging::logging_middleware;
@@ -85,6 +86,7 @@ pub fn build_router(state: Arc<RpcState>) -> Router {
             "/rpc/chain/transaction/:hash",
             get(chain::get_transaction).route_layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit_middleware)),
         )
+        .route("/rpc/stats", get(get_stats).route_layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit_middleware)))
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
         .route("/metrics", get(handle_metrics))

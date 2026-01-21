@@ -512,6 +512,7 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
 
     match submit_result {
         Ok(signing_submitted) => {
+            state.metrics.inc_submitted_event("hyperlane");
             info!(
                 "hyperlane signing event submitted session_id={} event_id={} tx_template_hash={}",
                 session_id, signing_submitted.event_id_hex, signing_submitted.tx_template_hash_hex
