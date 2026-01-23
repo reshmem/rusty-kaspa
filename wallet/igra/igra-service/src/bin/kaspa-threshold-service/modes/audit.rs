@@ -1,5 +1,5 @@
 use igra_core::domain::StoredEvent;
-use igra_core::foundation::{EventId, Hash32, ThresholdError};
+use igra_core::foundation::{EventId, ThresholdError};
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;
 use log::info;
@@ -43,7 +43,7 @@ struct AuditCompletion {
 
 pub fn dump_audit_trail(event_id_hex: &str, storage: &RocksStorage) -> Result<(), ThresholdError> {
     info!("Audit mode: dumping CRDT trail for {}", event_id_hex);
-    let event_id = EventId::from(parse_hash32_hex(event_id_hex)?);
+    let event_id: EventId = event_id_hex.parse()?;
     let report = build_audit_report(storage, &event_id)?;
     let json = serde_json::to_string_pretty(&report)?;
     println!("{}", json);
@@ -58,7 +58,7 @@ fn build_audit_report(storage: &RocksStorage, event_id: &EventId) -> Result<Audi
     let crdts = crdts
         .into_iter()
         .map(|state| AuditCrdtEntry {
-            tx_template_hash_hex: hex::encode(state.tx_template_hash),
+            tx_template_hash_hex: state.tx_template_hash.to_string(),
             has_signing_material: state.signing_material.is_some(),
             has_kpsbt_blob: state.kpsbt_blob.is_some(),
             signature_count: state.signatures.len(),
@@ -74,7 +74,7 @@ fn build_audit_report(storage: &RocksStorage, event_id: &EventId) -> Result<Audi
                 })
                 .collect(),
             completion: state.completion.map(|c| AuditCompletion {
-                tx_id_hex: hex::encode(c.tx_id.as_hash()),
+                tx_id_hex: c.tx_id.to_string(),
                 submitter_peer_id: c.submitter_peer_id.to_string(),
                 timestamp_nanos: c.timestamp_nanos,
                 blue_score: c.blue_score,
@@ -85,14 +85,4 @@ fn build_audit_report(storage: &RocksStorage, event_id: &EventId) -> Result<Audi
         .collect();
 
     Ok(AuditReport { event_id_hex: event_id.to_string(), event, crdts })
-}
-
-fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
-    let trimmed = value.trim().trim_start_matches("0x");
-    let bytes = hex::decode(trimmed).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let hash: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ThresholdError::Message(format!("expected 32-byte hex value, got {} bytes", bytes.len())))?;
-    Ok(hash)
 }

@@ -7,6 +7,7 @@ use crate::foundation::{EventId, TxTemplateHash};
 use crate::foundation::{PeerId, SessionId, ThresholdError};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::config::{PsktBuildConfig, PsktOutput, ServiceConfig};
+use crate::infrastructure::keys::{KeyAuditLogger, KeyManager, KeyManagerContext};
 use crate::infrastructure::rpc::NodeRpc;
 use crate::infrastructure::storage::phase::PhaseStorage;
 use crate::infrastructure::storage::Storage;
@@ -28,6 +29,14 @@ pub struct EventContext {
     pub phase_storage: Arc<dyn PhaseStorage>,
     pub transport: Arc<dyn Transport>,
     pub rpc: Arc<dyn NodeRpc>,
+    pub key_manager: Arc<dyn KeyManager>,
+    pub key_audit_log: Arc<dyn KeyAuditLogger>,
+}
+
+impl EventContext {
+    pub fn key_context(&self) -> KeyManagerContext {
+        KeyManagerContext::with_new_request_id(self.key_manager.clone(), self.key_audit_log.clone())
+    }
 }
 
 pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams) -> Result<SigningEventResult, ThresholdError> {
@@ -191,6 +200,7 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
         let (proposal, _anchor) = crate::application::two_phase::build_local_proposal_for_round(
             ctx.rpc.as_ref(),
             &ctx.config,
+            &ctx.key_context(),
             &stored_event,
             &ctx.local_peer_id,
             0,
@@ -226,6 +236,7 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
                 let (proposal, _anchor) = crate::application::two_phase::build_local_proposal_for_round(
                     ctx.rpc.as_ref(),
                     &ctx.config,
+                    &ctx.key_context(),
                     &stored_event,
                     &ctx.local_peer_id,
                     round,
@@ -261,7 +272,11 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
     Ok(SigningEventResult { session_id_hex, event_id_hex: event_id.to_string(), tx_template_hash_hex })
 }
 
-pub fn resolve_pskt_config(config: &ServiceConfig, event: &StoredEvent) -> Result<PsktBuildConfig, ThresholdError> {
+pub async fn resolve_pskt_config(
+    config: &ServiceConfig,
+    key_context: &KeyManagerContext,
+    event: &StoredEvent,
+) -> Result<PsktBuildConfig, ThresholdError> {
     if event.audit.destination_raw.trim().is_empty() {
         return Err(ThresholdError::InvalidDestination(format!(
             "missing destination_address external_id={}",
@@ -280,7 +295,24 @@ pub fn resolve_pskt_config(config: &ServiceConfig, event: &StoredEvent) -> Resul
 
     if pskt.redeem_script_hex.trim().is_empty() {
         let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing redeem script or HD config".to_string()))?;
-        pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(hd, hd.derivation_path.as_deref())?;
+        match hd.key_type {
+            crate::infrastructure::config::KeyType::HdMnemonic => {
+                let wallet_secret = crate::application::pskt_signing::load_wallet_secret(key_context).await?;
+                let key_data = crate::application::pskt_signing::decrypt_mnemonics(hd, &wallet_secret)?;
+                let payment_secret = crate::application::pskt_signing::load_payment_secret_optional(key_context).await?;
+                pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(
+                    hd,
+                    &key_data,
+                    hd.derivation_path.as_deref(),
+                    payment_secret.as_ref(),
+                )?;
+            }
+            crate::infrastructure::config::KeyType::RawPrivateKey => {
+                return Err(ThresholdError::ConfigError(
+                    "service.pskt.redeem_script_hex is required when service.hd.key_type=raw_private_key".to_string(),
+                ));
+            }
+        }
     }
 
     Ok(pskt)
@@ -309,9 +341,11 @@ async fn sign_and_broadcast(
     let signer_pskt = crate::domain::pskt::multisig::deserialize_pskt_signer(kpsbt_blob)?;
     let (pubkey, partials) = crate::application::pskt_signing::sign_pskt_with_service_config(
         &ctx.config,
+        &ctx.key_context(),
         signer_pskt,
         crate::application::pskt_signing::PsktSigningContext { event_id, tx_template_hash, purpose: "sign_and_broadcast" },
-    )?;
+    )
+    .await?;
 
     let now_nanos = crate::foundation::now_nanos();
     for (input_index, signature) in partials {

@@ -73,12 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let (key_manager, key_audit_log) = setup::setup_key_manager(&app_config.service).await?;
+
     info!("initializing iroh identity");
-    let identity = setup::init_signer_identity(&app_config)?;
+    let identity = setup::init_signer_identity(&app_config, &key_manager, &key_audit_log).await?;
     let group_id = setup::resolve_group_id(&app_config)?;
     setup::log_startup_banner(&app_config, &identity.peer_id, &group_id);
     let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
-    let iroh_secret = setup::derive_iroh_secret(&app_config.iroh.signer_seed_hex.clone().unwrap_or_else(|| "".to_string()))?;
+    let iroh_secret = setup::derive_iroh_secret(identity.seed);
 
     info!("iroh identity ready peer_id={} group_id={:#x} bootstrap_addrs={}", identity.peer_id, group_id, static_addrs.len());
     let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
@@ -91,6 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hyperlane_threshold = app_config.hyperlane.threshold.unwrap_or(1) as usize;
     let message_verifier = Arc::new(CompositeVerifier::new(hyperlane_validators, hyperlane_threshold, layerzero_validators));
     let flow = ServiceFlow::new_with_iroh(
+        key_manager.clone(),
+        key_audit_log.clone(),
         &app_config.service,
         storage.clone(),
         gossip,
@@ -153,6 +157,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             phase_storage: phase_storage.clone(),
             transport: flow.transport(),
             rpc: flow.rpc(),
+            key_manager: flow.key_manager(),
+            key_audit_log: flow.key_audit_log(),
         };
         let rpc_state = Arc::new(RpcState {
             event_ctx,
@@ -230,7 +236,7 @@ fn spawn_status_reporter(metrics: Arc<Metrics>, storage: Arc<dyn Storage>) {
 
 async fn run_test_pskt_mode(
     app_config: &igra_core::infrastructure::config::AppConfig,
-    _flow: &ServiceFlow,
+    flow: &ServiceFlow,
 ) -> Result<(), ThresholdError> {
     let runtime = &app_config.runtime;
     let recipient = runtime.test_recipient.clone().unwrap_or_default();
@@ -258,7 +264,20 @@ async fn run_test_pskt_mode(
     let mut test_pskt_config = app_config.service.pskt.clone();
     if test_pskt_config.redeem_script_hex.trim().is_empty() {
         if let (Some(hd), Some(path)) = (app_config.service.hd.as_ref(), runtime.hd_test_derivation_path.as_deref()) {
-            test_pskt_config.redeem_script_hex = derive_redeem_script_hex(hd, Some(path))?;
+            match hd.key_type {
+                igra_core::infrastructure::config::KeyType::HdMnemonic => {
+                    let key_ctx = flow.key_context();
+                    let wallet_secret = igra_core::application::pskt_signing::load_wallet_secret(&key_ctx).await?;
+                    let key_data = igra_core::application::pskt_signing::decrypt_mnemonics(hd, &wallet_secret)?;
+                    let payment_secret = igra_core::application::pskt_signing::load_payment_secret_optional(&key_ctx).await?;
+                    test_pskt_config.redeem_script_hex = derive_redeem_script_hex(hd, &key_data, Some(path), payment_secret.as_ref())?;
+                }
+                igra_core::infrastructure::config::KeyType::RawPrivateKey => {
+                    return Err(ThresholdError::ConfigError(
+                        "service.pskt.redeem_script_hex is required when service.hd.key_type=raw_private_key".to_string(),
+                    ));
+                }
+            }
         }
     }
     test_pskt_config.outputs = test_outputs;

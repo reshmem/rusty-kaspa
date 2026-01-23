@@ -3,6 +3,7 @@ use igra_core::domain::validation::{MessageVerifier, ValidationSource, Verificat
 use igra_core::domain::{CrdtSigningMaterial, Event, EventAuditData, SourceType, StoredEvent};
 use igra_core::foundation::{ExternalId, GroupId, PeerId, ThresholdError, TxTemplateHash};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, ServiceConfig};
+use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
 use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -105,7 +106,17 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
     let phase_storage: Arc<dyn PhaseStorage> = store.clone();
     let rpc = Arc::new(UnimplementedRpc::new());
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let flow = ServiceFlow::new_with_rpc(rpc, kaspa_query, storage.clone(), transport.clone(), Arc::new(DenyAllVerifier))?;
+    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
+    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let flow = ServiceFlow::new_with_rpc(
+        key_manager,
+        key_audit_log,
+        rpc,
+        kaspa_query,
+        storage.clone(),
+        transport.clone(),
+        Arc::new(DenyAllVerifier),
+    )?;
 
     let material = minimal_material();
     let event_id = igra_core::domain::hashes::compute_event_id(&material.event);
@@ -173,7 +184,17 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
     };
     let app_config = AppConfig { service, ..Default::default() };
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let flow = ServiceFlow::new_with_rpc(rpc, kaspa_query, storage.clone(), transport.clone(), Arc::new(AllowAllVerifier))?;
+    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
+    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let flow = ServiceFlow::new_with_rpc(
+        key_manager,
+        key_audit_log,
+        rpc,
+        kaspa_query,
+        storage.clone(),
+        transport.clone(),
+        Arc::new(AllowAllVerifier),
+    )?;
 
     let material = minimal_material();
     let event_id = igra_core::domain::hashes::compute_event_id(&material.event);

@@ -68,7 +68,5 @@ where
 }
 
 fn parse_body_str(value: &str) -> Result<Vec<u8>, String> {
-    let stripped = value.trim();
-    let hex_str = stripped.trim_start_matches("0x").trim_start_matches("0X");
-    hex::decode(hex_str).map_err(|_| "invalid message body hex".to_string())
+    igra_core::foundation::decode_hex_prefixed(value).map_err(|_| "invalid message body hex".to_string())
 }

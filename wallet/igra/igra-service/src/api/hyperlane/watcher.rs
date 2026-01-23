@@ -60,6 +60,7 @@ pub async fn run_hyperlane_watcher(
                 warn!("hyperlane watcher submit failed path={} total_errors={} error={}", path.display(), error_count, err);
                 continue;
             }
+            state.metrics.inc_submitted_event("hyperlane");
 
             let mut done_path = path.clone();
             done_path.set_extension("done");

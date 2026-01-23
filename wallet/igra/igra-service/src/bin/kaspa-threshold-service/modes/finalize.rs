@@ -1,6 +1,6 @@
 use igra_core::domain::pskt::multisig as pskt_multisig;
 use igra_core::domain::PartialSigRecord;
-use igra_core::foundation::{EventId, Hash32, PeerId, ThresholdError, TransactionId};
+use igra_core::foundation::{EventId, PeerId, ThresholdError, TransactionId};
 use igra_core::infrastructure::config;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::NodeRpc;
@@ -29,7 +29,7 @@ pub async fn finalize_from_json(
     let json = std::fs::read_to_string(json_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let payload: FinalizePayload = serde_json::from_str(&json)?;
 
-    let event_id = EventId::from(parse_hash32_hex(&payload.event_id)?);
+    let event_id: EventId = payload.event_id.parse()?;
     let pskt_blob = hex::decode(payload.pskt_blob.trim()).map_err(|err| ThresholdError::Message(err.to_string()))?;
     let signer_pskt = pskt_multisig::deserialize_pskt_signer(&pskt_blob)?;
     let tx_template_hash = pskt_multisig::tx_template_hash(&signer_pskt)?;
@@ -70,14 +70,4 @@ pub async fn finalize_from_json(
     println!("Transaction ID: {}", tx_id);
 
     Ok(())
-}
-
-fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
-    let trimmed = value.trim().trim_start_matches("0x");
-    let bytes = hex::decode(trimmed).map_err(|err| ThresholdError::Message(err.to_string()))?;
-    let hash: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| ThresholdError::Message(format!("expected 32-byte hex value, got {} bytes", bytes.len())))?;
-    Ok(hash)
 }

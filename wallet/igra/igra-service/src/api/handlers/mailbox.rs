@@ -5,6 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use igra_core::foundation::GroupId;
 use igra_core::infrastructure::hyperlane::{decode_proof_metadata_hex, IsmVerifier};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,11 +52,10 @@ pub async fn get_message_delivered(State(state): State<Arc<RpcState>>, headers: 
     if let Err(err) = authorize_rpc(&headers, state.rpc_token.as_deref()) {
         return (StatusCode::UNAUTHORIZED, err).into_response();
     }
-    let message_id = match parse_hash32_hex(&id) {
+    let message_id: igra_core::foundation::ExternalId = match id.parse() {
         Ok(id) => id,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+        Err(err) => return (StatusCode::BAD_REQUEST, format!("invalid message id: {}", err)).into_response(),
     };
-    let message_id = igra_core::foundation::ExternalId::from(message_id);
     match state.event_ctx.storage.hyperlane_is_message_delivered(&message_id) {
         Ok(delivered) => Json(DeliveredResponse { delivered }).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
@@ -69,11 +69,11 @@ pub async fn get_default_ism(State(state): State<Arc<RpcState>>, headers: Header
     let Some(group_id_hex) = state.group_id_hex.as_deref() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "missing group_id").into_response();
     };
-    let trimmed = group_id_hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() != 64 {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("invalid group_id length {}", trimmed.len())).into_response();
-    }
-    Json(DefaultIsmResponse { ism: format!("0x{}", trimmed) }).into_response()
+    let group_id: GroupId = match group_id_hex.parse() {
+        Ok(group_id) => group_id,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("invalid group_id: {}", err)).into_response(),
+    };
+    Json(DefaultIsmResponse { ism: format!("{group_id:#x}") }).into_response()
 }
 
 pub async fn estimate_costs(
@@ -104,15 +104,4 @@ pub async fn estimate_costs(
     }
 
     Json(EstimateCostsResponse { gas_limit: "100000".to_string(), gas_price: "1".to_string(), l2_gas_limit: None }).into_response()
-}
-
-fn parse_hash32_hex(value: &str) -> Result<[u8; 32], String> {
-    let stripped = value.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|_| "invalid hex".to_string())?;
-    if bytes.len() != 32 {
-        return Err(format!("expected 32 bytes, got {}", bytes.len()));
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }

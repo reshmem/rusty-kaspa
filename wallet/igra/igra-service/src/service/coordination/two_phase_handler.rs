@@ -51,6 +51,7 @@ async fn publish_local_proposal_if_missing(
     let (proposal, _anchor) = igra_core::application::two_phase::build_local_proposal_for_round(
         ctx.flow.rpc().as_ref(),
         &ctx.app_config.service,
+        &ctx.flow.key_context(),
         &event,
         ctx.local_peer_id,
         round,

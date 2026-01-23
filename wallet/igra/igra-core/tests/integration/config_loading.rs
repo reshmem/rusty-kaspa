@@ -1,6 +1,7 @@
 use igra_core::domain::group_id::compute_group_id;
 use igra_core::infrastructure::config::load_app_config_from_path;
 use igra_core::infrastructure::config::load_app_config_from_profile_path;
+use igra_core::infrastructure::config::KeyType;
 use std::collections::BTreeSet;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,86 @@ fn load_from_profile(config_path: &Path, profile: &str) -> igra_core::infrastruc
     env::remove_var("KASPA_IGRA_WALLET_SECRET");
 
     config
+}
+
+#[test]
+fn test_config_loading_when_hd_key_type_raw_then_requires_redeem_script() {
+    let _guard = lock_env();
+    let data_dir = tempfile::tempdir().expect("temp data dir");
+    env::set_var("KASPA_DATA_DIR", data_dir.path());
+
+    let toml_path = data_dir.path().join("igra-raw.toml");
+    std::fs::write(
+        &toml_path,
+        r#"
+        [service]
+        node_rpc_url = "grpc://127.0.0.1:16110"
+        [service.hd]
+        key_type = "raw_private_key"
+        "#,
+    )
+    .expect("write toml");
+
+    let err = load_app_config_from_path(&toml_path).expect_err("raw key without redeem script should fail validation");
+    assert!(err.to_string().contains("service.pskt.redeem_script_hex is required when service.hd.key_type=raw_private_key"));
+
+    env::remove_var("KASPA_DATA_DIR");
+}
+
+#[test]
+fn test_config_loading_when_hd_key_type_raw_then_loads() {
+    let _guard = lock_env();
+    let data_dir = tempfile::tempdir().expect("temp data dir");
+    env::set_var("KASPA_DATA_DIR", data_dir.path());
+
+    let toml_path = data_dir.path().join("igra-raw.toml");
+    std::fs::write(
+        &toml_path,
+        r#"
+        [service]
+        node_rpc_url = "grpc://127.0.0.1:16110"
+        [service.pskt]
+        redeem_script_hex = "00"
+        [service.hd]
+        key_type = "raw_private_key"
+        "#,
+    )
+    .expect("write toml");
+
+    let config = load_app_config_from_path(&toml_path).expect("load app config");
+    let hd = config.service.hd.as_ref().expect("hd config");
+    assert_eq!(hd.key_type, KeyType::RawPrivateKey);
+
+    env::remove_var("KASPA_DATA_DIR");
+}
+
+#[test]
+fn test_config_loading_when_hd_key_type_default_then_hd_mnemonic() {
+    let _guard = lock_env();
+    let data_dir = tempfile::tempdir().expect("temp data dir");
+    env::set_var("KASPA_DATA_DIR", data_dir.path());
+    env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
+
+    let toml_path = data_dir.path().join("igra-hd.toml");
+    std::fs::write(
+        &toml_path,
+        r#"
+        [service]
+        node_rpc_url = "grpc://127.0.0.1:16110"
+        [service.pskt]
+        redeem_script_hex = "00"
+        [service.hd]
+        mnemonics = ["abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"]
+        "#,
+    )
+    .expect("write toml");
+
+    let config = load_app_config_from_path(&toml_path).expect("load app config");
+    let hd = config.service.hd.as_ref().expect("hd config");
+    assert_eq!(hd.key_type, KeyType::HdMnemonic);
+
+    env::remove_var("KASPA_DATA_DIR");
+    env::remove_var("KASPA_IGRA_WALLET_SECRET");
 }
 
 #[test]

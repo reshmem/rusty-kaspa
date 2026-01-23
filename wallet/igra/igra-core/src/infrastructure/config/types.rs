@@ -5,6 +5,28 @@ use kaspa_wallet_core::encryption::Encryptable;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use serde::{Deserialize, Serialize};
 
+/// Type of key material used for signing (per-signer/profile).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyType {
+    /// Existing behavior: decrypt HD mnemonics from config and derive the signing key.
+    #[default]
+    #[serde(alias = "mnemonic")]
+    HdMnemonic,
+    /// Load a raw secp256k1 private key (32 bytes) from the SecretStore and sign directly.
+    #[serde(alias = "raw", alias = "private_key")]
+    RawPrivateKey,
+}
+
+impl std::fmt::Display for KeyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HdMnemonic => write!(f, "hd_mnemonic"),
+            Self::RawPrivateKey => write!(f, "raw_private_key"),
+        }
+    }
+}
+
 /// Base configuration for the application.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -22,10 +44,25 @@ pub struct ServiceConfig {
     pub pskt: PsktBuildConfig,
     #[serde(default)]
     pub hd: Option<PsktHdConfig>,
+    /// Use encrypted secrets file (`secrets.bin`) via `FileSecretStore`.
+    /// When false, uses `EnvSecretStore` (devnet/CI).
+    #[serde(default)]
+    pub use_encrypted_secrets: bool,
+    /// Optional explicit path to the encrypted secrets file (defaults to `${data_dir}/secrets.bin`).
+    #[serde(default)]
+    pub secrets_file: Option<String>,
+    /// Optional path for key audit log (defaults to `${data_dir}/key-audit.log`).
+    #[serde(default)]
+    pub key_audit_log_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PsktHdConfig {
+    /// How this signer derives its private key for PSKT signing.
+    ///
+    /// Defaults to `hd_mnemonic` (backwards compatible).
+    #[serde(default)]
+    pub key_type: KeyType,
     #[serde(default, skip_serializing)]
     pub mnemonics: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,8 +71,6 @@ pub struct PsktHdConfig {
     pub xpubs: Vec<String>,
     #[serde(default)]
     pub required_sigs: usize,
-    #[serde(default)]
-    pub passphrase: Option<String>,
     /// Derivation path used to derive per-signer pubkeys for the multisig redeem script.
     /// This is signer policy and must not be provided per-event.
     #[serde(default)]

@@ -2,6 +2,7 @@ use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
 use axum::http::HeaderMap;
 use igra_core::domain::coordination::EventPhase;
+use igra_core::foundation::{EventId, TransactionId, TxTemplateHash};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,7 +26,7 @@ pub struct EventsStatusResult {
 
 #[derive(Debug, Serialize)]
 pub struct EventStatusItem {
-    pub event_id_hex: String,
+    pub event_id_hex: EventId,
     pub phase: String,
     pub round: u32,
     pub retry_count: u32,
@@ -33,10 +34,10 @@ pub struct EventStatusItem {
     pub age_seconds: u64,
     pub external_id: Option<String>,
     pub source: Option<String>,
-    pub active_template_hash_hex: Option<String>,
-    pub canonical_hash_hex: Option<String>,
-    pub own_proposal_hash_hex: Option<String>,
-    pub completion_tx_id_hex: Option<String>,
+    pub active_template_hash_hex: Option<TxTemplateHash>,
+    pub canonical_hash_hex: Option<TxTemplateHash>,
+    pub own_proposal_hash_hex: Option<TxTemplateHash>,
+    pub completion_tx_id_hex: Option<TransactionId>,
 }
 
 pub async fn handle_events_status(
@@ -65,7 +66,7 @@ pub async fn handle_events_status(
     };
 
     let mut counts_by_phase: BTreeMap<String, u64> = BTreeMap::new();
-    let mut event_ids: BTreeSet<igra_core::foundation::EventId> = BTreeSet::new();
+    let mut event_ids: BTreeSet<EventId> = BTreeSet::new();
     for phase in phases {
         match state.event_ctx.phase_storage.get_events_in_phase(phase) {
             Ok(ids) => {
@@ -104,12 +105,12 @@ pub async fn handle_events_status(
         };
 
         let active_template_hash_hex = match state.event_ctx.storage.get_event_active_template_hash(&event_id) {
-            Ok(value) => value.map(|hash| hash.to_string()),
+            Ok(value) => value,
             Err(err) => return json_err(id, RpcErrorCode::InternalError, err.to_string()),
         };
 
         unfinalized.push(EventStatusItem {
-            event_id_hex: event_id.to_string(),
+            event_id_hex: event_id,
             phase: phase_to_string(phase_state.phase),
             round: phase_state.round,
             retry_count: phase_state.retry_count,
@@ -118,9 +119,9 @@ pub async fn handle_events_status(
             external_id: event.as_ref().map(|e| e.audit.external_id_raw.clone()),
             source: event.as_ref().map(|e| format!("{:?}", e.event.source)),
             active_template_hash_hex,
-            canonical_hash_hex: phase_state.canonical_hash.map(|hash| hash.to_string()),
-            own_proposal_hash_hex: phase_state.own_proposal_hash.map(|hash| hash.to_string()),
-            completion_tx_id_hex: completion.map(|c| c.tx_id.to_string()),
+            canonical_hash_hex: phase_state.canonical_hash,
+            own_proposal_hash_hex: phase_state.own_proposal_hash,
+            completion_tx_id_hex: completion.map(|c| c.tx_id),
         });
     }
 

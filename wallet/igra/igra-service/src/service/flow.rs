@@ -6,6 +6,7 @@ use igra_core::domain::signing::aggregation;
 use igra_core::domain::validation::MessageVerifier;
 use igra_core::foundation::{EventId, ThresholdError};
 use igra_core::infrastructure::config::ServiceConfig;
+use igra_core::infrastructure::keys::{KeyAuditLogger, KeyManager, KeyManagerContext};
 use igra_core::infrastructure::rpc::GrpcNodeRpc;
 use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
 use igra_core::infrastructure::rpc::NodeRpc;
@@ -20,6 +21,8 @@ const TX_RETRY_BASE_BACKOFF_MS: u64 = 100;
 const TX_RETRY_BACKOFF_MULTIPLIER: u64 = 2;
 
 pub struct ServiceFlow {
+    key_manager: Arc<dyn KeyManager>,
+    key_audit_log: Arc<dyn KeyAuditLogger>,
     storage: Arc<dyn Storage>,
     transport: Arc<dyn Transport>,
     rpc: Arc<dyn NodeRpc>,
@@ -31,6 +34,8 @@ pub struct ServiceFlow {
 
 impl ServiceFlow {
     pub async fn new(
+        key_manager: Arc<dyn KeyManager>,
+        key_audit_log: Arc<dyn KeyAuditLogger>,
         config: &ServiceConfig,
         storage: Arc<dyn Storage>,
         transport: Arc<dyn Transport>,
@@ -43,10 +48,12 @@ impl ServiceFlow {
         let metrics = Arc::new(Metrics::new()?);
         debug!("metrics initialized");
         let lifecycle = Arc::new(NoopObserver);
-        Ok(Self { storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
+        Ok(Self { key_manager, key_audit_log, storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
     }
 
     pub fn new_with_rpc(
+        key_manager: Arc<dyn KeyManager>,
+        key_audit_log: Arc<dyn KeyAuditLogger>,
         rpc: Arc<dyn NodeRpc>,
         kaspa_query: Arc<KaspaGrpcQueryClient>,
         storage: Arc<dyn Storage>,
@@ -56,10 +63,12 @@ impl ServiceFlow {
         info!("initializing service flow with injected rpc");
         let metrics = Arc::new(Metrics::new()?);
         let lifecycle = Arc::new(NoopObserver);
-        Ok(Self { storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
+        Ok(Self { key_manager, key_audit_log, storage, transport, rpc, kaspa_query, message_verifier, metrics, lifecycle })
     }
 
     pub async fn new_with_iroh(
+        key_manager: Arc<dyn KeyManager>,
+        key_audit_log: Arc<dyn KeyAuditLogger>,
         config: &ServiceConfig,
         storage: Arc<dyn Storage>,
         gossip: iroh_gossip::net::Gossip,
@@ -75,11 +84,23 @@ impl ServiceFlow {
             iroh_config.bootstrap_nodes.len()
         );
         let transport = Arc::new(IrohTransport::new(gossip, signer, verifier, storage.clone(), iroh_config)?);
-        Self::new(config, storage, transport, message_verifier).await
+        Self::new(key_manager, key_audit_log, config, storage, transport, message_verifier).await
     }
 
     pub fn message_verifier_ref(&self) -> &dyn MessageVerifier {
         self.message_verifier.as_ref()
+    }
+
+    pub fn key_context(&self) -> KeyManagerContext {
+        KeyManagerContext::with_new_request_id(self.key_manager.clone(), self.key_audit_log.clone())
+    }
+
+    pub fn key_manager(&self) -> Arc<dyn KeyManager> {
+        self.key_manager.clone()
+    }
+
+    pub fn key_audit_log(&self) -> Arc<dyn KeyAuditLogger> {
+        self.key_audit_log.clone()
     }
 
     pub async fn finalize_and_submit(

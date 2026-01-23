@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize};
+use crate::foundation::util::encoding::parse_hex_32bytes;
+use crate::foundation::ThresholdError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::ops::Deref;
+use std::str::FromStr;
 
 pub type Hash32 = [u8; 32];
 
@@ -47,8 +50,7 @@ macro_rules! define_id_type {
     };
 
     (hash $name:ident) => {
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord, Deserialize, Serialize)]
-        #[serde(transparent)]
+        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord)]
         pub struct $name(Hash32);
 
         impl $name {
@@ -91,6 +93,42 @@ macro_rules! define_id_type {
                     write!(f, "{:02X}", byte)?;
                 }
                 Ok(())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = ThresholdError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(Self::from(parse_hex_32bytes(s)?))
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                if serializer.is_human_readable() {
+                    serializer.serialize_str(&self.to_string())
+                } else {
+                    self.0.serialize(serializer)
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                if deserializer.is_human_readable() {
+                    let s = String::deserialize(deserializer)?;
+                    s.parse().map_err(serde::de::Error::custom)
+                } else {
+                    let bytes = Hash32::deserialize(deserializer)?;
+                    Ok(Self(bytes))
+                }
             }
         }
 
@@ -139,5 +177,40 @@ define_id_type!(hash TxTemplateHash);
 impl From<kaspa_consensus_core::tx::TransactionId> for TransactionId {
     fn from(value: kaspa_consensus_core::tx::TransactionId) -> Self {
         Self(value.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_id_from_str_accepts_prefixed_and_unprefixed() {
+        let hex_prefixed = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let id1: EventId = hex_prefixed.parse().expect("event id parse");
+        assert_eq!(id1.to_string(), "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+
+        let hex_unprefixed = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let id2: EventId = hex_unprefixed.parse().expect("event id parse");
+        assert_eq!(id1, id2);
+
+        assert!("not-hex".parse::<EventId>().is_err());
+        assert!("0xabcd".parse::<EventId>().is_err());
+    }
+
+    #[test]
+    fn event_id_serde_json_is_hex_string() {
+        let id = EventId::new([0xAB; 32]);
+        let json = serde_json::to_string(&id).expect("serialize json");
+        assert_eq!(json, format!("\"{}\"", id));
+        let decoded: EventId = serde_json::from_str(&json).expect("deserialize json");
+        assert_eq!(decoded, id);
+    }
+
+    #[test]
+    fn event_id_bincode_is_stable_fixed_width() {
+        let id = EventId::new([0xCD; 32]);
+        let bytes = bincode::serialize(&id).expect("serialize bincode");
+        assert_eq!(bytes.len(), 32);
     }
 }

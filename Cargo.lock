@@ -4247,11 +4247,14 @@ dependencies = [
 name = "igra-core"
 version = "1.0.1"
 dependencies = [
+ "argon2",
  "async-stream",
  "async-trait",
+ "base64",
  "bincode",
  "blake3",
  "borsh 1.5.1",
+ "chacha20poly1305",
  "ed25519-dalek 2.2.0",
  "figment",
  "futures-util",
@@ -4271,6 +4274,7 @@ dependencies = [
  "kaspa-wallet-core",
  "kaspa-wallet-keys",
  "kaspa-wallet-pskt",
+ "libc",
  "log",
  "log4rs",
  "once_cell",
@@ -4278,6 +4282,7 @@ dependencies = [
  "rand 0.8.5",
  "rocksdb",
  "secp256k1",
+ "secrecy",
  "serde",
  "serde_json",
  "subtle",
@@ -8793,6 +8798,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
+dependencies = [
+ "serde",
+ "zeroize",
 ]
 
 [[package]]

@@ -3,7 +3,9 @@ use igra_core::domain::coordination::TwoPhaseConfig;
 use igra_core::domain::validation::NoopVerifier;
 use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{EventId, GroupId, PeerId, ThresholdError};
+use igra_core::infrastructure::config::KeyType;
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
+use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
 use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -52,11 +54,11 @@ fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, require
         Encryptable::from(ordered).into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305).expect("encrypt mnemonics");
 
     PsktHdConfig {
+        key_type: KeyType::HdMnemonic,
         mnemonics: Vec::new(),
         encrypted_mnemonics: Some(encrypted),
         xpubs: Vec::new(),
         required_sigs,
-        passphrase: None,
         derivation_path: Some("m/45'/111111'/0'/0/0".to_string()),
     }
 }
@@ -149,8 +151,12 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
+    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
+    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
     let flows = [
         Arc::new(ServiceFlow::new_with_rpc(
+            key_manager.clone(),
+            key_audit_log.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[0].clone(),
@@ -158,6 +164,8 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
+            key_manager.clone(),
+            key_audit_log.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[1].clone(),
@@ -165,6 +173,8 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
+            key_manager.clone(),
+            key_audit_log.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[2].clone(),
@@ -223,6 +233,8 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
+            key_manager: key_manager.clone(),
+            key_audit_log: key_audit_log.clone(),
         };
 
         let params = SigningEventParams {

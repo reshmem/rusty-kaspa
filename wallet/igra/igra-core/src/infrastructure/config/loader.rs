@@ -341,16 +341,18 @@ fn encrypt_hd_config(config: &mut AppConfig) -> Result<(), ThresholdError> {
         return Ok(());
     }
 
-    let value = std::env::var(crate::infrastructure::config::HD_WALLET_SECRET_ENV).unwrap_or_default();
-    if value.trim().is_empty() {
-        return Err(ThresholdError::ConfigError(format!(
-            "{} is required to encrypt hd.mnemonics",
-            crate::infrastructure::config::HD_WALLET_SECRET_ENV
-        )));
-    }
-    let wallet_secret = Secret::from(value);
-    let payment_secret = hd.passphrase.as_deref().map(Secret::from);
-    let encrypted = encrypt_mnemonics(std::mem::take(&mut hd.mnemonics), payment_secret.as_ref(), &wallet_secret)?;
+    let env_store = crate::infrastructure::keys::EnvSecretStore::new();
+    let wallet_secret_bytes =
+        env_store.get_cached(&crate::infrastructure::keys::SecretName::new("igra.hd.wallet_secret")).ok_or_else(|| {
+            ThresholdError::ConfigError(format!(
+                "{} (or IGRA_SECRET__igra_hd__wallet_secret) is required to encrypt hd.mnemonics",
+                crate::infrastructure::config::HD_WALLET_SECRET_ENV
+            ))
+        })?;
+    let wallet_secret_str = String::from_utf8(wallet_secret_bytes.expose_owned())
+        .map_err(|err| ThresholdError::secret_decode_failed("igra.hd.wallet_secret", "utf8", format!("invalid UTF-8: {}", err)))?;
+    let wallet_secret = Secret::from(wallet_secret_str);
+    let encrypted = encrypt_mnemonics(std::mem::take(&mut hd.mnemonics), None, &wallet_secret)?;
     hd.encrypted_mnemonics = Some(encrypted);
     Ok(())
 }

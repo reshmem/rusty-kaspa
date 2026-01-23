@@ -197,8 +197,8 @@ impl IsmVerifier for ConfiguredIsm {
 }
 
 fn parse_pubkey(hex_str: &str) -> Result<PublicKey, ThresholdError> {
-    let stripped = hex_str.trim_start_matches("0x");
-    let bytes = hex::decode(stripped).map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator hex".to_string()))?;
+    let bytes = crate::foundation::decode_hex_prefixed(hex_str)
+        .map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator hex".to_string()))?;
     PublicKey::from_slice(&bytes).map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator key".to_string()))
 }
 

@@ -50,6 +50,15 @@ pub enum ErrorCode {
     UtxoBelowMinDepth,
     UtxoMissing,
     PolicyEvaluationFailed,
+    ParseError,
+    SecretNotFound,
+    SecretDecodeFailed,
+    SecretStoreUnavailable,
+    SecretDecryptFailed,
+    UnsupportedSignatureScheme,
+    KeyOperationFailed,
+    InsecureFilePermissions,
+    AuditLogError,
     Message,
 }
 
@@ -199,6 +208,65 @@ pub enum ThresholdError {
     #[error("policy evaluation failed: {details}")]
     PolicyEvaluationFailed { details: String },
 
+    #[error("parse error: {0}")]
+    ParseError(String),
+
+    // === Key Management Errors ===
+    #[error("secret not found: {name} (backend: {backend})")]
+    SecretNotFound {
+        name: String,
+        backend: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("secret decode failed: {name} (encoding: {encoding}, details: {details})")]
+    SecretDecodeFailed {
+        name: String,
+        encoding: String,
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("secret store unavailable: {backend} - {details}")]
+    SecretStoreUnavailable {
+        backend: String,
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("secret decryption failed: {backend} - {details}")]
+    SecretDecryptFailed {
+        backend: String,
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("unsupported signature scheme: {scheme} (backend: {backend})")]
+    UnsupportedSignatureScheme { scheme: String, backend: String },
+
+    #[error("key operation failed: {operation} on {key_ref} - {details}")]
+    KeyOperationFailed {
+        operation: String,
+        key_ref: String,
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("invalid secret file permissions: {path} has mode {mode:o}, expected 0600")]
+    InsecureFilePermissions { path: String, mode: u32 },
+
+    #[error("audit log error: {details}")]
+    AuditLogError {
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
     #[error("{0}")]
     Message(String),
 }
@@ -254,12 +322,54 @@ impl ThresholdError {
             ThresholdError::UtxoBelowMinDepth { .. } => ErrorCode::UtxoBelowMinDepth,
             ThresholdError::UtxoMissing { .. } => ErrorCode::UtxoMissing,
             ThresholdError::PolicyEvaluationFailed { .. } => ErrorCode::PolicyEvaluationFailed,
+            ThresholdError::ParseError(_) => ErrorCode::ParseError,
+            ThresholdError::SecretNotFound { .. } => ErrorCode::SecretNotFound,
+            ThresholdError::SecretDecodeFailed { .. } => ErrorCode::SecretDecodeFailed,
+            ThresholdError::SecretStoreUnavailable { .. } => ErrorCode::SecretStoreUnavailable,
+            ThresholdError::SecretDecryptFailed { .. } => ErrorCode::SecretDecryptFailed,
+            ThresholdError::UnsupportedSignatureScheme { .. } => ErrorCode::UnsupportedSignatureScheme,
+            ThresholdError::KeyOperationFailed { .. } => ErrorCode::KeyOperationFailed,
+            ThresholdError::InsecureFilePermissions { .. } => ErrorCode::InsecureFilePermissions,
+            ThresholdError::AuditLogError { .. } => ErrorCode::AuditLogError,
             ThresholdError::Message(_) => ErrorCode::Message,
         }
     }
 
     pub fn context(&self) -> ErrorContext {
         ErrorContext { code: self.code(), message: self.to_string() }
+    }
+
+    pub fn secret_not_found(name: impl Into<String>, backend: impl Into<String>) -> Self {
+        ThresholdError::SecretNotFound { name: name.into(), backend: backend.into(), source: None }
+    }
+
+    pub fn secret_decode_failed(name: impl Into<String>, encoding: impl Into<String>, details: impl Into<String>) -> Self {
+        ThresholdError::SecretDecodeFailed { name: name.into(), encoding: encoding.into(), details: details.into(), source: None }
+    }
+
+    pub fn secret_store_unavailable(backend: impl Into<String>, details: impl Into<String>) -> Self {
+        ThresholdError::SecretStoreUnavailable { backend: backend.into(), details: details.into(), source: None }
+    }
+
+    pub fn secret_decrypt_failed(backend: impl Into<String>, details: impl Into<String>) -> Self {
+        ThresholdError::SecretDecryptFailed { backend: backend.into(), details: details.into(), source: None }
+    }
+
+    pub fn unsupported_signature_scheme(scheme: impl Into<String>, backend: impl Into<String>) -> Self {
+        ThresholdError::UnsupportedSignatureScheme { scheme: scheme.into(), backend: backend.into() }
+    }
+
+    pub fn key_not_found(key_ref: impl Into<String>) -> Self {
+        ThresholdError::KeyNotFound(key_ref.into())
+    }
+
+    pub fn key_operation_failed(operation: impl Into<String>, key_ref: impl Into<String>, details: impl Into<String>) -> Self {
+        ThresholdError::KeyOperationFailed {
+            operation: operation.into(),
+            key_ref: key_ref.into(),
+            details: details.into(),
+            source: None,
+        }
     }
 }
 

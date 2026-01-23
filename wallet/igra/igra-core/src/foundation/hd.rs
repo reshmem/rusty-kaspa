@@ -107,6 +107,28 @@ pub fn derive_keypair_from_key_data(
     Ok(SigningKeypair { public_key, secret_bytes })
 }
 
+/// Create a signing keypair directly from a raw secp256k1 private key.
+pub fn derive_keypair_from_raw_key(secret_key: SecretKey) -> Result<SigningKeypair, ThresholdError> {
+    let secp = Secp256k1::new();
+    let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+    Ok(SigningKeypair { public_key, secret_bytes: secret_key.secret_bytes() })
+}
+
+/// Parse and validate a raw secp256k1 private key (32 bytes) and return a signing keypair.
+pub fn keypair_from_bytes(secret_bytes: &[u8]) -> Result<SigningKeypair, ThresholdError> {
+    if secret_bytes.len() != 32 {
+        return Err(ThresholdError::key_operation_failed(
+            "parse_secp256k1_secret",
+            "raw_private_key",
+            format!("expected 32 bytes, got {}", secret_bytes.len()),
+        ));
+    }
+    let secret_key = SecretKey::from_slice(secret_bytes).map_err(|err| {
+        ThresholdError::key_operation_failed("parse_secp256k1_secret", "raw_private_key", format!("invalid secp256k1 secret: {}", err))
+    })?;
+    derive_keypair_from_raw_key(secret_key)
+}
+
 pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -> Result<Vec<u8>, ThresholdError> {
     let xonly_keys: Vec<[u8; 32]> = pubkeys
         .iter()
@@ -121,4 +143,39 @@ pub fn redeem_script_from_pubkeys(pubkeys: &[PublicKey], required_sigs: usize) -
 
 pub fn derivation_path_from_index(index: u32) -> String {
     format!("m/45'/111111'/0'/0/{}", index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keypair_from_bytes_rejects_wrong_length() {
+        let result = keypair_from_bytes(&[1u8; 31]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("expected 32 bytes"));
+
+        let result = keypair_from_bytes(&[1u8; 33]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("expected 32 bytes"));
+    }
+
+    #[test]
+    fn keypair_from_bytes_rejects_invalid_key() {
+        let result = keypair_from_bytes(&[0u8; 32]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().to_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn keypair_from_bytes_matches_secp_pubkey() {
+        let secret_bytes = [0x42u8; 32];
+        let keypair = keypair_from_bytes(&secret_bytes).expect("valid key");
+        assert_eq!(keypair.secret_bytes, secret_bytes);
+
+        let secret_key = SecretKey::from_slice(&secret_bytes).expect("valid secp secret");
+        let secp = Secp256k1::new();
+        let expected = PublicKey::from_secret_key(&secp, &secret_key);
+        assert_eq!(keypair.public_key, expected);
+    }
 }

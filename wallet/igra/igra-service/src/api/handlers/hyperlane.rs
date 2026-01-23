@@ -127,11 +127,7 @@ impl MailboxMetadataParams {
 }
 
 fn parse_signature_hex(value: &str) -> Result<Signature, String> {
-    let stripped = value.trim_start_matches("0x");
-    let bytes = hex::decode(stripped).map_err(|_| "invalid signature hex".to_string())?;
-    if bytes.len() != 65 {
-        return Err("signature must be 65 bytes (r||s||v)".to_string());
-    }
+    let bytes = igra_core::foundation::parse_hex_fixed::<65>(value).map_err(|err| err.to_string())?;
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
     r.copy_from_slice(&bytes[0..32]);
@@ -208,13 +204,10 @@ fn derive_session_id_hex(group_id_hex: Option<&str>, message_id: H256) -> String
         Some(value) if !value.trim().is_empty() => value.trim(),
         _ => return String::new(),
     };
-    let group_bytes = match hex::decode(group_id_hex.trim_start_matches("0x")) {
+    let group_bytes = match igra_core::foundation::parse_hex_32bytes(group_id_hex) {
         Ok(bytes) => bytes,
         Err(_) => return String::new(),
     };
-    if group_bytes.len() != 32 {
-        return String::new();
-    }
     let mut hasher = Hasher::new();
     hasher.update(&group_bytes);
     hasher.update(message_id.as_bytes());
@@ -620,6 +613,7 @@ mod tests {
     use igra_core::domain::GroupPolicy;
     use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
+    use igra_core::infrastructure::keys::{EnvSecretStore, LocalKeyManager, NoopAuditLogger};
     use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -661,6 +655,8 @@ mod tests {
         let dir_path = temp_dir.into_path();
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
         let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
+        let key_audit_log = Arc::new(NoopAuditLogger);
+        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
         let ctx = EventContext {
             config: ServiceConfig::default(),
             policy: GroupPolicy::default(),
@@ -671,6 +667,8 @@ mod tests {
             phase_storage,
             transport: Arc::new(NoopTransport),
             rpc: Arc::new(UnimplementedRpc::new()),
+            key_manager,
+            key_audit_log,
         };
         RpcState {
             event_ctx: ctx,

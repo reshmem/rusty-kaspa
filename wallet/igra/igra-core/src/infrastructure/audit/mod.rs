@@ -109,7 +109,7 @@ pub fn audit(event: AuditEvent) {
 }
 
 fn short_id(value: &str) -> String {
-    let trimmed = value.trim_start_matches("0x");
+    let trimmed = value.trim_start_matches("0x").trim_start_matches("0X");
     if trimmed.len() <= SHORT_ID_DISPLAY_LENGTH {
         trimmed.to_string()
     } else {
@@ -215,7 +215,7 @@ fn human_summary(event: &AuditEvent) -> String {
 macro_rules! audit_event_received {
     ($event_id:expr, $event:expr) => {
         $crate::infrastructure::audit::audit($crate::infrastructure::audit::AuditEvent::EventReceived {
-            event_id: hex::encode($event_id),
+            event_id: format!("{}", $event_id),
             external_request_id: None,
             source: format!("{:?}", $event.event.source),
             recipient: $event.audit.destination_raw.clone(),
@@ -229,7 +229,7 @@ macro_rules! audit_event_received {
 macro_rules! audit_policy_enforced {
     ($external_request_id:expr, $event_id:expr, $policy_type:expr, $decision:expr, $reason:expr) => {
         $crate::infrastructure::audit::audit($crate::infrastructure::audit::AuditEvent::PolicyEnforced {
-            event_id: hex::encode($event_id),
+            event_id: format!("{}", $event_id),
             external_request_id: $external_request_id.clone(),
             policy_type: $policy_type.to_string(),
             decision: $decision,

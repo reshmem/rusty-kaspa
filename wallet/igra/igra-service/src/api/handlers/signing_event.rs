@@ -73,6 +73,7 @@ mod tests {
     use igra_core::domain::GroupPolicy;
     use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
+    use igra_core::infrastructure::keys::{EnvSecretStore, LocalKeyManager, NoopAuditLogger};
     use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -114,6 +115,8 @@ mod tests {
         let dir_path = temp_dir.into_path();
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
         let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
+        let key_audit_log = Arc::new(NoopAuditLogger);
+        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
         let ctx = EventContext {
             config: ServiceConfig::default(),
             policy: GroupPolicy::default(),
@@ -124,6 +127,8 @@ mod tests {
             phase_storage,
             transport: Arc::new(NoopTransport),
             rpc: Arc::new(UnimplementedRpc::new()),
+            key_manager,
+            key_audit_log,
         };
         RpcState {
             event_ctx: ctx,

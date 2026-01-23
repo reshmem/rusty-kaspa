@@ -117,17 +117,26 @@ let phase = storage.get_phase(&event_id)
 
 ---
 
-### Mistake #5: Logging Hash32/Binary Data with `{:?}`
+### Mistake #5: Logging Hash32/Binary Data with `{:?}` or Manual hex::encode 🔥 UPDATED
 
 ```rust
-// ❌ BAD - Produces unreadable output like [1, 2, 3, 4, 5, ...]
+// ❌ BAD - Debug format produces ugly output: [1, 2, 3, 4, 5, ...]
 info!("processing event event_id={:?}", event_id);
 warn!("corrupted key key={:?}", key);
 
-// ✅ GOOD - Human-readable hex
+// ❌ BAD - Manual hex::encode is unnecessary (types implement Display!)
 info!("processing event event_id={}", hex::encode(event_id));
 warn!("corrupted key key={}", hex::encode(&key));
+
+// ✅ GOOD - Use Display trait (types already format as hex)
+info!("processing event event_id={}", event_id);
+warn!("corrupted key key={}", key);
+
+// ✅ ALSO GOOD - With 0x prefix for debugging
+debug!("event event_id={:#x}", event_id);  // Prints: 0xabcd1234...
 ```
+
+**Rule:** Hash types (EventId, GroupId, etc.) implement Display and LowerHex. Never use `hex::encode()` or `{:?}` - just use `{}` or `{:#x}`.
 
 ---
 
@@ -149,6 +158,219 @@ debug!("processing gossip message msg_type={} sender={} size={}",
 
 ---
 
+### Mistake #7: Duplicating Hex Parsing Functions 🔥 NEW - CRITICAL
+
+**This is a critical anti-pattern that caused 9 duplicate functions across the codebase.**
+
+```rust
+// ❌ BAD - Do NOT create your own parse_hash32_hex function
+fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
+    let stripped = value.trim().trim_start_matches("0x");
+    let bytes = hex::decode(stripped)?;
+    if bytes.len() != 32 {
+        return Err(ThresholdError::Message("wrong length".to_string()));
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+    Ok(hash)
+}
+// This function was duplicated 9 times! Never again!
+
+// ✅ GOOD - Use FromStr trait (already implemented for all hash types)
+use std::str::FromStr;
+
+let event_id: EventId = hex_string.parse()?;
+let group_id: GroupId = hex_string.parse()?;
+let session_id: SessionId = hex_string.parse()?;
+let tx_id: TransactionId = hex_string.parse()?;
+
+// ✅ GOOD - With error context
+let event_id: EventId = hex_string.parse()
+    .map_err(|e| ThresholdError::ConfigError(format!("invalid event_id: {}", e)))?;
+```
+
+**All hash types support `.parse()` via FromStr:**
+- `EventId`, `GroupId`, `SessionId`, `TransactionId`, `TxTemplateHash`, `ExternalId`, `PayloadHash`
+- Handles `0x` prefix automatically
+- Validates 32-byte length
+- Clear error messages
+
+**Rule:** Never create `parse_*_hex()` functions. Use `.parse()` or shared helpers from `foundation/encoding.rs`.
+
+---
+
+### Mistake #8: Verbose Config Parsing 🔥 NEW - CRITICAL
+
+**The "clone unwrap_or_default is_empty" anti-pattern appears everywhere.**
+
+```rust
+// ❌ BAD - Verbose, repetitive, ugly (4 lines of boilerplate)
+let group_id_hex = app_config.iroh.group_id.clone().unwrap_or_default();
+if group_id_hex.is_empty() {
+    return Err(ThresholdError::ConfigError("missing group_id".to_string()));
+}
+let group_id = GroupId::from(parse_hash32_hex(&group_id_hex)?);
+
+// ✅ GOOD - Use config helper (1 line, type-safe)
+use crate::foundation::parse_required;
+let group_id: GroupId = parse_required(&app_config.iroh.group_id, "iroh.group_id")?;
+```
+
+**Available helpers** (in `foundation/config_helpers.rs`):
+
+```rust
+// Required field (error if None or empty)
+let value: T = parse_required(&config.field, "field_name")?;
+
+// Optional field (Ok(None) if None or empty)
+let value: Option<T> = parse_optional(&config.field)?;
+
+// With default value
+let value: T = parse_or_default(&config.field, default_value);
+
+// Parse array of hex strings
+let values: Vec<T> = parse_hex_array(&config.field_array)?;
+```
+
+**NEVER write this pattern:**
+```rust
+// ❌ BAD - FORBIDDEN
+let value = config.field.clone().unwrap_or_default();
+if value.is_empty() {
+    return Err(...);
+}
+let parsed = SomeType::from(parse_something(&value)?);
+
+// ✅ GOOD - One line
+let parsed: SomeType = parse_required(&config.field, "field_name")?;
+```
+
+**Why helpers are better:**
+- Type-safe: Type inference ensures correct parsing
+- Consistent error messages
+- No `.clone()` overhead
+- Handles empty strings correctly
+- One line instead of 4
+
+---
+
+### Mistake #9: Manual hex::encode in Logs 🔥 NEW - CRITICAL
+
+**Hash types already implement Display and LowerHex - don't manually encode!**
+
+```rust
+// ❌ BAD - Unnecessary hex::encode calls (found 120+ times!)
+info!("event processed event_id={}", hex::encode(event_id));
+warn!("failed event_id={} tx_hash={}",
+      hex::encode(event_id),
+      hex::encode(tx_template_hash));
+
+error!("PSKT mismatch expected={} actual={}",
+       hex::encode(expected),
+       hex::encode(actual));
+
+// ✅ GOOD - Types implement Display/LowerHex
+info!("event processed event_id={}", event_id);
+warn!("failed event_id={} tx_hash={}", event_id, tx_template_hash);
+error!("PSKT mismatch expected={} actual={}", expected, actual);
+
+// ✅ ALSO GOOD - With 0x prefix using LowerHex
+debug!("signing event_id={:#x}", event_id);  // Prints: 0xabcd...
+info!("committed tx_hash={:#x}", tx_template_hash);
+```
+
+**Formatting options:**
+- `{}` - Lowercase hex without prefix (via Display) → `abcd1234...`
+- `{:#x}` - Lowercase hex WITH `0x` prefix (via LowerHex) → `0xabcd1234...`
+- `{:#X}` - Uppercase hex WITH `0x` prefix (via UpperHex) → `0xABCD1234...`
+
+**Standard for this codebase:**
+- Use `{}` for most logs (cleaner, no prefix)
+- Use `{:#x}` for debugging/verbose output only
+
+**Applies to all hash types:**
+- `EventId`, `GroupId`, `SessionId`, `TransactionId`, `TxTemplateHash`, `ExternalId`, `PayloadHash`
+
+**Rule:** NEVER use `hex::encode()` in log statements. Types already do it for you.
+
+---
+
+### Mistake #10: Swallowing Errors with `let _ =` 🔥 NEW
+
+```rust
+// ❌ BAD - Silent failures are production bugs
+let _ = storage.clear_stale_proposals(&event_id, round)?;
+let _ = writeln!(file, "{}", data);
+let _ = phase_storage.mark_completed(&event_id, now)?;
+let _ = transport.publish_proposal(proposal)?;
+
+// ✅ GOOD - Handle or log errors
+match storage.clear_stale_proposals(&event_id, round) {
+    Ok(count) => debug!("cleared {} stale proposals event_id={}", count, event_id),
+    Err(e) => warn!("failed to clear proposals event_id={}: {}", event_id, e),
+}
+
+// ✅ GOOD - Fail fast if critical (audit trail, correctness)
+writeln!(file, "{}", data)
+    .expect("FATAL: audit trail write failed - cannot continue");
+
+// ✅ GOOD - Propagate error
+phase_storage.mark_completed(&event_id, now)?;
+```
+
+**When `let _ =` is acceptable:**
+- ✅ Infallible operations (e.g., metrics, non-critical notifications)
+- ✅ Explicitly documented "fire and forget" operations
+- ✅ Test code
+
+**When `let _ =` is FORBIDDEN:**
+- ❌ Storage operations (data loss risk)
+- ❌ File I/O (audit trail, config persistence)
+- ❌ Network operations (protocol violations)
+- ❌ Cryptographic operations (security risk)
+- ❌ Any operation that returns `Result<T, E>` where the result matters
+
+**Rule:** Every `Result` must be handled. Use `?`, `match`, `if let`, or explicit `.expect()` with justification.
+
+---
+
+### Mistake #11: API Response Type Conversions 🔥 NEW
+
+```rust
+// ❌ BAD - Manual conversion to String
+#[derive(Serialize)]
+struct EventResponse {
+    event_id: String,
+    tx_id: String,
+}
+
+let response = EventResponse {
+    event_id: hex::encode(event_id),  // Manual encoding
+    tx_id: hex::encode(tx_id),
+};
+
+// ✅ GOOD - Use types directly (they serialize as hex strings)
+#[derive(Serialize)]
+struct EventResponse {
+    event_id: EventId,         // Auto-serializes to hex string
+    tx_id: TransactionId,      // Auto-serializes to hex string
+}
+
+let response = EventResponse {
+    event_id,  // No conversion needed!
+    tx_id,
+};
+```
+
+**How it works:**
+- Hash types implement `Serialize` to produce hex strings in JSON
+- Hash types implement `Deserialize` to parse hex strings from JSON
+- Zero overhead, automatic conversion
+
+**Rule:** Use typed fields in API structs, not String. Let serde handle conversion.
+
+---
+
 ### Pre-Commit Checklist
 
 Before submitting a PR, verify:
@@ -157,7 +379,10 @@ Before submitting a PR, verify:
 - [ ] **All error messages include identifiers** (event_id, peer_id, round, etc.)
 - [ ] **No magic numbers** - all literals have named constants
 - [ ] **No `.unwrap()`/`.expect()`** in non-test code
-- [ ] **All Hash32 values logged with `hex::encode()`**
+- [ ] **No duplicate parse functions** - use `.parse()` or shared helpers
+- [ ] **No `hex::encode()` in log statements** - types implement Display
+- [ ] **No verbose config patterns** - use `parse_required()`/`parse_optional()`
+- [ ] **No `let _ =` swallowing errors** - handle or log all Results
 - [ ] **All logs include actionable context**
 
 **Quick grep commands to check your changes:**
@@ -169,8 +394,17 @@ grep -rn "ThresholdError::Message" igra-core/src igra-service/src
 grep -rn "\.unwrap()" igra-core/src igra-service/src | grep -v "_test\|#\[test\]\|#\[cfg(test)\]"
 grep -rn "\.expect(" igra-core/src igra-service/src | grep -v "_test\|#\[test\]\|#\[cfg(test)\]"
 
-# Find debug format on potential Hash32
-grep -rn "{:?}" igra-core/src igra-service/src | grep -i "event_id\|hash\|key"
+# Find duplicate parse functions
+grep -rn "fn parse_.*hex" igra-core/src igra-service/src
+
+# Find manual hex::encode in logs
+grep -rn "hex::encode" igra-core/src igra-service/src | grep "info!\|warn!\|error!\|debug!"
+
+# Find swallowed errors
+grep -rn "let _ =" igra-core/src igra-service/src | grep -v "_test\|#\[test\]"
+
+# Find verbose config pattern
+grep -rn "clone()\.unwrap_or_default()" igra-core/src igra-service/src
 ```
 
 ---
@@ -1634,7 +1868,409 @@ use std::collections::BTreeMap;  // No hashing, uses Ord
 
 ## 4. Common Patterns
 
-### 4.1 Type Conversions
+### 4.1 Working with Hash Types (EventId, GroupId, etc.) 🔥 CRITICAL
+
+**Our hash types already implement FromStr, Display, LowerHex, and serde. Use the traits, don't reinvent!**
+
+#### ✅ Parsing Hex Strings (DO THIS)
+
+```rust
+use std::str::FromStr;
+
+// ✅ CORRECT - One line, type-safe, automatic 0x handling
+let event_id: EventId = hex_string.parse()?;
+let group_id: GroupId = hex_string.parse()?;
+let session_id: SessionId = hex_string.parse()?;
+let tx_id: TransactionId = hex_string.parse()?;
+
+// ✅ CORRECT - With error context
+let event_id: EventId = hex_string.parse()
+    .map_err(|e| ThresholdError::ConfigError(format!("invalid event_id: {}", e)))?;
+
+// ✅ CORRECT - From config (best practice)
+use crate::foundation::parse_required;
+let group_id: GroupId = parse_required(&config.group_id, "iroh.group_id")?;
+```
+
+#### ❌ Parsing Hex Strings (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Creating duplicate parse function (THIS WAS DUPLICATED 9 TIMES!)
+fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
+    let stripped = value.trim().trim_start_matches("0x");
+    let bytes = hex::decode(stripped)?;
+    if bytes.len() != 32 {
+        return Err(ThresholdError::Message("expected 32 bytes".to_string()));
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+    Ok(hash)
+}
+let event_id = EventId::from(parse_hash32_hex(&hex_string)?);
+// NEVER DO THIS! Use .parse() instead!
+
+// ❌ WRONG - Verbose config access (4 lines → should be 1 line)
+let group_id_hex = config.group_id.clone().unwrap_or_default();
+if group_id_hex.is_empty() {
+    return Err(ThresholdError::ConfigError("missing group_id".to_string()));
+}
+let group_id = GroupId::from(parse_hash32_hex(&group_id_hex)?);
+// Use parse_required() instead!
+```
+
+#### ✅ Logging Hash Values (DO THIS)
+
+```rust
+// ✅ CORRECT - Types implement Display (clean, simple)
+info!("event processed event_id={}", event_id);
+warn!("failed event_id={} tx_hash={}", event_id, tx_template_hash);
+debug!("CRDT merge event_id={} changes={}", event_id, changes);
+error!("PSKT mismatch expected={} actual={}", expected, computed);
+
+// ✅ CORRECT - With 0x prefix for debugging/verbose logs
+debug!("signing event_id={:#x}", event_id);  // Prints: 0xabcd1234...
+info!("committed event_id={:#x} tx_hash={:#x}", event_id, tx_hash);
+```
+
+#### ❌ Logging Hash Values (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Manual hex::encode (found 120+ times in codebase!)
+info!("event processed event_id={}", hex::encode(event_id));
+warn!("failed event_id={} tx_hash={}",
+      hex::encode(event_id),           // Unnecessary!
+      hex::encode(tx_template_hash));  // Unnecessary!
+
+// ❌ WRONG - Debug format on hash types (produces ugly output)
+debug!("event {:?}", event_id);  // Prints: EventId([171, 205, 239, ...])
+info!("hash {:?}", tx_hash);     // Prints: [1, 2, 3, 4, 5, ...]
+
+// ❌ WRONG - Inconsistent formatting
+info!("event event_id={}", event_id);        // No prefix
+debug!("event event_id={:#x}", event_id);    // With 0x
+warn!("event event_id={}", hex::encode(event_id));  // Manual
+// Pick ONE style and stick with it!
+```
+
+#### ✅ API Responses (DO THIS)
+
+```rust
+// ✅ CORRECT - Use types directly (serde auto-serializes to hex)
+#[derive(Serialize)]
+struct EventResponse {
+    event_id: EventId,         // Serializes to "abcd1234..." hex string
+    tx_id: TransactionId,      // Serializes to hex string
+    phase: EventPhase,         // Serializes to "Proposing"
+    signatures: Vec<SignatureRecord>,
+}
+
+let response = EventResponse {
+    event_id,  // No conversion needed!
+    tx_id,
+    phase,
+    signatures,
+};
+
+// JSON output:
+// {
+//   "event_id": "1234567890abcdef...",
+//   "tx_id": "fedcba0987654321...",
+//   "phase": "Committed"
+// }
+```
+
+#### ❌ API Responses (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Manual String conversion
+#[derive(Serialize)]
+struct EventResponse {
+    event_id: String,      // Should be EventId
+    tx_id: String,         // Should be TransactionId
+}
+
+let response = EventResponse {
+    event_id: hex::encode(event_id),  // Types already serialize!
+    tx_id: hex::encode(tx_id),
+};
+```
+
+#### ✅ Error Construction (DO THIS)
+
+```rust
+// ✅ CORRECT - Store typed data, format via Display
+return Err(ThresholdError::PsktMismatch {
+    expected: tx_template_hash,  // Store TxTemplateHash directly
+    actual: computed,            // Store TxTemplateHash directly
+});
+
+return Err(ThresholdError::MissingCrdtState {
+    event_id,  // Store EventId directly
+});
+
+// Define error variants with typed fields:
+#[derive(Debug, thiserror::Error)]
+pub enum ThresholdError {
+    #[error("PSKT mismatch: expected {expected}, got {actual}")]
+    PsktMismatch {
+        expected: TxTemplateHash,  // Type implements Display
+        actual: TxTemplateHash,
+    },
+
+    #[error("missing CRDT state for event_id={event_id}")]
+    MissingCrdtState {
+        event_id: EventId,  // Type implements Display
+    },
+}
+```
+
+#### ❌ Error Construction (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Converting to String in error construction
+return Err(ThresholdError::PsktMismatch {
+    expected: hex::encode(expected),  // Allocates String unnecessarily
+    actual: hex::encode(computed),
+});
+
+return Err(ThresholdError::MissingCrdtState {
+    event_id: event_id.to_string(),  // Should store EventId directly
+});
+
+// ❌ WRONG - Using Message variant with manual formatting
+return Err(ThresholdError::Message(format!(
+    "PSKT mismatch: expected {} actual {}",
+    hex::encode(expected),
+    hex::encode(actual)
+)));
+// Use structured error variant instead!
+```
+
+#### Hash Type Quick Reference
+
+**All these types have FromStr, Display, LowerHex, UpperHex, Serialize, Deserialize:**
+- `EventId` - Event identifier (BLAKE3 hash)
+- `GroupId` - Group identifier (BLAKE3 hash)
+- `SessionId` - Session identifier (BLAKE3 hash)
+- `TransactionId` - Blockchain transaction ID
+- `TxTemplateHash` - PSKT template hash (BLAKE3)
+- `ExternalId` - External event ID (bridge message ID)
+- `PayloadHash` - Message payload hash (BLAKE3)
+
+**Operations:**
+```rust
+// Parse
+let id: EventId = "0xabcd...".parse()?;
+
+// Display
+println!("{}", id);        // abcd1234...
+println!("{:#x}", id);     // 0xabcd1234...
+
+// Serialize/Deserialize
+let json = serde_json::to_string(&id)?;  // "abcd1234..."
+let parsed: EventId = serde_json::from_str(&json)?;
+
+// Convert
+let hash: Hash32 = id.into();        // To [u8; 32]
+let id: EventId = hash.into();       // From [u8; 32]
+let id: EventId = Hash32::from(...); // From array
+```
+
+#### Summary: Hash Type Cheat Sheet
+
+| Operation | ❌ Don't Do | ✅ Do Instead |
+|-----------|-------------|---------------|
+| **Parse from hex** | `parse_hash32_hex(s)` | `s.parse::<EventId>()?` |
+| **Parse from config** | 4-line unwrap pattern | `parse_required(&cfg.field, "field")?` |
+| **Log hash** | `hex::encode(event_id)` | `event_id` (has Display) |
+| **API response** | `String` + manual encode | `EventId` (auto-serializes) |
+| **Error field** | `String` + manual encode | `EventId` (formats via Display) |
+| **Create function** | `fn parse_my_hash()` | Use `.parse()` or shared helper |
+
+---
+
+### 4.2 Config Parsing Best Practices
+
+#### ✅ Required Config Fields
+
+```rust
+use crate::foundation::parse_required;
+
+// ✅ CORRECT - One line, clear error message
+let group_id: GroupId = parse_required(&config.iroh.group_id, "iroh.group_id")?;
+let peer_id: PeerId = parse_required(&config.iroh.peer_id, "iroh.peer_id")?;
+let seed: [u8; 32] = parse_required(&config.seed_hex, "seed_hex")?;
+
+// ✅ CORRECT - For non-parseable types
+let port: u16 = config.port
+    .ok_or_else(|| ThresholdError::ConfigError("missing port".to_string()))?;
+
+let url: String = config.url
+    .clone()
+    .ok_or_else(|| ThresholdError::ConfigError("missing URL".to_string()))?;
+```
+
+#### ❌ Required Config Fields (FORBIDDEN PATTERN)
+
+```rust
+// ❌ WRONG - Verbose anti-pattern (was found 5+ times, now forbidden)
+let group_id_hex = config.iroh.group_id.clone().unwrap_or_default();
+if group_id_hex.is_empty() {
+    return Err(ThresholdError::ConfigError("missing group_id".to_string()));
+}
+let group_id = GroupId::from(parse_hash32_hex(&group_id_hex)?);
+
+// ❌ WRONG - Unnecessary clone
+let value = config.field.clone().unwrap_or_default();
+
+// Why wrong:
+// 1. .clone() is unnecessary (.as_deref() or .as_ref() is enough)
+// 2. .unwrap_or_default() + is_empty check is verbose
+// 3. Manual parsing duplicates FromStr implementation
+// 4. No type safety (easy to swap field names)
+```
+
+#### ✅ Optional Config Fields
+
+```rust
+use crate::foundation::parse_optional;
+
+// ✅ CORRECT - Returns Ok(None) if empty/missing
+let seed: Option<[u8; 32]> = parse_optional(&config.seed_hex)?;
+let group_id: Option<GroupId> = parse_optional(&config.group_id)?;
+
+// ✅ CORRECT - With match for conditional logic
+match parse_optional::<GroupId>(&config.group_id)? {
+    Some(id) => {
+        info!("using configured group_id={}", id);
+        id
+    }
+    None => {
+        info!("generating new group_id");
+        GroupId::from(compute_group_id(&group_config)?)
+    }
+}
+
+// ✅ CORRECT - Simple default
+let timeout: u64 = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+```
+
+#### ❌ Optional Config Fields (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Complicated branching
+let value_hex = config.field.clone().unwrap_or_default();
+let value = if !value_hex.is_empty() {
+    Some(parse_hash32_hex(&value_hex)?)
+} else {
+    None
+};
+
+// ❌ WRONG - Multiple checks
+if config.field.is_some() {
+    let hex = config.field.as_ref().unwrap();
+    if !hex.is_empty() {
+        let parsed = parse_hash32_hex(hex)?;
+        // ... use parsed
+    }
+}
+```
+
+#### Config Helper API Reference
+
+**Location:** `igra-core/src/foundation/config_helpers.rs`
+
+```rust
+/// Parse required field (error if None or empty)
+/// Returns: T or ThresholdError::ConfigError
+pub fn parse_required<T: FromStr>(
+    opt: &Option<String>,
+    field_name: &str,
+) -> Result<T, ThresholdError>
+
+/// Parse optional field (Ok(None) if None or empty)
+/// Returns: Option<T> or ThresholdError if parsing fails
+pub fn parse_optional<T: FromStr>(
+    opt: &Option<String>,
+) -> Result<Option<T>, ThresholdError>
+
+/// Parse with default value (never fails)
+/// Returns: T (parsed value or default)
+pub fn parse_or_default<T: FromStr + Default>(
+    opt: &Option<String>,
+    default: T,
+) -> T
+
+/// Parse array of hex strings (filters empty strings)
+/// Returns: Vec<T> or ThresholdError
+pub fn parse_hex_array<T: FromStr>(
+    values: &[String],
+) -> Result<Vec<T>, ThresholdError>
+```
+
+**Examples:**
+```rust
+// Required
+let group_id: GroupId = parse_required(&config.iroh.group_id, "iroh.group_id")?;
+
+// Optional
+let session_id: Option<SessionId> = parse_optional(&config.session_id)?;
+
+// With default
+let network_id: u8 = parse_or_default(&config.network_id_str, 0);
+
+// Array
+let validator_ids: Vec<EventId> = parse_hex_array(&config.validator_event_ids)?;
+```
+
+---
+
+### 4.3 Logging Best Practices for Hash Types
+
+#### ✅ Standard Logging Format
+
+```rust
+// ✅ CORRECT - Use Display trait (no hex::encode needed)
+info!("event processed event_id={}", event_id);
+warn!("proposal failed event_id={} round={}", event_id, round);
+debug!("CRDT merge event_id={} tx_hash={} changes={}",
+       event_id, tx_template_hash, changes);
+
+// ✅ CORRECT - Structured logging with context
+error!(
+    "signing failed event_id={} tx_hash={} error={}",
+    event_id, tx_template_hash, err
+);
+
+// ✅ CORRECT - With 0x prefix for debugging
+debug!("signing event_id={:#x} tx_hash={:#x}", event_id, tx_hash);
+```
+
+#### ❌ Logging Anti-Patterns (DON'T DO THIS)
+
+```rust
+// ❌ WRONG - Manual hex::encode (found 120+ times, DO NOT ADD MORE)
+info!("event event_id={}", hex::encode(event_id));
+warn!("failed tx_hash={}", hex::encode(tx_template_hash));
+
+// ❌ WRONG - Debug format (ugly output)
+info!("event {:?}", event_id);  // Prints: EventId([171, 205, 239, 13, ...])
+
+// ❌ WRONG - Calling to_string() explicitly
+info!("event event_id={}", event_id.to_string());  // Redundant!
+
+// ❌ WRONG - Inconsistent formatting
+info!("event event_id={}", event_id);        // abcd...
+debug!("event event_id={:#x}", event_id);    // 0xabcd...
+warn!("event event_id={}", hex::encode(event_id));  // abcd...
+// Choose ONE style for the codebase!
+```
+
+**Recommended standard:** Use `{}` (Display) for all logs, only use `{:#x}` (LowerHex with 0x prefix) for debugging/verbose output.
+
+---
+
+### 4.4 Type Conversions
 
 **Implement `From` traits in the target module:**
 ```rust
@@ -1794,6 +2430,156 @@ pub async fn handle_proposal_broadcast(...) -> Result<(), ThresholdError> {
     flow.metrics().record_proposal_phase_duration(start.elapsed().as_millis() as u64);
     Ok(())
 }
+```
+
+---
+
+### 4.6 Avoiding Code Duplication 🔥 CRITICAL - DRY Principle
+
+**Before adding ANY helper function, search the codebase first!**
+
+```bash
+# Check if similar function exists
+grep -rn "fn parse_" igra-core/src igra-service/src
+grep -rn "fn validate_" igra-core/src igra-service/src
+grep -rn "fn sign_" igra-core/src igra-service/src
+```
+
+#### ✅ Extract Repeated Logic to Shared Module
+
+```rust
+// ❌ BAD - Same 15-line block in 3 different files
+// event_processor.rs:
+let hd = config.hd.as_ref().ok_or(...)?;
+let key_data = hd.decrypt_mnemonics()?;
+let payment_secret = hd.passphrase.as_deref().map(Secret::from);
+let signing_keypair = derive_keypair_from_key_data(...)?;
+let keypair = signing_keypair.to_secp256k1()?;
+let signed = sign_pskt(pskt, &keypair)?;
+// ... more lines
+
+// crdt_handler.rs:
+let hd = config.hd.as_ref().ok_or(...)?;  // DUPLICATE!
+let key_data = hd.decrypt_mnemonics()?;
+// ... exact same code
+
+// two_phase_handler.rs:
+let hd = config.hd.as_ref().ok_or(...)?;  // DUPLICATE AGAIN!
+// ... exact same code
+
+// ✅ GOOD - Single shared function
+// application/pskt_signing.rs
+pub fn sign_pskt_with_hd_config(
+    hd: &PsktHdConfig,
+    pskt: PSKT<Signer>,
+    ctx: PsktSigningContext<'_>,
+) -> Result<SignPsktResult, ThresholdError> {
+    // One implementation, used everywhere
+}
+
+// All 3 call sites:
+let result = sign_pskt_with_hd_config(hd, pskt, ctx)?;
+```
+
+#### ✅ Use Type Methods for Type-Specific Logic
+
+```rust
+// ❌ BAD - Free function duplicated across modules
+fn validate_proposal_structure(p: &Proposal) -> Result<()> {
+    if p.utxos_used.is_empty() { return Err(...); }
+    if p.kpsbt_blob.len() > MAX_SIZE { return Err(...); }
+    Ok(())
+}
+
+// ✅ GOOD - Method on the type itself
+impl Proposal {
+    pub fn validate_structure(&self) -> Result<(), ProposalValidationError> {
+        if self.utxos_used.is_empty() {
+            return Err(ProposalValidationError::NoUtxos);
+        }
+        if self.kpsbt_blob.len() > MAX_KPSBT_SIZE {
+            return Err(ProposalValidationError::KpsbtTooLarge {
+                size: self.kpsbt_blob.len(),
+                max: MAX_KPSBT_SIZE,
+            });
+        }
+        Ok(())
+    }
+}
+
+// Usage - clear and discoverable:
+proposal.validate_structure()?;
+```
+
+#### Where to Put Shared Code
+
+| Pattern | Where to Put It |
+|---------|----------------|
+| Hex parsing | Use `.parse()` or `foundation/encoding.rs` |
+| Config helpers | `foundation/config_helpers.rs` |
+| Type validation | Methods on the type (`impl MyType`) |
+| Crypto operations | `domain/signing/` or `foundation/hd.rs` |
+| Storage operations | Trait methods on Storage traits |
+| Error handling | `foundation/error.rs` (structured variants) |
+
+#### Red Flags - Signs You're Duplicating Code
+
+🚩 **Copying functions between files** - Extract to shared module
+🚩 **Same error handling in 3+ places** - Extract to helper
+🚩 **Similar validation logic** - Extract to validator or type method
+🚩 **Repeated match patterns** - Extract to function or use combinators
+🚩 **Copy-pasting with minor changes** - Parameterize and extract
+
+---
+
+### 4.7 Error Handling Patterns
+
+#### ✅ Propagate Errors with Context
+
+```rust
+// ✅ CORRECT - Add context while propagating
+storage.save_proposal(&proposal)
+    .map_err(|e| {
+        error!("failed to save proposal event_id={}: {}", event_id, e);
+        e
+    })?;
+
+// ✅ CORRECT - Wrap with new error
+storage.save_proposal(&proposal)
+    .map_err(|e| ThresholdError::StorageError {
+        operation: "save_proposal".to_string(),
+        details: e.to_string(),
+    })?;
+```
+
+#### ❌ Swallow Errors (FORBIDDEN)
+
+```rust
+// ❌ WRONG - Ignored result (found 15 times, DO NOT ADD MORE)
+let _ = storage.clear_stale_proposals(&event_id, round)?;
+let _ = writeln!(file, "{}", data);
+let _ = transport.publish_proposal(proposal)?;
+
+// Why forbidden:
+// - Silent data loss
+// - Impossible to debug
+// - Violates protocol correctness
+```
+
+#### ❌ Silent Defaults (DANGEROUS)
+
+```rust
+// ❌ WRONG - RPC failure defaults to 0 with no warning
+let score = rpc.get_blue_score().await.unwrap_or(0);
+
+// ✅ GOOD - Log the failure
+let score = match rpc.get_blue_score().await {
+    Ok(score) => score,
+    Err(e) => {
+        warn!("RPC call failed, defaulting to 0: {}", e);
+        0
+    }
+};
 ```
 
 ---

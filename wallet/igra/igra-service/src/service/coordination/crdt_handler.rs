@@ -660,13 +660,15 @@ pub(crate) async fn maybe_sign_and_broadcast(
     let input_count = signer_pskt.inputs.len();
     let (pubkey, sigs) = igra_core::application::pskt_signing::sign_pskt_with_app_config(
         ctx.app_config,
+        &ctx.flow.key_context(),
         signer_pskt,
         igra_core::application::pskt_signing::PsktSigningContext {
             event_id: &state.event_id,
             tx_template_hash: &state.tx_template_hash,
             purpose: "maybe_sign_and_broadcast",
         },
-    )?;
+    )
+    .await?;
     for (input_index, signature) in sigs {
         ctx.storage.add_signature_to_crdt(
             &state.event_id,
@@ -790,8 +792,9 @@ async fn maybe_index_hyperlane_delivery(
     let origin = meta.get("hyperlane.msg.origin").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
     let destination = meta.get("hyperlane.msg.destination").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
     let nonce = meta.get("hyperlane.msg.nonce").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-    let sender = meta.get("hyperlane.msg.sender").and_then(|v| parse_hash32_hex(v).ok()).unwrap_or([0u8; 32]);
-    let recipient = meta.get("hyperlane.msg.recipient").and_then(|v| parse_hash32_hex(v).ok()).unwrap_or([0u8; 32]);
+    let sender = meta.get("hyperlane.msg.sender").and_then(|v| igra_core::foundation::parse_hex_32bytes(v).ok()).unwrap_or([0u8; 32]);
+    let recipient =
+        meta.get("hyperlane.msg.recipient").and_then(|v| igra_core::foundation::parse_hex_32bytes(v).ok()).unwrap_or([0u8; 32]);
     let body_hex = meta.get("hyperlane.msg.body_hex").cloned().unwrap_or_default();
     let log_index = match storage.hyperlane_get_delivered_count() {
         Ok(count) => count,
@@ -809,17 +812,6 @@ async fn maybe_index_hyperlane_delivery(
         );
     }
     Ok(())
-}
-
-fn parse_hash32_hex(value: &str) -> Result<[u8; 32], ThresholdError> {
-    let stripped = value.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|err| ThresholdError::EncodingError(format!("invalid hex: {err}")))?;
-    if bytes.len() != 32 {
-        return Err(ThresholdError::EncodingError(format!("expected 32 bytes, got {}", bytes.len())));
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }
 
 async fn attempt_submission(

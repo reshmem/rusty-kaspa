@@ -9,6 +9,7 @@ pub use types::*;
 use crate::foundation::ThresholdError;
 use crate::foundation::{derive_pubkeys, redeem_script_from_pubkeys, HdInputs};
 use kaspa_wallet_core::prelude::Secret;
+use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use std::path::{Path, PathBuf};
 
 pub fn load_app_config() -> Result<AppConfig, ThresholdError> {
@@ -19,10 +20,13 @@ pub fn load_app_config() -> Result<AppConfig, ThresholdError> {
     Ok(config)
 }
 
-pub fn derive_redeem_script_hex(hd: &PsktHdConfig, derivation_path: Option<&str>) -> Result<String, ThresholdError> {
-    let key_data = hd.decrypt_mnemonics()?;
-    let payment_secret = hd.passphrase.as_deref().map(Secret::from);
-    let inputs = HdInputs { key_data: &key_data, xpubs: &hd.xpubs, derivation_path, payment_secret: payment_secret.as_ref() };
+pub fn derive_redeem_script_hex(
+    hd: &PsktHdConfig,
+    key_data: &[PrvKeyData],
+    derivation_path: Option<&str>,
+    payment_secret: Option<&Secret>,
+) -> Result<String, ThresholdError> {
+    let inputs = HdInputs { key_data, xpubs: &hd.xpubs, derivation_path, payment_secret };
     let mut pubkeys = derive_pubkeys(inputs)?;
     if pubkeys.is_empty() {
         return Err(ThresholdError::ConfigError("no HD pubkeys configured".to_string()));

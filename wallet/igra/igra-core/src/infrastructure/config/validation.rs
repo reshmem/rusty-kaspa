@@ -24,6 +24,21 @@ impl AppConfig {
             }
         }
 
+        if let Some(hd) = self.service.hd.as_ref() {
+            match hd.key_type {
+                crate::infrastructure::config::KeyType::HdMnemonic => {
+                    if hd.encrypted_mnemonics.is_none() {
+                        errors.push("service.hd.encrypted_mnemonics is required when service.hd.key_type=hd_mnemonic".to_string());
+                    }
+                }
+                crate::infrastructure::config::KeyType::RawPrivateKey => {
+                    if self.service.pskt.redeem_script_hex.trim().is_empty() {
+                        errors.push("service.pskt.redeem_script_hex is required when service.hd.key_type=raw_private_key".to_string());
+                    }
+                }
+            }
+        }
+
         if let Some(addr) = self.runtime.test_recipient.as_ref() {
             if Address::try_from(addr.as_str()).is_err() {
                 errors.push(format!("invalid runtime.test_recipient: {}", addr));

@@ -1,10 +1,11 @@
 use ed25519_dalek::VerifyingKey;
 use igra_core::domain::group_id::verify_group_id;
-use igra_core::foundation::GroupId;
-use igra_core::foundation::Hash32;
-use igra_core::foundation::PeerId;
-use igra_core::foundation::ThresholdError;
+use igra_core::foundation::{parse_hex_32bytes, parse_required, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::AppConfig;
+use igra_core::infrastructure::keys::{
+    EnvSecretStore, FileAuditLogger, FileSecretStore, KeyAuditLogger, KeyManager, KeyManagerContext, LocalKeyManager, SecretName,
+    SecretStore,
+};
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
 use log::{info, warn};
@@ -77,51 +78,141 @@ pub fn init_storage(data_dir: &str, allow_schema_wipe: bool) -> Result<Arc<Rocks
         .map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
 }
 
+pub async fn setup_key_manager(
+    service_config: &igra_core::infrastructure::config::ServiceConfig,
+) -> Result<(Arc<dyn KeyManager>, Arc<dyn KeyAuditLogger>), ThresholdError> {
+    let secret_store: Arc<dyn SecretStore> = if service_config.use_encrypted_secrets {
+        let secrets_path = match service_config.secrets_file.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(path) => PathBuf::from(path),
+            None => PathBuf::from(&service_config.data_dir).join("secrets.bin"),
+        };
+        if !secrets_path.exists() {
+            return Err(ThresholdError::secret_store_unavailable(
+                "file",
+                format!("secrets file not found: {} (set service.secrets_file or create the file first)", secrets_path.display()),
+            ));
+        }
+        let passphrase = prompt_secrets_passphrase()?;
+        Arc::new(FileSecretStore::open(&secrets_path, &passphrase).await?)
+    } else {
+        warn!("using environment-based secrets (devnet/CI only)");
+        Arc::new(EnvSecretStore::new())
+    };
+
+    let audit_path = match service_config.key_audit_log_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from(&service_config.data_dir).join("key-audit.log"),
+    };
+    let audit_log: Arc<dyn KeyAuditLogger> = Arc::new(FileAuditLogger::new(&audit_path)?);
+
+    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(secret_store, audit_log.clone()));
+    Ok((key_manager, audit_log))
+}
+
+fn prompt_secrets_passphrase() -> Result<String, ThresholdError> {
+    use std::io::{self, Write};
+
+    if let Ok(pass) = std::env::var("IGRA_SECRETS_PASSPHRASE") {
+        let trimmed = pass.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+
+    print!("Enter secrets file passphrase: ");
+    io::stdout().flush().map_err(|e| ThresholdError::secret_store_unavailable("file", format!("Failed to flush stdout: {}", e)))?;
+
+    let mut passphrase = String::new();
+    io::stdin()
+        .read_line(&mut passphrase)
+        .map_err(|e| ThresholdError::secret_store_unavailable("file", format!("Failed to read passphrase: {}", e)))?;
+
+    Ok(passphrase.trim().to_string())
+}
+
 pub struct SignerIdentity {
     pub peer_id: PeerId,
     pub signer: Arc<Ed25519Signer>,
     pub verifier: Arc<StaticEd25519Verifier>,
+    pub seed: [u8; 32],
 }
 
-pub fn init_signer_identity(app_config: &AppConfig) -> Result<SignerIdentity, ThresholdError> {
-    let peer_id_env = app_config.iroh.peer_id.clone().unwrap_or_default();
-    let seed_hex_env = app_config.iroh.signer_seed_hex.clone().unwrap_or_default();
-    let (peer_id, seed_hex) = if !peer_id_env.is_empty() && !seed_hex_env.is_empty() {
-        info!("using iroh identity from config peer_id={}", peer_id_env);
-        (PeerId::from(peer_id_env), seed_hex_env)
+pub async fn init_signer_identity(
+    app_config: &AppConfig,
+    key_manager: &Arc<dyn KeyManager>,
+    audit_log: &Arc<dyn KeyAuditLogger>,
+) -> Result<SignerIdentity, ThresholdError> {
+    let key_ctx = KeyManagerContext::with_new_request_id(key_manager.clone(), audit_log.clone());
+
+    let peer_id_config = app_config.iroh.peer_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let seed_config = app_config.iroh.signer_seed_hex.as_deref().map(parse_hex_32bytes).transpose()?;
+
+    let profile_suffix = std::env::var("KASPA_IGRA_PROFILE")
+        .ok()
+        .map(|s| s.trim().replace('-', "_"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let secret_name = SecretName::new(format!("igra.iroh.signer_seed_{}", profile_suffix));
+    let seed_from_store: Option<[u8; 32]> =
+        match key_ctx.get_secret_with_audit(&secret_name).await {
+            Ok(bytes) => Some(bytes.expose_secret().try_into().map_err(|_| {
+                ThresholdError::key_operation_failed("parse_iroh_seed", secret_name.to_string(), "seed must be 32 bytes")
+            })?),
+            Err(ThresholdError::SecretNotFound { .. }) => None,
+            Err(err) => return Err(err),
+        };
+
+    let (peer_id, seed) = if let Some(seed) = seed_from_store {
+        if let Some(peer_id) = peer_id_config {
+            info!("using iroh identity from secret store + config peer_id={} secret_name={}", peer_id, secret_name);
+            (PeerId::from(peer_id), seed)
+        } else {
+            let digest = blake3::hash(&seed);
+            let prefix = &digest.as_bytes()[..8];
+            let peer_id = PeerId::from(format!("peer-{}", hex::encode(prefix)));
+            info!("using iroh identity derived from secret store peer_id={} secret_name={}", peer_id, secret_name);
+            (peer_id, seed)
+        }
+    } else if let Some(seed) = seed_config {
+        if let Some(peer_id) = peer_id_config {
+            info!("using iroh identity from config peer_id={}", peer_id);
+            (PeerId::from(peer_id), seed)
+        } else {
+            let digest = blake3::hash(&seed);
+            let prefix = &digest.as_bytes()[..8];
+            let peer_id = PeerId::from(format!("peer-{}", hex::encode(prefix)));
+            info!("using iroh identity derived from config seed peer_id={}", peer_id);
+            (peer_id, seed)
+        }
     } else {
         info!("loading or creating iroh identity");
-        load_or_create_iroh_identity(&app_config.service.data_dir)?
+        let (peer_id, seed_hex) = load_or_create_iroh_identity(&app_config.service.data_dir)?;
+        let seed = parse_hex_32bytes(&seed_hex)?;
+        (peer_id, seed)
     };
-
-    let seed = parse_seed_hex(&seed_hex)?;
     let signer = Arc::new(Ed25519Signer::from_seed(peer_id.clone(), seed));
 
     let mut keys = parse_verifier_keys(&app_config.iroh.verifier_keys)?;
     keys.entry(peer_id.clone()).or_insert_with(|| signer.verifying_key());
     let verifier = Arc::new(StaticEd25519Verifier::new(keys));
 
-    Ok(SignerIdentity { peer_id, signer, verifier })
+    Ok(SignerIdentity { peer_id, signer, verifier, seed })
 }
 
 pub fn resolve_group_id(app_config: &AppConfig) -> Result<GroupId, ThresholdError> {
-    let group_id_hex = app_config.iroh.group_id.clone().unwrap_or_default();
-    if group_id_hex.is_empty() {
-        return Err(ThresholdError::ConfigError("missing group_id".to_string()));
-    }
-    let group_id = GroupId::from(parse_hash32_hex(&group_id_hex)?);
+    let group_id: GroupId = parse_required(&app_config.iroh.group_id, "iroh.group_id")?;
     if let Some(group_config) = app_config.group.as_ref() {
         let verification = verify_group_id(group_config, &group_id)?;
         if !verification.matches {
+            let computed = GroupId::from(verification.computed);
             return Err(ThresholdError::ConfigError(format!(
-                "group_id mismatch: computed={} configured={}",
-                hex::encode(verification.computed),
-                group_id_hex
+                "group_id mismatch: computed={:#x} configured={:#x}",
+                computed, group_id
             )));
         }
-        info!("group_id validated against group config group_id={}", group_id_hex);
+        info!("group_id validated against group config group_id={:#x}", group_id);
     } else {
-        info!("group_id loaded group_id={}", group_id_hex);
+        info!("group_id loaded group_id={:#x}", group_id);
     }
     Ok(group_id)
 }
@@ -187,22 +278,8 @@ pub fn parse_bootstrap_addrs(addrs: &[String]) -> Result<Vec<EndpointAddr>, Thre
     Ok(out)
 }
 
-fn parse_seed_hex(value: &str) -> Result<[u8; 32], ThresholdError> {
-    let bytes = hex::decode(value.trim())?;
-    let array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex seed".to_string()))?;
-    Ok(array)
-}
-
-pub fn derive_iroh_secret(seed_hex: &str) -> Result<IrohSecretKey, ThresholdError> {
-    let seed = parse_seed_hex(seed_hex)?;
-    Ok(IrohSecretKey::from(seed))
-}
-
-fn parse_hash32_hex(value: &str) -> Result<Hash32, ThresholdError> {
-    let bytes = hex::decode(value.trim())?;
-    let array: [u8; 32] =
-        bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte hex value".to_string()))?;
-    Ok(array)
+pub fn derive_iroh_secret(seed: [u8; 32]) -> IrohSecretKey {
+    IrohSecretKey::from(seed)
 }
 
 fn parse_verifier_keys(values: &[String]) -> Result<HashMap<PeerId, VerifyingKey>, ThresholdError> {
@@ -214,10 +291,9 @@ fn parse_verifier_keys(values: &[String]) -> Result<HashMap<PeerId, VerifyingKey
         if peer_id.is_empty() || key_hex.is_empty() {
             return Err(ThresholdError::Message("expected verifier entry as peer_id:hex_pubkey".to_string()));
         }
-        let bytes = hex::decode(key_hex)?;
-        let array: [u8; 32] =
-            bytes.as_slice().try_into().map_err(|_| ThresholdError::Message("expected 32-byte ed25519 public key".to_string()))?;
-        let key = VerifyingKey::from_bytes(&array).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let array =
+            parse_hex_32bytes(key_hex).map_err(|err| ThresholdError::ConfigError(format!("invalid verifier key hex: {}", err)))?;
+        let key = VerifyingKey::from_bytes(&array).map_err(|err| ThresholdError::ConfigError(err.to_string()))?;
         keys.insert(PeerId::from(peer_id), key);
     }
     Ok(keys)

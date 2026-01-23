@@ -478,11 +478,11 @@ impl PhaseStorage for RocksStorage {
                 // or “resolve” it at this layer. We keep the first stored proposal and reject conflicting
                 // votes from the same peer for the same (event_id, round).
                 crate::infrastructure::audit::audit(crate::infrastructure::audit::AuditEvent::ProposalEquivocationDetected {
-                    event_id: hex::encode(proposal.event_id),
+                    event_id: proposal.event_id.to_string(),
                     round: proposal.round,
                     proposer_peer_id: proposal.proposer_peer_id.to_string(),
-                    existing_tx_template_hash: hex::encode(existing.tx_template_hash),
-                    new_tx_template_hash: hex::encode(proposal.tx_template_hash),
+                    existing_tx_template_hash: existing.tx_template_hash.to_string(),
+                    new_tx_template_hash: proposal.tx_template_hash.to_string(),
                     timestamp_nanos: now_ns,
                 });
                 return Ok(StoreProposalResult::Equivocation {

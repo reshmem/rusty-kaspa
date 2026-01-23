@@ -110,6 +110,7 @@ async fn on_tick(
         let (proposal, _anchor) = match igra_core::application::two_phase::build_local_proposal_for_round(
             flow.rpc().as_ref(),
             &app_config.service,
+            &flow.key_context(),
             &event,
             local_peer_id,
             phase.round,

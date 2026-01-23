@@ -3,7 +3,6 @@
 use super::{LWWRegister, SignatureKey, SignatureRecord};
 use crate::foundation::ThresholdError;
 use crate::foundation::{EventId, TxTemplateHash};
-use hex;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -148,13 +147,13 @@ impl EventCrdt {
         if self.event_id == EventId::default() {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
-                details: format!("missing event_id, tx_template_hash={}", hex::encode(self.tx_template_hash)),
+                details: format!("missing event_id, tx_template_hash={:#x}", self.tx_template_hash),
             });
         }
         if self.tx_template_hash == TxTemplateHash::default() {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
-                details: format!("missing tx_template_hash, event_id={}", hex::encode(self.event_id)),
+                details: format!("missing tx_template_hash, event_id={:#x}", self.event_id),
             });
         }
         Ok(())

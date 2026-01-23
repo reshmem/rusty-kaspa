@@ -3,6 +3,7 @@ use crate::domain::pskt::params::{PsktOutputParams, UtxoInput};
 use crate::domain::{CrdtSigningMaterial, StoredEvent};
 use crate::foundation::{EventId, PeerId, ThresholdError};
 use crate::infrastructure::config::ServiceConfig;
+use crate::infrastructure::keys::KeyManagerContext;
 use crate::infrastructure::rpc::kaspa_integration::build_pskt_from_rpc_seeded;
 use crate::infrastructure::rpc::NodeRpc;
 use log::warn;
@@ -10,13 +11,14 @@ use log::warn;
 pub async fn build_local_proposal_for_round(
     rpc: &dyn NodeRpc,
     service_config: &ServiceConfig,
+    key_context: &KeyManagerContext,
     stored_event: &StoredEvent,
     local_peer_id: &PeerId,
     round: u32,
     now_ns: u64,
 ) -> Result<(ProposalBroadcast, KaspaAnchorRef), ThresholdError> {
     let event_id = crate::domain::hashes::compute_event_id(&stored_event.event);
-    let pskt_config = crate::application::event_processor::resolve_pskt_config(service_config, stored_event)?;
+    let pskt_config = crate::application::event_processor::resolve_pskt_config(service_config, key_context, stored_event).await?;
 
     // Seed UTXO selection by (event_id, round) so that events with identical output parameters
     // don't continuously pick the same inputs across concurrent execution and retries.

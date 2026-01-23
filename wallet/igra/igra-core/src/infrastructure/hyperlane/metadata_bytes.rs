@@ -9,8 +9,7 @@ pub fn decode_proof_metadata_hex(
     message: &HyperlaneMessage,
     metadata_hex: &str,
 ) -> Result<ProofMetadata, ThresholdError> {
-    let stripped = metadata_hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|err| {
+    let bytes = crate::foundation::decode_hex_prefixed(metadata_hex).map_err(|err| {
         ThresholdError::EncodingError(format!(
             "invalid hyperlane metadata hex message_id={} mode={:?} error={}",
             hex::encode(message.id().as_bytes()),

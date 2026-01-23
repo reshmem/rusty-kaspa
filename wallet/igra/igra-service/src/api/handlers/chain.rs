@@ -124,7 +124,7 @@ pub async fn get_transaction(State(state): State<Arc<RpcState>>, headers: Header
         return (StatusCode::UNAUTHORIZED, err).into_response();
     }
 
-    let tx_id = match parse_tx_id_hex(&hash_hex) {
+    let tx_id = match crate::util::hex::parse_kaspa_tx_id_hex(&hash_hex) {
         Ok(id) => id,
         Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
     };
@@ -164,19 +164,6 @@ pub async fn get_transaction(State(state): State<Arc<RpcState>>, headers: Header
         outputs,
     })
     .into_response()
-}
-
-fn parse_tx_id_hex(value: &str) -> Result<kaspa_consensus_core::tx::TransactionId, String> {
-    let stripped = value.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|_| "invalid hex".to_string())?;
-    let bytes = match bytes.len() {
-        32 => bytes,
-        64 => bytes[0..32].to_vec(),
-        other => return Err(format!("expected 32 or 64 bytes, got {}", other)),
-    };
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(kaspa_consensus_core::tx::TransactionId::from_bytes(arr))
 }
 
 fn format_script_public_key(spk: &ScriptPublicKey) -> String {

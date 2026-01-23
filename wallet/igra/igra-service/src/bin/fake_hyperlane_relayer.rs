@@ -163,17 +163,6 @@ fn validate_unordered_events(value: u16) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_h256(hex_str: &str) -> Result<H256, String> {
-    let stripped = hex_str.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|e| format!("invalid hex {hex_str}: {e}"))?;
-    if bytes.len() != 32 {
-        return Err(format!("expected 32-byte hex for H256, got {}", bytes.len()));
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(H256::from(arr))
-}
-
 fn format_h256(value: H256) -> String {
     format!("0x{}", hex::encode(value.as_bytes()))
 }
@@ -380,9 +369,10 @@ async fn main() -> Result<(), String> {
     }
     Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
 
-    let sender = parse_h256(&parse_env_string("HYPERLANE_SENDER", DEFAULT_SENDER))?;
-    let recipient = parse_h256(&parse_env_string("HYPERLANE_RECIPIENT", DEFAULT_RECIPIENT))?;
-    let merkle_tree_hook_address = parse_h256(&parse_env_string("HYPERLANE_MERKLE_TREE_HOOK", DEFAULT_MERKLE_TREE_HOOK))?;
+    let sender = igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_SENDER", DEFAULT_SENDER))?;
+    let recipient = igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_RECIPIENT", DEFAULT_RECIPIENT))?;
+    let merkle_tree_hook_address =
+        igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_MERKLE_TREE_HOOK", DEFAULT_MERKLE_TREE_HOOK))?;
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| format!("read keys file failed path={} error={}", keys_path, err))?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| format!("parse keys json failed: {}", err))?;

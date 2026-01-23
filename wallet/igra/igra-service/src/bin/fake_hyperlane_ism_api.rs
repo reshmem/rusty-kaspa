@@ -99,17 +99,6 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
     env::var(name).ok().and_then(|value| value.trim().parse::<u64>().ok()).unwrap_or(default)
 }
 
-fn parse_h256(hex_str: &str) -> Result<H256, String> {
-    let stripped = hex_str.trim_start_matches("0x");
-    let bytes = hex::decode(stripped).map_err(|e| format!("invalid hex {hex_str}: {e}"))?;
-    if bytes.len() != 32 {
-        return Err("expected 32-byte hex for H256".to_string());
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(H256::from(arr))
-}
-
 fn parse_cli_unordered_events() -> Result<Option<u16>, String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -273,15 +262,13 @@ async fn main() -> Result<(), String> {
     }
     Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
     let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD").unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
-    let recipient_bytes: [u8; 32] = hex::decode(recipient_payload.trim_start_matches("0x"))
-        .map_err(|e| format!("invalid recipient payload: {e}"))?
-        .as_slice()
-        .try_into()
-        .map_err(|_| "recipient payload must be 32 bytes")?;
+    let recipient_bytes: [u8; 32] =
+        igra_core::foundation::parse_hex_32bytes(&recipient_payload).map_err(|err| format!("invalid recipient payload: {err}"))?;
     let domain = env::var("HYPERLANE_DOMAIN").unwrap_or_else(|_| DEFAULT_ORIGIN_DOMAIN.to_string()); // origin domain
     let destination_domain =
         env::var("HYPERLANE_DESTINATION_DOMAIN").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(DEFAULT_DESTINATION_DOMAIN);
-    let sender = env::var("HYPERLANE_SENDER").ok().and_then(|v| parse_h256(&v).ok()).unwrap_or(H256::zero());
+    let sender =
+        env::var("HYPERLANE_SENDER").ok().and_then(|v| igra_service::util::hex::parse_h256_hex(&v).ok()).unwrap_or(H256::zero());
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;

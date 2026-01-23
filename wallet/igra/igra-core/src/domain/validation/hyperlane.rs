@@ -180,13 +180,7 @@ fn parse_u32(value: &str, field: &'static str) -> Result<u32, HyperlaneVerificat
 }
 
 fn parse_h256(value: &str, field: &'static str) -> Result<H256, HyperlaneVerificationFailure> {
-    let stripped = value.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(stripped).map_err(|_| HyperlaneVerificationFailure::MissingMetadataField { field })?;
-    if bytes.len() != 32 {
-        return Err(HyperlaneVerificationFailure::MissingMetadataField { field });
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
+    let arr = crate::foundation::parse_hex_32bytes(value).map_err(|_| HyperlaneVerificationFailure::MissingMetadataField { field })?;
     Ok(H256::from(arr))
 }
 
