@@ -628,7 +628,7 @@ async fn write_signer_secrets_file(args: &Args, signer: &SignerOut, path: &PathB
     }
 
     store.save().await?;
-    println!("wrote signer secrets profile={} path={}", signer.profile, path.display());
+    eprintln!("wrote signer secrets profile={} path={}", signer.profile, path.display());
     Ok(())
 }
 

@@ -204,6 +204,7 @@ def default_template_dict() -> dict:
         "service": {
             "node_rpc_url": "grpc://127.0.0.1:16110",
             "data_dir": "",
+            "use_encrypted_secrets": True,
             "pskt": {
                 "source_addresses": [],
                 "redeem_script_hex": "",

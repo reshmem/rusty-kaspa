@@ -79,7 +79,7 @@ verifier_keys = [
 # Signer Profiles
 # =============================================================================
 # Use --profile <name> to load a specific profile
-# Example: igra-service --profile signer-1
+# Example: kaspa-threshold-service --profile signer-01
 
 [profiles.signer-01]
 

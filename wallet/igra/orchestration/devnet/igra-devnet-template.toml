@@ -3,6 +3,8 @@
 [service]
 node_rpc_url = "grpc://kaspad:16110"
 data_dir = "" # Filled by generator
+# Devnet uses the same encrypted secrets flow as production (one secrets file per signer).
+use_encrypted_secrets = true
 
 [service.pskt]
 source_addresses = [] # Filled by generator

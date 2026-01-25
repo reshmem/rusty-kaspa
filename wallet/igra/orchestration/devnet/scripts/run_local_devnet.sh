@@ -35,12 +35,13 @@ REPO_ROOT="$(cd "${DEVNET_DIR}/../../../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: run_local_devnet.sh [--build clone|local] [--root PATH] [--target-dir PATH] [--dry-run] [--fake-hyperlane-legacy] [--no-fake-hyperlane] [--unordered-events N] [help|setup|build|start|stop|restart|status|clean|generate-keys] [all|kaspad|kaspaminer|signer-1|signer-2|signer-3|igra]
+Usage: run_local_devnet.sh [--build clone|local] [--root PATH] [--target-dir PATH] [--dry-run] [--fake-hyperlane-legacy] [--no-fake-hyperlane] [--unordered-events N] [help|setup|build|start|stop|restart|status|clean|generate-keys] [all|kaspad|kaspaminer|signer-01|signer-02|signer-03|igra]
 
 Options:
   --build clone    Default. Clone sources (per dockerfiles) and build binaries under ROOT/sources.
   --build local    Build from the current rusty-kaspa checkout without git clones.
   --dry-run        Print what would be done without executing.
+  --secrets-passphrase PASS  Secrets file passphrase (otherwise auto-generated and stored under config/).
   --fake-hyperlane-legacy  Run legacy fake Hyperlane binary (fake_hyperlane_ism_api) instead of the relayer-style binary.
   --no-fake-hyperlane      Do not start any fake Hyperlane process (use real Hyperlane agents).
   --unordered-events N     Shuffle nonces within each batch of N messages (simulates out-of-order delivery).
@@ -70,6 +71,7 @@ Environment overrides:
   ROTHSCHILD_BIN           Path to rothschild binary (skip build/clone)
 IGRA_REPO / IGRA_REF     Clone source for --clone mode (default: https://github.com/reshmem/rusty-kaspa.git / devel)
   KASPA_MINER_REPO/REF     Clone source for --clone mode (default: https://github.com/IgraLabs/kaspa-miner.git / main)
+  IGRA_SECRETS_PASSPHRASE   Secrets passphrase override (if set, stored under config/ for future runs).
 
 Security notes:
   - Logs in ${LOG_DIR:-<root>/logs} may contain sensitive material (mnemonics/keys). Logs directory is restricted to 700 permissions.
@@ -81,6 +83,7 @@ BUILD_MODE="${BUILD_MODE:-clone}"
 DRY_RUN=false
 ROOT_ARG=""
 TARGET_DIR_ARG=""
+SECRETS_PASSPHRASE_ARG=""
 COMMAND=""
 TARGET_ARG="all"
 FAKE_HYPERLANE_LEGACY=false
@@ -108,6 +111,14 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       log_warn "DRY RUN MODE: actions will be printed but not executed"
       shift
+      ;;
+    --secrets-passphrase=*)
+      SECRETS_PASSPHRASE_ARG="${1#*=}"
+      shift
+      ;;
+    --secrets-passphrase)
+      SECRETS_PASSPHRASE_ARG="${2:-}"
+      shift 2
       ;;
     --fake-hyperlane-legacy|fake-hyperlane-legacy)
       FAKE_HYPERLANE_LEGACY=true
@@ -212,6 +223,7 @@ BIN_DIR="${RUN_ROOT}/bin"
 ENV_FILE="${CONFIG_DIR}/.env"
 IGRA_CONFIG_TEMPLATE=""
 IGRA_CONFIG="${CONFIG_DIR}/igra-config.toml"
+SECRETS_PASSPHRASE_FILE="${CONFIG_DIR}/igra-secrets-passphrase.txt"
 HYPERLANE_KEYS_SRC=""
 HYPERLANE_KEYS="${CONFIG_DIR}/hyperlane-keys.json"
 KEYSET_JSON_TEMPLATE=""
@@ -554,6 +566,77 @@ mkdir -p "${LOG_DIR}" "${PIDS_DIR}" "${KASPAD_DATA}" "${KASPAD_APPDIR}" "${IGRA_
 mkdir -p "${CONFIG_DIR}"
 chmod 700 "${LOG_DIR}" >/dev/null 2>&1 || true
 
+if [[ -n "${SECRETS_PASSPHRASE_ARG}" ]]; then
+  if [[ -z "${SECRETS_PASSPHRASE_ARG//[[:space:]]/}" ]]; then
+    log_error "--secrets-passphrase must not be empty"
+    exit 1
+  fi
+  IGRA_SECRETS_PASSPHRASE="${SECRETS_PASSPHRASE_ARG}"
+  export IGRA_SECRETS_PASSPHRASE
+fi
+
+secrets_passphrase_is_set() {
+  local pass="${IGRA_SECRETS_PASSPHRASE:-}"
+  [[ -n "${pass}" && -n "${pass//[[:space:]]/}" ]]
+}
+
+persist_secrets_passphrase() {
+  local pass="${IGRA_SECRETS_PASSPHRASE:-}"
+  if [[ -z "${pass}" ]]; then
+    return 1
+  fi
+  local old_umask
+  old_umask=$(umask)
+  umask 077
+  mkdir -p "$(dirname "${SECRETS_PASSPHRASE_FILE}")"
+  printf '%s' "${pass}" > "${SECRETS_PASSPHRASE_FILE}"
+  umask "${old_umask}"
+  chmod 600 "${SECRETS_PASSPHRASE_FILE}" >/dev/null 2>&1 || true
+  return 0
+}
+
+load_secrets_passphrase_from_file() {
+  if [[ -f "${SECRETS_PASSPHRASE_FILE}" ]]; then
+    IGRA_SECRETS_PASSPHRASE="$(cat "${SECRETS_PASSPHRASE_FILE}")"
+    export IGRA_SECRETS_PASSPHRASE
+    return 0
+  fi
+  return 1
+}
+
+ensure_secrets_passphrase_for_generation() {
+  if secrets_passphrase_is_set; then
+    persist_secrets_passphrase || true
+    return 0
+  fi
+  if load_secrets_passphrase_from_file; then
+    return 0
+  fi
+  IGRA_SECRETS_PASSPHRASE="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+)"
+  export IGRA_SECRETS_PASSPHRASE
+  persist_secrets_passphrase || {
+    log_error "Failed to persist secrets passphrase to ${SECRETS_PASSPHRASE_FILE}"
+    exit 1
+  }
+  return 0
+}
+
+ensure_secrets_passphrase_for_runtime() {
+  if secrets_passphrase_is_set; then
+    return 0
+  fi
+  if load_secrets_passphrase_from_file; then
+    return 0
+  fi
+  log_error "Missing IGRA_SECRETS_PASSPHRASE and no passphrase file at ${SECRETS_PASSPHRASE_FILE}"
+  log_error "Run 'generate-keys' to create encrypted secrets, or export IGRA_SECRETS_PASSPHRASE before 'start'."
+  exit 1
+}
+
 prepare_igra_config() {
   if [[ ! -f "${HYPERLANE_KEYS}" ]]; then
     log_info "Seeding hyperlane-keys.json from template into ${CONFIG_DIR}"
@@ -599,7 +682,8 @@ run_keygen() {
     log_error "Missing devnet-keygen in ${BIN_DIR}. Run 'build' first to stage binaries."
     return 1
   fi
-  "${keygen_bin}"
+  ensure_secrets_passphrase_for_generation
+  "${keygen_bin}" --format file-per-signer --output-dir "${IGRA_DATA}" --overwrite
 }
 
 validate_keygen_output() {
@@ -616,6 +700,25 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 hex_re = re.compile(r"^[0-9a-fA-F]+$")
+profile_re = re.compile(r"^signer-(\d\d)$")
+
+signers = data.get("signers") or []
+if not isinstance(signers, list) or not signers:
+    die("missing signers[]")
+
+seen_profiles = set()
+for idx, signer in enumerate(signers):
+    if not isinstance(signer, dict):
+        die(f"signers[{idx}] is not an object")
+    profile = (signer.get("profile") or "").strip()
+    if not profile:
+        die(f"signers[{idx}].profile is missing")
+    m = profile_re.match(profile)
+    if not m:
+        die(f"signers[{idx}].profile must match signer-XX (01-99): got {profile!r}")
+    if profile in seen_profiles:
+        die(f"duplicate signer profile: {profile!r}")
+    seen_profiles.add(profile)
 
 member_pubkeys = data.get("member_pubkeys") or []
 if not isinstance(member_pubkeys, list) or not member_pubkeys:
@@ -809,6 +912,8 @@ start_igra() {
 
   local profile_data_dir="${IGRA_DATA}/${profile}"
 
+  ensure_secrets_passphrase_for_runtime
+
   start_process "igra-${profile}" \
     env \
       KASPA_CONFIG_PATH="${IGRA_CONFIG}" \
@@ -816,6 +921,7 @@ start_igra() {
       KASPA_NODE_URL="grpc://127.0.0.1:16110" \
       IGRA_RPC_URL="${rpc_url}" \
       HYPERLANE_KEYS_PATH="${HYPERLANE_KEYS}" \
+      IGRA_SECRETS_PASSPHRASE="${IGRA_SECRETS_PASSPHRASE}" \
       "${IGRA_BIN}" \
       --network devnet \
       --config "${IGRA_CONFIG}" \
@@ -1001,6 +1107,8 @@ generate_keys() {
     return
   fi
 
+  ensure_secrets_passphrase_for_generation
+
   # Remove stale data directories so persisted configs don't conflict with regenerated keys.
   if [[ -d "${IGRA_DATA}" ]]; then
     log_warn "Clearing existing IGRA data directory at ${IGRA_DATA} to avoid stale group/config state"
@@ -1067,18 +1175,58 @@ ensure_configs() {
     log_error "IGRA config missing hyperlane.threshold; regenerate configs with 'generate-keys'."
     exit 1
   fi
+  if grep -Eq "^[[:space:]]*use_encrypted_secrets[[:space:]]*=[[:space:]]*true[[:space:]]*$" "${IGRA_CONFIG}" 2>/dev/null; then
+    ensure_secrets_passphrase_for_runtime
+    local profiles
+    if ! profiles="$(
+      KEYSET_JSON="${KEYSET_JSON}" python3 - <<'PY'
+import json
+import os
+
+path = os.environ.get("KEYSET_JSON")
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+for signer in data.get("signers") or []:
+    profile = (signer.get("profile") or "").strip()
+    if profile:
+        print(profile)
+PY
+    )"; then
+      log_error "Failed to parse signer profiles from ${KEYSET_JSON}"
+      exit 1
+    fi
+    local missing=()
+    while IFS= read -r profile; do
+      [[ -z "${profile}" ]] && continue
+      local secrets_bin="${IGRA_DATA}/${profile}/secrets.bin"
+      if [[ ! -f "${secrets_bin}" ]]; then
+        missing+=("${secrets_bin}")
+      fi
+    done <<< "${profiles}"
+    if [[ ${#missing[@]} -gt 0 ]]; then
+      log_error "Missing secrets files (encrypted secrets are enabled):"
+      for p in "${missing[@]}"; do
+        log_error "  - ${p}"
+      done
+      log_error "Run 'generate-keys' to regenerate secrets/configs under ${RUN_ROOT}."
+      exit 1
+    fi
+  fi
   log_info "Verified required configs in ${CONFIG_DIR}"
 }
 
 resolve_targets() {
   local target="$1"
   case "${target}" in
-    all) TARGETS=("kaspad" "kaspaminer" "signer-1" "signer-2" "signer-3") ;;
-    igra) TARGETS=("signer-1" "signer-2" "signer-3") ;;
-    kaspad|kaspaminer|signer-1|signer-2|signer-3) TARGETS=("${target}") ;;
-    igra-signer-1) TARGETS=("signer-1") ;;
-    igra-signer-2) TARGETS=("signer-2") ;;
-    igra-signer-3) TARGETS=("signer-3") ;;
+    all) TARGETS=("kaspad" "kaspaminer" "signer-01" "signer-02" "signer-03") ;;
+    igra) TARGETS=("signer-01" "signer-02" "signer-03") ;;
+    kaspad|kaspaminer|signer-01|signer-02|signer-03) TARGETS=("${target}") ;;
+    signer-1) TARGETS=("signer-01") ;;
+    signer-2) TARGETS=("signer-02") ;;
+    signer-3) TARGETS=("signer-03") ;;
+    igra-signer-1) TARGETS=("signer-01") ;;
+    igra-signer-2) TARGETS=("signer-02") ;;
+    igra-signer-3) TARGETS=("signer-03") ;;
     *) echo "Unknown target: ${target}" >&2; exit 1 ;;
   esac
 }
@@ -1098,31 +1246,31 @@ start_targets() {
         fi
         start_miner
         ;;
-      signer-1)
-        start_igra "signer-1" "8088"
-        wait_for_igra "signer-1" "8088"
+      signer-01)
+        start_igra "signer-01" "8088"
+        wait_for_igra "signer-01" "8088"
         if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
-          log_info "Skipping fake Hyperlane for signer-1 (--no-fake-hyperlane)"
+          log_info "Skipping fake Hyperlane for signer-01 (--no-fake-hyperlane)"
         else
-          start_fake_hyperlane "signer-1" "8088"
+          start_fake_hyperlane "signer-01" "8088"
         fi
         ;;
-      signer-2)
-        start_igra "signer-2" "8089"
-        wait_for_igra "signer-2" "8089"
+      signer-02)
+        start_igra "signer-02" "8089"
+        wait_for_igra "signer-02" "8089"
         if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
-          log_info "Skipping fake Hyperlane for signer-2 (--no-fake-hyperlane)"
+          log_info "Skipping fake Hyperlane for signer-02 (--no-fake-hyperlane)"
         else
-          start_fake_hyperlane "signer-2" "8089"
+          start_fake_hyperlane "signer-02" "8089"
         fi
         ;;
-      signer-3)
-        start_igra "signer-3" "8090"
-        wait_for_igra "signer-3" "8090"
+      signer-03)
+        start_igra "signer-03" "8090"
+        wait_for_igra "signer-03" "8090"
         if [[ "${NO_FAKE_HYPERLANE}" == "true" ]]; then
-          log_info "Skipping fake Hyperlane for signer-3 (--no-fake-hyperlane)"
+          log_info "Skipping fake Hyperlane for signer-03 (--no-fake-hyperlane)"
         else
-          start_fake_hyperlane "signer-3" "8090"
+          start_fake_hyperlane "signer-03" "8090"
         fi
         ;;
     esac
@@ -1135,16 +1283,32 @@ stop_targets() {
     case "${target}" in
       kaspad) stop_process "kaspad" ;;
       kaspaminer) stop_process "kaspaminer" ;;
-      signer-1) stop_igra "signer-1" ;;
-      signer-2) stop_igra "signer-2" ;;
-      signer-3) stop_igra "signer-3" ;;
+      signer-01) stop_igra "signer-01" ;;
+      signer-02) stop_igra "signer-02" ;;
+      signer-03) stop_igra "signer-03" ;;
     esac
   done
 }
 
 show_status() {
   log_info "Devnet status (root: ${RUN_ROOT})"
-  local processes=(kaspad kaspaminer igra-signer-1 igra-signer-2 igra-signer-3 fake-hyperlane-signer-1 fake-hyperlane-signer-2 fake-hyperlane-signer-3)
+  local processes=(
+    kaspad
+    kaspaminer
+    igra-signer-01
+    igra-signer-02
+    igra-signer-03
+    fake-hyperlane-signer-01
+    fake-hyperlane-signer-02
+    fake-hyperlane-signer-03
+    # Backwards-compat: show stale legacy process pid files too.
+    igra-signer-1
+    igra-signer-2
+    igra-signer-3
+    fake-hyperlane-signer-1
+    fake-hyperlane-signer-2
+    fake-hyperlane-signer-3
+  )
   for process in "${processes[@]}"; do
     local pid_file="${PIDS_DIR}/${process}.pid"
     local status_symbol="✗"

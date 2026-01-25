@@ -8,7 +8,7 @@
   },
   "signers": [
     {
-      "profile": "signer-1",
+      "profile": "signer-01",
       "mnemonic": "similar spray talent card cradle word have rather invite target version ready unit laugh simple exact hotel blood fault hover country orbit dose accuse",
       "iroh_seed_hex": "65a408b407328577681a004b5ac2b7df5f987434028bee297c6bd735ac5f5cb2",
       "pubkey_hex": "02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
@@ -16,7 +16,7 @@
       "derivation_path": "m/45'/111111'/0'/0/0"
     },
     {
-      "profile": "signer-2",
+      "profile": "signer-02",
       "mnemonic": "network put there gesture rally language zebra tank elite current course rigid spike upgrade ring mouse admit gossip rate shoe bachelor process rare rally",
       "iroh_seed_hex": "c34061c079b8fba669434f6cf4bb991dfaa778229cd56cc2ca9e324f65c12a59",
       "pubkey_hex": "03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
@@ -24,7 +24,7 @@
       "derivation_path": "m/45'/111111'/0'/0/0"
     },
     {
-      "profile": "signer-3",
+      "profile": "signer-03",
       "mnemonic": "lizard surround smoke begin imitate mercy inmate illness alley airport ramp gap toward focus blouse fee define odor orchard never dilemma mistake buffalo salute",
       "iroh_seed_hex": "a951310c4bede986d9fb7e72c083d0ba4a3e816327202922bacfe9cad8e31462",
       "pubkey_hex": "03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54",
