@@ -3,25 +3,61 @@
 # =============================================================================
 # Converted from: igra-prod.ini
 # See CONFIG_REFACTORING.md for migration details
+#
+# This is a production-oriented template.
+# Full reference (defaults, requiredness, cross-checks): `docs/configuration-reference.md`
 
 [service]
+# Mainnet requires explicit confirmation to prevent operator error:
+network = "mainnet"
+
+# Kaspa node RPC endpoint.
+# - Mainnet default posture is “local only”. Remote RPC requires explicit opt-in + TLS + auth.
 node_rpc_url = "grpc://127.0.0.1:16110"
+
+# Base data dir. Profiles typically override this per signer (one data dir per signer).
 data_dir = "/var/lib/igra"
 
+# Secrets backend:
+# - Mainnet requires encrypted secrets files (`use_encrypted_secrets = true`).
+use_encrypted_secrets = true
+
+# Optional explicit secrets file path.
+# If omitted: `${service.data_dir}/secrets.bin`
+# secrets_file = "/var/lib/igra/secrets.bin"
+
+# Optional key audit log path.
+# If omitted: `${service.data_dir}/key-audit.log`
+# key_audit_log_path = "/var/lib/igra/key-audit.log"
+
+# Allow remote RPC endpoints in mainnet (NOT RECOMMENDED).
+allow_remote_rpc = false
+
 [service.pskt]
-source_addresses = [
-    "<kaspanet:...>",
-    "<kaspanet:...>"
-]
+# Funding/source address(es) to scan UTXOs from.
+# Recommended: omit/empty and derive from `redeem_script_hex` + `service.network`.
+# If both `source_addresses` and `redeem_script_hex` are set, startup validation enforces they match exactly.
+source_addresses = []
+
+# Canonical source of truth for multisig spending policy (m-of-n + pubkeys).
 redeem_script_hex = "<hex>"
+
+# SigOp upper bound for tx mass / standardness checks. Recommended: `threshold_n`.
 sig_op_count = 2
 fee_payment_mode = "recipient_pays"
 fee_sompi = 0
-change_address = "<kaspanet:...>"
+
+# Optional change address (defaults to the derived multisig address if omitted).
+# change_address = "<kaspa:...>"
 
 [service.hd]
+# Mainnet forbids `hd_mnemonic`. Use:
+# - key_type = "raw_private_key"
+# - encrypted secrets file with `igra.signer.private_key_<profile>` entries
 key_type = "raw_private_key"
-required_sigs = 2
+# Required signatures (m) is only used for redeem script derivation from HD pubkeys.
+# Redundant if `service.pskt.redeem_script_hex` is provided (recommended).
+# required_sigs = 10
 
 [runtime]
 test_mode = false
@@ -31,8 +67,12 @@ session_timeout_seconds = 600
 backend = "threshold"
 
 [rpc]
+# Bind address for the HTTP RPC server.
 addr = "0.0.0.0:8088"
 enabled = true
+
+# Optional token auth for the RPC server (recommended in non-dev environments).
+# token = "<secret>"
 
 [policy]
 allowed_destinations = ["<kaspanet:...>"]
@@ -42,6 +82,7 @@ max_daily_volume_sompi = 500000000000
 require_reason = true
 
 [group]
+# Canonical signer set and threshold. Cross-checked against `service.pskt.redeem_script_hex`.
 threshold_m = 2
 threshold_n = 3
 member_pubkeys = [
@@ -54,6 +95,11 @@ finality_blue_score_threshold = 0
 dust_threshold_sompi = 0
 min_recipient_amount_sompi = 0
 session_timeout_seconds = 600
+
+[two_phase]
+# Defaults are derived from the group when set to 0.
+# commit_quorum = 0
+# min_input_score_depth = 0
 
 [hyperlane]
 validators = [

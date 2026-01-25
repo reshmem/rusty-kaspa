@@ -43,7 +43,7 @@ REPO_ROOT="$(cd "${DEVNET_DIR}/../../../.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: run_local_devnet_with_avail_and_hyperlane.sh [--build clone|local] [--root PATH] [--dry-run] [help|default|start|stop|restart|status|clean|send]
+Usage: run_local_devnet_with_avail_and_hyperlane.sh [--build clone|local] [--root PATH] [--secrets-passphrase PASS] [--dry-run] [help|default|start|stop|restart|status|clean|send]
 
 Commands:
   default   Build+stage+generate keys/configs, then start everything (Igra+Anvil+Hyperlane agents).
@@ -57,6 +57,7 @@ Commands:
 Options:
   --build clone|local   Passed through to `run_local_devnet.sh` for Igra devnet.
   --root PATH          Root working dir (default: $(pwd)/igra_devnet)
+  --secrets-passphrase PASS  Passed through to `run_local_devnet.sh` (otherwise auto-generated and stored under config/).
   --dry-run            Print actions without executing.
 
 Send options:
@@ -73,6 +74,7 @@ EOF
 BUILD_MODE="clone"
 DRY_RUN=false
 ROOT_ARG=""
+SECRETS_PASSPHRASE_ARG=""
 COMMAND=""
 SEND_COUNT=1
 SEND_AMOUNT_SOMPI=20000000
@@ -93,7 +95,23 @@ require_cmd() {
 
 run() {
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "[DRY-RUN] $*"
+    local -a redacted=()
+    local prev=""
+    for arg in "$@"; do
+      if [[ "${prev}" == "--secrets-passphrase" ]]; then
+        redacted+=("<redacted>")
+        prev=""
+        continue
+      fi
+      if [[ "${arg}" == --secrets-passphrase=* ]]; then
+        redacted+=("--secrets-passphrase=<redacted>")
+        prev=""
+        continue
+      fi
+      redacted+=("${arg}")
+      prev="${arg}"
+    done
+    log_info "[DRY-RUN] ${redacted[*]}"
     return 0
   fi
   "$@"
@@ -169,6 +187,14 @@ while [[ $# -gt 0 ]]; do
       esac
       ;;
     --root) ROOT_ARG="${2:-}"; shift 2 ;;
+    --secrets-passphrase=*)
+      SECRETS_PASSPHRASE_ARG="${1#*=}"
+      shift
+      ;;
+    --secrets-passphrase)
+      SECRETS_PASSPHRASE_ARG="${2:-}"
+      shift 2
+      ;;
     --count) SEND_COUNT="${2:-}"; shift 2 ;;
     --amount-sompi) SEND_AMOUNT_SOMPI="${2:-}"; shift 2 ;;
     help|default|start|stop|restart|status|clean|send)
@@ -207,6 +233,20 @@ ANVIL_DOMAIN_ID="31337"
 KASPA_DOMAIN_ID="7"
 HYPERLANE_REF="devel"
 HYPERLANE_REPO_URL="https://github.com/reshmem/hyperlane-monorepo.git"
+
+if [[ -n "${SECRETS_PASSPHRASE_ARG}" && -z "${SECRETS_PASSPHRASE_ARG//[[:space:]]/}" ]]; then
+  log_error "--secrets-passphrase must not be empty"
+  exit 1
+fi
+
+igra_runner_args() {
+  local -a args=()
+  args+=(--build "${BUILD_MODE}" --root "${RUN_ROOT}" --no-fake-hyperlane)
+  if [[ -n "${SECRETS_PASSPHRASE_ARG}" ]]; then
+    args+=(--secrets-passphrase "${SECRETS_PASSPHRASE_ARG}")
+  fi
+  printf '%s\0' "${args[@]}"
+}
 
 require_prereqs() {
   require_cmd git "clone Hyperlane repo"
@@ -324,11 +364,15 @@ build_hyperlane() {
 
 start_igra_devnet_default() {
   # Use Anvil domain id for hyperlane.domains[0].domain in Igra config generation.
-  run env HYPERLANE_DOMAIN="${ANVIL_DOMAIN_ID}" "${IGRA_RUNNER}" --build "${BUILD_MODE}" --root "${RUN_ROOT}" --no-fake-hyperlane default
+  local -a args=()
+  while IFS= read -r -d '' v; do args+=("${v}"); done < <(igra_runner_args)
+  run env HYPERLANE_DOMAIN="${ANVIL_DOMAIN_ID}" "${IGRA_RUNNER}" "${args[@]}" default
 }
 
 start_igra_devnet_start() {
-  run "${IGRA_RUNNER}" --build "${BUILD_MODE}" --root "${RUN_ROOT}" --no-fake-hyperlane start all
+  local -a args=()
+  while IFS= read -r -d '' v; do args+=("${v}"); done < <(igra_runner_args)
+  run "${IGRA_RUNNER}" "${args[@]}" start all
 }
 
 stop_igra_devnet() {

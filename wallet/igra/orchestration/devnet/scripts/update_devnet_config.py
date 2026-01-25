@@ -202,9 +202,12 @@ def default_template_dict() -> dict:
     # works even if template parsing fails.
     return {
         "service": {
+            "network": "devnet",
             "node_rpc_url": "grpc://127.0.0.1:16110",
             "data_dir": "",
             "use_encrypted_secrets": True,
+            "secrets_file": "",
+            "key_audit_log_path": "",
             "pskt": {
                 "source_addresses": [],
                 "redeem_script_hex": "",
@@ -216,6 +219,7 @@ def default_template_dict() -> dict:
             "hd": {
                 "key_type": "hd_mnemonic",
                 "required_sigs": 2,
+                "derivation_path": "",
                 "xpubs": [],
             },
         },

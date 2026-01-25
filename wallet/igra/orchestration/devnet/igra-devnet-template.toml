@@ -1,36 +1,101 @@
-# Devnet config template - values filled by `orchestration/devnet/scripts/update_devnet_config.py`.
+# Devnet config template.
+#
+# This file is intentionally “mostly empty”: `update_devnet_config.py` fills in concrete values.
+# Keep arrays single-line in this template (the generator’s simple TOML parser does not support multiline arrays).
+#
+# Full reference: `docs/configuration-reference.md`
 
 [service]
+# Explicitly confirm network mode to prevent drift.
+# - If omitted: devnet is allowed, but mainnet requires explicit confirmation (`service.network="mainnet"`).
+network = "devnet"
+
+# Kaspa node RPC endpoint.
+# - If omitted/empty: defaults to grpc://127.0.0.1:16110
+# - Mainnet: remote RPC requires explicit opt-in + TLS + auth.
 node_rpc_url = "grpc://kaspad:16110"
+
+# Base data directory (profile overrides typically set per-signer subdirectories).
+# - If omitted/empty: defaults to the resolved data dir (KASPA_DATA_DIR / platform default).
 data_dir = "" # Filled by generator
+
 # Devnet uses the same encrypted secrets flow as production (one secrets file per signer).
+# - If true: service reads `${data_dir}/secrets.bin` (unless `service.secrets_file` is set)
+# - If false: requires `igra-service` to be built with `--features devnet-env-secrets` to use env secrets.
 use_encrypted_secrets = true
 
+# Optional explicit secrets file path.
+# - If omitted: `${service.data_dir}/secrets.bin`
+# secrets_file = ""
+
+# Optional key audit log path.
+# - If omitted: `${service.data_dir}/key-audit.log`
+# key_audit_log_path = ""
+
 [service.pskt]
+# Multisig funding/source address(es) to scan UTXOs from.
+# - Recommended: omit/empty and derive from `redeem_script_hex` + `service.network`.
+# - If both redeem_script_hex and source_addresses are set: startup validates they match exactly.
 source_addresses = [] # Filled by generator
+
+# Redeem script (hex) that defines the P2SH multisig policy (m-of-n + pubkeys).
+# This is the canonical source of truth for PSKT building and signer alignment checks.
 redeem_script_hex = "" # Filled by generator
+
+# SigOp upper bound used for tx mass / standardness checks.
+# Recommended: set to `threshold_n` (for CHECKMULTISIG, upper bound is `n`).
 sig_op_count = 2
+
+# Who pays fees:
+# - "recipient_pays" (default in devnet)
+# - other modes exist; see code + `docs/pskt.md`
 fee_payment_mode = "recipient_pays"
+
+# Optional explicit fee override (sompi).
 fee_sompi = 0
-# change_address is optional; when omitted, defaults to `source_addresses[0]` (the multisig address).
+
+# Optional change address.
+# - If omitted/empty: defaults to `source_addresses[0]` (the derived multisig address).
+# change_address = ""
 
 [service.hd]
+# How this signer derives its signing key from SecretStore:
+# - "hd_mnemonic": reads `igra.signer.mnemonic_<profile>` and derives a key
+# - "raw_private_key": reads `igra.signer.private_key_<profile>` (32 bytes)
+#
+# Mainnet forbids `hd_mnemonic` (validated at startup).
 key_type = "hd_mnemonic"
+
+# Required signatures (m) if deriving a redeem script from HD pubkeys.
+# Redundant if `service.pskt.redeem_script_hex` is provided and `[group]` sets `threshold_m`.
 required_sigs = 2
-# xpubs / derivation_path are optional here because devnet fills `service.pskt.redeem_script_hex`
+
+# Optional derivation path for `hd_mnemonic`. If omitted/empty/"m", uses root.
+# derivation_path = ""
+
+# Optional extra participant xpubs (public-only keys).
+# Only used if deriving redeem script from HD inputs.
+xpubs = []
 
 [runtime]
+# When true, dev/test flows can sign using `runtime.test_recipient`/`runtime.test_amount_sompi` overrides.
 test_mode = false
+
+# Session timeout (seconds).
+# - If 0/omitted: loader injects a compiled default.
 session_timeout_seconds = 60
 
 [signing]
 backend = "threshold"
 
 [rpc]
+# HTTP RPC bind address.
+# - If omitted/empty: defaults to a compiled default.
 addr = "0.0.0.0:8088"
 enabled = true
 
 [policy]
+# Outgoing transfer policy. In devnet we allow everything by default.
 allowed_destinations = []
 min_amount_sompi = 1000000
 max_amount_sompi = 100000000000
@@ -38,6 +103,7 @@ max_daily_volume_sompi = 500000000000
 require_reason = false
 
 [group]
+# Canonical signer set + threshold. Cross-checked against `service.pskt.redeem_script_hex`.
 threshold_m = 2
 threshold_n = 3
 member_pubkeys = [] # Filled by generator
@@ -48,6 +114,7 @@ min_recipient_amount_sompi = 0
 session_timeout_seconds = 60
 
 [hyperlane]
+# Legacy flat validator set (preferred is `[[hyperlane.domains]]`).
 validators = [] # Filled by generator
 threshold = 2
 poll_secs = 10
@@ -56,8 +123,13 @@ poll_secs = 10
 endpoint_pubkeys = []
 
 [iroh]
+# Transport group id (usually derived from `[group]`).
 group_id = "" # Filled by generator
+
+# Verifier keys: `"peer_id:ed25519_pubkey_hex"`. Used to authorize peer messages.
 verifier_keys = [] # Filled by generator
+
+# Bootstrap peers (endpoint ids) and optional explicit addresses (`<endpoint_id>@host:port`).
 bootstrap = [] # Filled by generator
 bootstrap_addrs = [] # Filled by generator
 

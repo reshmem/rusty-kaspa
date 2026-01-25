@@ -8,6 +8,7 @@ Everything else is archived under `docs/legacy/` (especially `docs/legacy/archiv
 
 - `docs/quickstart-devnet.md`
 - `docs/configuration.md`
+- `docs/configuration-reference.md`
 - `docs/secrets-and-keys.md`
 - `docs/pskt.md`
 - `docs/protocol.md`
