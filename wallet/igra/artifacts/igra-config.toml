@@ -3,9 +3,6 @@
 # =============================================================================
 # Converted from: igra-config.ini
 # See CONFIG_REFACTORING.md for migration details
-#
-# Environment variable required:
-#   export KASPA_IGRA_WALLET_SECRET=<your-wallet-secret>
 
 [service]
 node_rpc_url = "grpc://127.0.0.1:16110"
@@ -23,11 +20,7 @@ fee_sompi = 0
 change_address = "kaspadev:qrz9yajzk65v0wyrk0s54drcauzd8rlgaagrl74cjmj042w4crqkust5wycfq"
 
 [service.hd]
-mnemonics = [
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    "legal winner thank year wave sausage worth useful legal winner thank yellow",
-    "letter advice cage absurd amount doctor acoustic avoid letter advice cage above"
-]
+key_type = "hd_mnemonic"
 required_sigs = 2
 
 [runtime]
@@ -80,70 +73,61 @@ verifier_keys = ["coordinator-1:02a4ebef8e3553bd9bf9212c8c66c356d4beee198580cf9e
 # Signer Profiles
 # =============================================================================
 # Use --profile <name> to load a specific profile
-# Example: igra-service --profile signer-1
+# Example: igra-service --profile signer-01
 
-[profiles.signer-1]
+[profiles.signer-01]
 
-[profiles.signer-1.service]
-data_dir = "./.igra/signer-1"
+[profiles.signer-01.service]
+data_dir = "./.igra/signer-01"
 
-[profiles.signer-1.hd]
-mnemonics = ["abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"]
-
-[profiles.signer-1.rpc]
+[profiles.signer-01.rpc]
 addr = "127.0.0.1:8088"
 
-[profiles.signer-1.iroh]
-peer_id = "signer-1"
+[profiles.signer-01.iroh]
+peer_id = "signer-01"
 signer_seed_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
-    "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-    "signer-2:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
-    "signer-3:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
+    "signer-01:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "signer-02:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+    "signer-03:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
 ]
 
-[profiles.signer-2]
+[profiles.signer-02]
 
-[profiles.signer-2.service]
-data_dir = "./.igra/signer-2"
+[profiles.signer-02.service]
+data_dir = "./.igra/signer-02"
 
-[profiles.signer-2.hd]
-mnemonics = ["legal winner thank year wave sausage worth useful legal winner thank yellow"]
-
-[profiles.signer-2.rpc]
+[profiles.signer-02.rpc]
 addr = "127.0.0.1:8089"
 
-[profiles.signer-2.iroh]
-peer_id = "signer-2"
+[profiles.signer-02.iroh]
+peer_id = "signer-02"
 signer_seed_hex = "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
 group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
-    "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-    "signer-2:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
-    "signer-3:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
+    "signer-01:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "signer-02:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+    "signer-03:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
 ]
 
-[profiles.signer-3]
+[profiles.signer-03]
 
-[profiles.signer-3.service]
-data_dir = "./.igra/signer-3"
+[profiles.signer-03.service]
+data_dir = "./.igra/signer-03"
 
-[profiles.signer-3.hd]
-mnemonics = ["letter advice cage absurd amount doctor acoustic avoid letter advice cage above"]
-
-[profiles.signer-3.rpc]
+[profiles.signer-03.rpc]
 addr = "127.0.0.1:8090"
 
-[profiles.signer-3.iroh]
-peer_id = "signer-3"
+[profiles.signer-03.iroh]
+peer_id = "signer-03"
 signer_seed_hex = "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
 group_id = "79760c316bd2c7890ba04dfb7a8e112555dc34da56bb3ae2dd93dec953e3b2ba"
 network_id = 0
 verifier_keys = [
-    "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-    "signer-2:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
-    "signer-3:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
+    "signer-01:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "signer-02:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+    "signer-03:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d"
 ]

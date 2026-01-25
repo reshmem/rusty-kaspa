@@ -5,5 +5,6 @@ mod hyperlane;
 mod middleware;
 mod router;
 mod state;
+mod util;
 
 pub use middleware::rate_limit::RateLimiter;

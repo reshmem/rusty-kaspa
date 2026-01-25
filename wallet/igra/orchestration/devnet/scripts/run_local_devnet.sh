@@ -248,7 +248,6 @@ PY
   exit 1
 fi
 
-KASPA_IGRA_WALLET_SECRET="${KASPA_IGRA_WALLET_SECRET:-devnet-secret}"
 FAKE_HYPERLANE_INTERVAL="${HYPERLANE_INTERVAL_SECS:-10}"
 FAKE_HYPERLANE_START="${HYPERLANE_START_EPOCH_SECS:-0}"
 # 10_000_000 sompi (0.1 KAS) is right at the edge of the mempool "standard tx mass" limit (KIP-0009 storage mass),
@@ -815,12 +814,12 @@ start_igra() {
       KASPA_CONFIG_PATH="${IGRA_CONFIG}" \
       KASPA_DATA_DIR="${profile_data_dir}" \
       KASPA_NODE_URL="grpc://127.0.0.1:16110" \
-      KASPA_IGRA_WALLET_SECRET="${KASPA_IGRA_WALLET_SECRET}" \
-      KASPA_IGRA_PROFILE="${profile}" \
       IGRA_RPC_URL="${rpc_url}" \
       HYPERLANE_KEYS_PATH="${HYPERLANE_KEYS}" \
       "${IGRA_BIN}" \
+      --network devnet \
       --config "${IGRA_CONFIG}" \
+      --profile "${profile}" \
       --data-dir "${profile_data_dir}" \
       --node-url "grpc://127.0.0.1:16110" \
       --log-level info

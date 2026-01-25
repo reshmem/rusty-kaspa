@@ -1,11 +1,11 @@
-use crate::service::coordination::crdt_handler::{
+use crate::service::coordination::crdt::{
     handle_crdt_broadcast, handle_state_sync_request, handle_state_sync_response, run_anti_entropy_loop, CrdtHandlerContext,
 };
 use crate::service::coordination::two_phase_handler::{handle_proposal_broadcast, TwoPhaseHandlerContext};
 use crate::service::coordination::two_phase_timeout::run_two_phase_tick_loop;
 use crate::service::coordination::unfinalized_reporter::run_unfinalized_event_reporter_loop;
 use crate::service::flow::ServiceFlow;
-use igra_core::domain::coordination::TwoPhaseConfig;
+use igra_core::application::TwoPhaseConfig;
 use igra_core::foundation::{day_start_nanos, hx, now_nanos, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
@@ -15,6 +15,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const IDLE_TICKER_INTERVAL_SECS: u64 = 60;
+
+/// Anti-entropy loop interval for gossip synchronization (seconds).
+const ANTI_ENTROPY_INTERVAL_SECS: u64 = 5;
+
+/// Default CRDT garbage collection interval if not configured (seconds).
+/// Production: 10 minutes. Override in tests for faster cleanup.
+const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
+
+/// Default CRDT garbage collection TTL if not configured (seconds).
+/// Events older than this are eligible for GC.
+const DEFAULT_CRDT_GC_TTL_SECS: u64 = 86400; // 24 hours
+
+/// Nanoseconds per second (for TTL calculations).
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 pub async fn run_coordination_loop(
     app_config: Arc<igra_core::infrastructure::config::AppConfig>,
@@ -48,8 +62,13 @@ pub async fn run_coordination_loop(
         }
     }
 
-    let anti_entropy =
-        tokio::spawn(run_anti_entropy_loop(storage.clone(), phase_storage.clone(), transport.clone(), local_peer_id.clone(), 5));
+    let anti_entropy = tokio::spawn(run_anti_entropy_loop(
+        storage.clone(),
+        phase_storage.clone(),
+        transport.clone(),
+        local_peer_id.clone(),
+        ANTI_ENTROPY_INTERVAL_SECS,
+    ));
     let _anti_entropy_guard = AbortOnDrop(anti_entropy);
 
     let _two_phase_guard = {
@@ -74,8 +93,8 @@ pub async fn run_coordination_loop(
         }))
     };
 
-    let gc_interval_secs = app_config.runtime.crdt_gc_interval_seconds.unwrap_or(600);
-    let gc_ttl_secs = app_config.runtime.crdt_gc_ttl_seconds.unwrap_or(24 * 60 * 60);
+    let gc_interval_secs = app_config.runtime.crdt_gc_interval_seconds.unwrap_or(DEFAULT_CRDT_GC_INTERVAL_SECS);
+    let gc_ttl_secs = app_config.runtime.crdt_gc_ttl_seconds.unwrap_or(DEFAULT_CRDT_GC_TTL_SECS);
     let _gc_guard = if gc_interval_secs > 0 && gc_ttl_secs > 0 {
         let storage_for_gc = storage.clone();
         let metrics_for_gc = flow.metrics();
@@ -85,7 +104,7 @@ pub async fn run_coordination_loop(
             loop {
                 interval.tick().await;
                 let now = now_nanos();
-                let cutoff_by_ttl = now.saturating_sub(gc_ttl_secs.saturating_mul(1_000_000_000));
+                let cutoff_by_ttl = now.saturating_sub(gc_ttl_secs.saturating_mul(NANOS_PER_SECOND));
                 // Always keep current-day completions to preserve daily-volume enforcement accuracy.
                 let floor = day_start_nanos(now);
                 let cutoff = cutoff_by_ttl.min(floor);

@@ -22,6 +22,7 @@ pub enum ErrorCode {
     MessageReplayed,
     SignatureVerificationFailed,
     InvalidPeerIdentity,
+    InvalidPublicKey,
     StorageError,
     SerializationError,
     CryptoError,
@@ -41,6 +42,10 @@ pub enum ErrorCode {
     MessageTooLarge,
     EncodingError,
     NetworkError,
+    PkarrInitFailed,
+    InvalidRelayConfig,
+    MalformedRelayUrl,
+    InvalidDnsDomain,
     SignedHashConflict,
     MetricsError,
     MissingCrdtState,
@@ -55,10 +60,19 @@ pub enum ErrorCode {
     SecretDecodeFailed,
     SecretStoreUnavailable,
     SecretDecryptFailed,
+    UnsupportedSecretFileFormat,
     UnsupportedSignatureScheme,
     KeyOperationFailed,
     InsecureFilePermissions,
     AuditLogError,
+    RocksDBOpenError,
+    StorageLockTimeout,
+    MissingSigningPayload,
+    HyperlaneBodyTooLarge,
+    HyperlaneInvalidUtf8,
+    HyperlaneMetadataParseError,
+    NoValidatorsConfigured,
+    PsktInputMismatch,
     Message,
 }
 
@@ -124,6 +138,9 @@ pub enum ThresholdError {
     #[error("invalid peer identity")]
     InvalidPeerIdentity,
 
+    #[error("invalid public key: input={input} reason={reason}")]
+    InvalidPublicKey { input: String, reason: String },
+
     #[error("storage error during {operation}: {details}")]
     StorageError { operation: String, details: String },
 
@@ -168,6 +185,23 @@ pub enum ThresholdError {
 
     #[error("network error: {0}")]
     NetworkError(String),
+
+    // === Iroh Discovery / Relay Errors ===
+    /// Pkarr DHT discovery initialization failed.
+    #[error("pkarr discovery init failed: {details}")]
+    PkarrInitFailed { details: String },
+
+    /// Relay configuration is invalid.
+    #[error("invalid relay config: {reason}")]
+    InvalidRelayConfig { reason: String },
+
+    /// Custom relay URL is malformed.
+    #[error("malformed relay url: {url}")]
+    MalformedRelayUrl { url: String },
+
+    /// DNS discovery domain is invalid.
+    #[error("invalid DNS domain: {domain}")]
+    InvalidDnsDomain { domain: String },
 
     #[error("signed hash conflict: event_id={event_id} existing={existing} attempted={attempted}")]
     SignedHashConflict { event_id: String, existing: String, attempted: String },
@@ -245,6 +279,9 @@ pub enum ThresholdError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    #[error("unsupported secret file format: {details}")]
+    UnsupportedSecretFileFormat { details: String },
+
     #[error("unsupported signature scheme: {scheme} (backend: {backend})")]
     UnsupportedSignatureScheme { scheme: String, backend: String },
 
@@ -266,6 +303,46 @@ pub enum ThresholdError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
+
+    // === Storage Errors ===
+    #[error("RocksDB open error: {details}")]
+    RocksDBOpenError {
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("storage lock timeout: {operation} (waited {timeout_secs}s)")]
+    StorageLockTimeout { operation: String, timeout_secs: u64 },
+
+    // === Hyperlane Errors ===
+    #[error("missing signing payload for message_id={message_id}")]
+    MissingSigningPayload { message_id: String },
+
+    #[error("hyperlane body too large: {size} bytes (max: {max} bytes)")]
+    HyperlaneBodyTooLarge { size: usize, max: usize },
+
+    #[error("hyperlane invalid UTF-8 at position {position}")]
+    HyperlaneInvalidUtf8 {
+        position: usize,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("hyperlane metadata parse error: {details}")]
+    HyperlaneMetadataParseError {
+        details: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    // === Configuration Errors ===
+    #[error("no {validator_type} validators configured")]
+    NoValidatorsConfigured { validator_type: String },
+
+    // === PSKT Errors ===
+    #[error("PSKT input mismatch: expected {expected}, got {actual} - {details}")]
+    PsktInputMismatch { expected: usize, actual: usize, details: String },
 
     #[error("{0}")]
     Message(String),
@@ -294,6 +371,7 @@ impl ThresholdError {
             ThresholdError::MessageReplayed => ErrorCode::MessageReplayed,
             ThresholdError::SignatureVerificationFailed => ErrorCode::SignatureVerificationFailed,
             ThresholdError::InvalidPeerIdentity => ErrorCode::InvalidPeerIdentity,
+            ThresholdError::InvalidPublicKey { .. } => ErrorCode::InvalidPublicKey,
             ThresholdError::StorageError { .. } => ErrorCode::StorageError,
             ThresholdError::KeyNotFound(_) => ErrorCode::KeyNotFound,
             ThresholdError::ConfigError(_) => ErrorCode::ConfigError,
@@ -309,6 +387,10 @@ impl ThresholdError {
             ThresholdError::MessageTooLarge { .. } => ErrorCode::MessageTooLarge,
             ThresholdError::EncodingError(_) => ErrorCode::EncodingError,
             ThresholdError::NetworkError(_) => ErrorCode::NetworkError,
+            ThresholdError::PkarrInitFailed { .. } => ErrorCode::PkarrInitFailed,
+            ThresholdError::InvalidRelayConfig { .. } => ErrorCode::InvalidRelayConfig,
+            ThresholdError::MalformedRelayUrl { .. } => ErrorCode::MalformedRelayUrl,
+            ThresholdError::InvalidDnsDomain { .. } => ErrorCode::InvalidDnsDomain,
             ThresholdError::SignedHashConflict { .. } => ErrorCode::SignedHashConflict,
             ThresholdError::MetricsError { .. } => ErrorCode::MetricsError,
             ThresholdError::SerializationError { .. } => ErrorCode::SerializationError,
@@ -327,10 +409,19 @@ impl ThresholdError {
             ThresholdError::SecretDecodeFailed { .. } => ErrorCode::SecretDecodeFailed,
             ThresholdError::SecretStoreUnavailable { .. } => ErrorCode::SecretStoreUnavailable,
             ThresholdError::SecretDecryptFailed { .. } => ErrorCode::SecretDecryptFailed,
+            ThresholdError::UnsupportedSecretFileFormat { .. } => ErrorCode::UnsupportedSecretFileFormat,
             ThresholdError::UnsupportedSignatureScheme { .. } => ErrorCode::UnsupportedSignatureScheme,
             ThresholdError::KeyOperationFailed { .. } => ErrorCode::KeyOperationFailed,
             ThresholdError::InsecureFilePermissions { .. } => ErrorCode::InsecureFilePermissions,
             ThresholdError::AuditLogError { .. } => ErrorCode::AuditLogError,
+            ThresholdError::RocksDBOpenError { .. } => ErrorCode::RocksDBOpenError,
+            ThresholdError::StorageLockTimeout { .. } => ErrorCode::StorageLockTimeout,
+            ThresholdError::MissingSigningPayload { .. } => ErrorCode::MissingSigningPayload,
+            ThresholdError::HyperlaneBodyTooLarge { .. } => ErrorCode::HyperlaneBodyTooLarge,
+            ThresholdError::HyperlaneInvalidUtf8 { .. } => ErrorCode::HyperlaneInvalidUtf8,
+            ThresholdError::HyperlaneMetadataParseError { .. } => ErrorCode::HyperlaneMetadataParseError,
+            ThresholdError::NoValidatorsConfigured { .. } => ErrorCode::NoValidatorsConfigured,
+            ThresholdError::PsktInputMismatch { .. } => ErrorCode::PsktInputMismatch,
             ThresholdError::Message(_) => ErrorCode::Message,
         }
     }
@@ -353,6 +444,10 @@ impl ThresholdError {
 
     pub fn secret_decrypt_failed(backend: impl Into<String>, details: impl Into<String>) -> Self {
         ThresholdError::SecretDecryptFailed { backend: backend.into(), details: details.into(), source: None }
+    }
+
+    pub fn unsupported_secret_file_format(details: impl Into<String>) -> Self {
+        ThresholdError::UnsupportedSecretFileFormat { details: details.into() }
     }
 
     pub fn unsupported_signature_scheme(scheme: impl Into<String>, backend: impl Into<String>) -> Self {
@@ -437,3 +532,29 @@ impl From<SecpError> for ThresholdError {
 
 // NOTE: Avoid adding generic "stringly" error conversions here.
 // Use structured `ThresholdError` variants at the call site to preserve context.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_error_variants_render() {
+        let err = ThresholdError::RocksDBOpenError { details: "test".to_string(), source: None };
+        assert!(err.to_string().contains("RocksDB"));
+
+        let err = ThresholdError::StorageLockTimeout { operation: "test".to_string(), timeout_secs: 1 };
+        assert!(err.to_string().contains("timeout"));
+
+        let err = ThresholdError::MissingSigningPayload { message_id: "0xabc".to_string() };
+        assert!(err.to_string().contains("message_id"));
+
+        let err = ThresholdError::HyperlaneBodyTooLarge { size: 2, max: 1 };
+        assert!(err.to_string().contains("too large"));
+
+        let err = ThresholdError::NoValidatorsConfigured { validator_type: "hyperlane".to_string() };
+        assert!(err.to_string().contains("validators"));
+
+        let err = ThresholdError::PsktInputMismatch { expected: 1, actual: 2, details: "mismatch".to_string() };
+        assert!(err.to_string().contains("mismatch"));
+    }
+}

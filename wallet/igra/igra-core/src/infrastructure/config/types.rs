@@ -1,15 +1,13 @@
 use crate::domain::{FeePaymentMode, GroupConfig, GroupPolicy};
 use crate::infrastructure::rpc::CircuitBreakerConfig;
 use figment::value::{Dict, Map};
-use kaspa_wallet_core::encryption::Encryptable;
-use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use serde::{Deserialize, Serialize};
 
 /// Type of key material used for signing (per-signer/profile).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyType {
-    /// Existing behavior: decrypt HD mnemonics from config and derive the signing key.
+    /// Load a BIP39 mnemonic from the SecretStore and derive the signing key.
     #[default]
     #[serde(alias = "mnemonic")]
     HdMnemonic,
@@ -30,6 +28,22 @@ impl std::fmt::Display for KeyType {
 /// Base configuration for the application.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ServiceConfig {
+    /// Network mode: mainnet, testnet, devnet.
+    ///
+    /// Used by `infrastructure::network_mode` validation to prevent configuration drift.
+    #[serde(default)]
+    pub network: Option<String>,
+    /// Active signer profile to load from `[profiles.<name>]`.
+    ///
+    /// `kaspa-threshold-service` also supports selecting the active profile via CLI `--profile`.
+    /// CLI `--profile` takes precedence.
+    #[serde(default)]
+    pub active_profile: Option<String>,
+    /// Allow remote RPC endpoint in mainnet (NOT RECOMMENDED).
+    ///
+    /// This is only used for security validation; RPC behavior itself is unchanged.
+    #[serde(default)]
+    pub allow_remote_rpc: bool,
     #[serde(default)]
     pub node_rpc_url: String,
     #[serde(default)]
@@ -54,6 +68,33 @@ pub struct ServiceConfig {
     /// Optional path for key audit log (defaults to `${data_dir}/key-audit.log`).
     #[serde(default)]
     pub key_audit_log_path: Option<String>,
+
+    /// Enable passphrase rotation enforcement for encrypted secrets.
+    ///
+    /// Defaults by network mode:
+    /// - mainnet: enabled
+    /// - testnet: enabled
+    /// - devnet: disabled
+    #[serde(default)]
+    pub passphrase_rotation_enabled: Option<bool>,
+
+    /// Warning threshold (days since last rotation).
+    ///
+    /// Defaults by network mode:
+    /// - mainnet: 60
+    /// - testnet: 90
+    /// - devnet: 0
+    #[serde(default)]
+    pub passphrase_rotation_warn_days: Option<u64>,
+
+    /// Error threshold (days since last rotation).
+    ///
+    /// Defaults by network mode:
+    /// - mainnet: 90
+    /// - testnet: 0 (warn-only)
+    /// - devnet: 0
+    #[serde(default)]
+    pub passphrase_rotation_error_days: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -63,10 +104,6 @@ pub struct PsktHdConfig {
     /// Defaults to `hd_mnemonic` (backwards compatible).
     #[serde(default)]
     pub key_type: KeyType,
-    #[serde(default, skip_serializing)]
-    pub mnemonics: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encrypted_mnemonics: Option<Encryptable<Vec<PrvKeyData>>>,
     #[serde(default)]
     pub xpubs: Vec<String>,
     #[serde(default)]
@@ -256,6 +293,45 @@ pub struct IrohRuntimeConfig {
     pub bootstrap_addrs: Vec<String>,
     #[serde(default)]
     pub bind_port: Option<u16>,
+    #[serde(default)]
+    pub discovery: IrohDiscoveryConfig,
+    #[serde(default)]
+    pub relay: IrohRelayConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IrohDiscoveryConfig {
+    /// Enable pkarr DHT discovery.
+    #[serde(default)]
+    pub enable_pkarr: bool,
+    /// Enable DNS discovery.
+    #[serde(default)]
+    pub enable_dns: bool,
+    /// DNS discovery domain (e.g. "discovery.example.com").
+    #[serde(default)]
+    pub dns_domain: Option<String>,
+}
+
+impl Default for IrohDiscoveryConfig {
+    fn default() -> Self {
+        Self { enable_pkarr: false, enable_dns: false, dns_domain: None }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IrohRelayConfig {
+    /// Enable relay support for NAT traversal.
+    #[serde(default)]
+    pub enable: bool,
+    /// Custom relay URL. If omitted, uses Iroh's default relay map.
+    #[serde(default)]
+    pub custom_url: Option<String>,
+}
+
+impl Default for IrohRelayConfig {
+    fn default() -> Self {
+        Self { enable: false, custom_url: None }
+    }
 }
 
 pub fn default_ism_mode() -> HyperlaneIsmMode {

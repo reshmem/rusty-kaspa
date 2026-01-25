@@ -48,7 +48,7 @@ pub fn select_canonical_proposal_for_commit<'a>(proposals: &'a [Proposal], commi
 
     proposals
         .iter()
-        .filter(|p| p.tx_template_hash == winning_hash)
+        .filter(|p| p.tx_template_hash.ct_eq(&winning_hash))
         .min_by_key(|p| canonical_proposal_score(&event_id, p.round, &p.proposer_peer_id))
 }
 
@@ -122,7 +122,7 @@ mod tests {
 
         let expected = proposals
             .iter()
-            .filter(|p| p.tx_template_hash == h)
+            .filter(|p| p.tx_template_hash.ct_eq(&h))
             .min_by_key(|p| canonical_proposal_score(&p.event_id, p.round, &p.proposer_peer_id))
             .expect("expected winner");
         assert_eq!(out.proposer_peer_id.as_str(), expected.proposer_peer_id.as_str());

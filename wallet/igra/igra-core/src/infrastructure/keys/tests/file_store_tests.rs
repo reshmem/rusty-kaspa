@@ -10,7 +10,7 @@ async fn file_secret_store_roundtrip() {
 
     let store = FileSecretStore::create(&file_path, "testpass").await.unwrap();
     store.set(SecretName::new("test.key"), SecretBytes::new(b"secret_value".to_vec())).await.unwrap();
-    store.save("testpass").await.unwrap();
+    store.save().await.unwrap();
 
     let store2 = FileSecretStore::open(&file_path, "testpass").await.unwrap();
     let secret = store2.get(&SecretName::new("test.key")).await.unwrap();

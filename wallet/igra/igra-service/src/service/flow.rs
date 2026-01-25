@@ -1,9 +1,8 @@
 use crate::service::metrics::Metrics;
 use crate::transport::iroh::{IrohConfig, IrohTransport};
-use igra_core::application::{LifecycleObserver, NoopObserver};
-use igra_core::domain::pskt::multisig as pskt_multisig;
-use igra_core::domain::signing::aggregation;
-use igra_core::domain::validation::MessageVerifier;
+use igra_core::application::pskt_multisig;
+use igra_core::application::{aggregation, validation::MessageVerifier, LifecycleObserver, NoopObserver};
+use igra_core::foundation::MAX_SUBMIT_TX_ATTEMPTS;
 use igra_core::foundation::{EventId, ThresholdError};
 use igra_core::infrastructure::config::ServiceConfig;
 use igra_core::infrastructure::keys::{KeyAuditLogger, KeyManager, KeyManagerContext};
@@ -16,7 +15,6 @@ use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
-const MAX_SUBMIT_TX_ATTEMPTS: u32 = 4;
 const TX_RETRY_BASE_BACKOFF_MS: u64 = 100;
 const TX_RETRY_BACKOFF_MULTIPLIER: u64 = 2;
 

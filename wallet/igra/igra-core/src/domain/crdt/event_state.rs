@@ -99,11 +99,11 @@ impl EventCrdt {
     /// CRITICAL: Only merges if BOTH event_id AND tx_template_hash match.
     /// Returns the number of changes made.
     pub fn merge(&mut self, other: &EventCrdt) -> usize {
-        if self.event_id != other.event_id || self.tx_template_hash != other.tx_template_hash {
+        if !self.event_id.ct_eq(&other.event_id) || !self.tx_template_hash.ct_eq(&other.tx_template_hash) {
             debug!(
                 "crdt: merge rejected event_id_match={} tx_template_hash_match={} self_event_id={:#x} other_event_id={:#x} self_tx_template_hash={:#x} other_tx_template_hash={:#x}",
-                self.event_id == other.event_id,
-                self.tx_template_hash == other.tx_template_hash,
+                self.event_id.ct_eq(&other.event_id),
+                self.tx_template_hash.ct_eq(&other.tx_template_hash),
                 self.event_id,
                 other.event_id,
                 self.tx_template_hash,
@@ -144,13 +144,13 @@ impl EventCrdt {
 
     /// Validate that the CRDT is self-consistent.
     pub fn validate(&self) -> Result<(), ThresholdError> {
-        if self.event_id == EventId::default() {
+        if self.event_id.ct_eq(&EventId::default()) {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
                 details: format!("missing event_id, tx_template_hash={:#x}", self.tx_template_hash),
             });
         }
-        if self.tx_template_hash == TxTemplateHash::default() {
+        if self.tx_template_hash.ct_eq(&TxTemplateHash::default()) {
             return Err(ThresholdError::SerializationError {
                 format: "crdt".to_string(),
                 details: format!("missing tx_template_hash, event_id={:#x}", self.event_id),

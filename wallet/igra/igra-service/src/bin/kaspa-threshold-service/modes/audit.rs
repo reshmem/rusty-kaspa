@@ -1,4 +1,4 @@
-use igra_core::domain::StoredEvent;
+use igra_core::application::StoredEvent;
 use igra_core::foundation::{EventId, ThresholdError};
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::storage::Storage;

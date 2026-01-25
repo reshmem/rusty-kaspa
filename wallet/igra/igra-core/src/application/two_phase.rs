@@ -1,3 +1,12 @@
+//! Two-phase proposal construction helpers.
+//!
+//! The service uses a two-phase coordination protocol (propose/commit) to ensure that signers
+//! converge on a single canonical transaction template for an event, before collecting
+//! signatures via the CRDT layer.
+//!
+//! This module builds a local proposal for a given round, including deterministic UTXO
+//! selection seeding to reduce repeated collisions across retries.
+
 use crate::domain::coordination::{KaspaAnchorRef, ProposalBroadcast};
 use crate::domain::pskt::params::{PsktOutputParams, UtxoInput};
 use crate::domain::{CrdtSigningMaterial, StoredEvent};

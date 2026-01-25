@@ -1,6 +1,6 @@
 use crate::service::coordination::two_phase_handler::{try_commit_and_sign, TwoPhaseHandlerContext};
 use crate::service::flow::ServiceFlow;
-use igra_core::domain::coordination::{EventPhase, TwoPhaseConfig};
+use igra_core::application::{EventPhase, TwoPhaseConfig};
 use igra_core::foundation::{now_nanos, EventId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::storage::phase::PhaseStorage;

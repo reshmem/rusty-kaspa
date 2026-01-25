@@ -1,12 +1,23 @@
+//! Hyperlane destination integration endpoints (JSON-RPC).
+//!
+//! This handler implements the minimal Hyperlane Mailbox/ISM-facing API surface that the
+//! relayer/validator components expect (e.g. `validators_and_threshold`, `mailbox_process`).
+//!
+//! Key responsibilities:
+//! - Enforce request size/UTF-8 limits to avoid DoS.
+//! - Convert Hyperlane metadata into `source_data` using `MetadataKey` (typed keys).
+//! - Forward verified signing requests into the core signing pipeline.
+
 use super::hyperlane_wire::RpcHyperlaneMessage;
 use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
 use blake3::Hasher;
 use hyperlane_core::accumulator::{merkle::Proof as HyperlaneProof, TREE_DEPTH};
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signature, H256, U256};
+use igra_core::application::SourceType;
 use igra_core::application::{submit_signing_event, EventContext, SigningEventParams, SigningEventResult, SigningEventWire};
-use igra_core::domain::SourceType;
-use igra_core::foundation::ThresholdError;
+use igra_core::foundation::util::hex_fmt::hx;
+use igra_core::foundation::{MetadataKey, ThresholdError, MAX_HYPERLANE_BODY_SIZE_BYTES};
 use igra_core::infrastructure::hyperlane::{decode_proof_metadata_hex, IsmMode, IsmVerifier, ProofMetadata, ValidatorSet};
 use kaspa_addresses::Address;
 use log::{debug, info, warn};
@@ -14,6 +25,8 @@ use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+const DEFAULT_PROCESS_GAS_USED: &str = "100000";
 
 #[derive(Debug, Deserialize)]
 struct ValidatorsAndThresholdParams {
@@ -121,22 +134,24 @@ impl MailboxMetadataParams {
             (IsmMode::MerkleRootMultisig, None) => return Err("merkle_proof required for merkle_root_multisig".to_string()),
             (_, proof) => proof.map(|p| p.into_core(message_id)).transpose()?,
         };
-        let signatures = self.signatures.iter().map(|sig| parse_signature_hex(sig)).collect::<Result<Vec<_>, _>>()?;
+        let signatures = self
+            .signatures
+            .iter()
+            .map(|value| {
+                let bytes = igra_core::foundation::parse_hex_fixed::<65>(value).map_err(|err| err.to_string())?;
+                let mut r = [0u8; 32];
+                let mut s = [0u8; 32];
+                r.copy_from_slice(&bytes[0..32]);
+                s.copy_from_slice(&bytes[32..64]);
+                Ok(Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: u64::from(bytes[64]) })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(ProofMetadata { checkpoint, merkle_proof, signatures })
     }
 }
 
-fn parse_signature_hex(value: &str) -> Result<Signature, String> {
-    let bytes = igra_core::foundation::parse_hex_fixed::<65>(value).map_err(|err| err.to_string())?;
-    let mut r = [0u8; 32];
-    let mut s = [0u8; 32];
-    r.copy_from_slice(&bytes[0..32]);
-    s.copy_from_slice(&bytes[32..64]);
-    Ok(Signature { r: U256::from_big_endian(&r), s: U256::from_big_endian(&s), v: u64::from(bytes[64]) })
-}
-
 fn format_h256(value: H256) -> String {
-    format!("0x{}", hex::encode(value.as_bytes()))
+    format!("{:#x}", hx(value.as_bytes()))
 }
 
 fn pubkey_to_evm_address_h256(key: &PublicKey) -> [u8; 32] {
@@ -148,7 +163,7 @@ fn pubkey_to_evm_address_h256(key: &PublicKey) -> [u8; 32] {
 }
 
 fn format_validator_address(key: &PublicKey) -> String {
-    format!("0x{}", hex::encode(pubkey_to_evm_address_h256(key)))
+    format!("{:#x}", hx(&pubkey_to_evm_address_h256(key)))
 }
 
 fn format_config_hash(set: &ValidatorSet) -> String {
@@ -158,7 +173,7 @@ fn format_config_hash(set: &ValidatorSet) -> String {
     }
     hasher.update(&[set.threshold]);
     hasher.update(ism_mode_str(&set.mode).as_bytes());
-    format!("0x{}", hex::encode(hasher.finalize().as_bytes()))
+    format!("{:#x}", hx(hasher.finalize().as_bytes()))
 }
 
 fn ism_mode_str(mode: &IsmMode) -> &'static str {
@@ -174,28 +189,47 @@ struct SigningPayload {
     amount_sompi: u64,
 }
 
-fn extract_signing_payload(message: &HyperlaneMessage) -> Result<SigningPayload, String> {
+fn extract_signing_payload(message: &HyperlaneMessage) -> Result<SigningPayload, ThresholdError> {
     let body = &message.body;
-    if body.len() < 8 {
-        return Err("hyperlane message body too short".to_string());
+    if body.len() > MAX_HYPERLANE_BODY_SIZE_BYTES {
+        return Err(ThresholdError::HyperlaneBodyTooLarge { size: body.len(), max: MAX_HYPERLANE_BODY_SIZE_BYTES });
     }
-    let amount_sompi = u64::from_le_bytes(body[0..8].try_into().map_err(|_| "invalid amount bytes".to_string())?);
-    let rest = &body[8..];
-    let recipient = String::from_utf8(rest.to_vec()).map_err(|_| "recipient must be utf8".to_string())?;
 
-    Address::try_from(recipient.as_str()).map_err(|_| "invalid recipient address".to_string())?;
+    if body.len() < 8 {
+        return Err(ThresholdError::HyperlaneMetadataParseError {
+            details: "hyperlane message body too short".to_string(),
+            source: None,
+        });
+    }
+    let amount_bytes: [u8; 8] = body[0..8].try_into().map_err(|err| ThresholdError::HyperlaneMetadataParseError {
+        details: format!("invalid amount bytes: {}", err),
+        source: None,
+    })?;
+    let amount_sompi = u64::from_le_bytes(amount_bytes);
 
-    Ok(SigningPayload { destination_address: recipient, amount_sompi })
+    let recipient_str = std::str::from_utf8(&body[8..])
+        .map_err(|err| ThresholdError::HyperlaneInvalidUtf8 { position: err.valid_up_to(), source: Some(Box::new(err)) })?;
+    let destination_address = recipient_str.to_string();
+
+    Address::try_from(destination_address.as_str()).map_err(|err| ThresholdError::HyperlaneMetadataParseError {
+        details: format!("invalid recipient address: {}", err),
+        source: None,
+    })?;
+
+    Ok(SigningPayload { destination_address, amount_sompi })
 }
 
 fn metadata_to_map(meta: &ProofMetadata, mode: &IsmMode) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
-    map.insert("hyperlane.mode".to_string(), ism_mode_str(mode).to_string());
-    map.insert("hyperlane.mailbox_domain".to_string(), meta.checkpoint.checkpoint.mailbox_domain.to_string());
-    map.insert("hyperlane.merkle_tree_hook_address".to_string(), format_h256(meta.checkpoint.checkpoint.merkle_tree_hook_address));
-    map.insert("hyperlane.root".to_string(), format_h256(meta.checkpoint.checkpoint.root));
-    map.insert("hyperlane.index".to_string(), meta.checkpoint.checkpoint.index.to_string());
-    map.insert("hyperlane.message_id".to_string(), format_h256(meta.checkpoint.message_id));
+    map.insert(MetadataKey::HyperlaneMode.to_string(), ism_mode_str(mode).to_string());
+    map.insert(MetadataKey::HyperlaneMailboxDomain.to_string(), meta.checkpoint.checkpoint.mailbox_domain.to_string());
+    map.insert(
+        MetadataKey::HyperlaneMerkleTreeHookAddress.to_string(),
+        format_h256(meta.checkpoint.checkpoint.merkle_tree_hook_address),
+    );
+    map.insert(MetadataKey::HyperlaneRoot.to_string(), format_h256(meta.checkpoint.checkpoint.root));
+    map.insert(MetadataKey::HyperlaneIndex.to_string(), meta.checkpoint.checkpoint.index.to_string());
+    map.insert(MetadataKey::HyperlaneMessageId.to_string(), format_h256(meta.checkpoint.message_id));
     map
 }
 
@@ -211,7 +245,7 @@ fn derive_session_id_hex(group_id_hex: Option<&str>, message_id: H256) -> String
     let mut hasher = Hasher::new();
     hasher.update(&group_bytes);
     hasher.update(message_id.as_bytes());
-    format!("0x{}", hex::encode(hasher.finalize().as_bytes()))
+    format!("{:#x}", hx(hasher.finalize().as_bytes()))
 }
 
 async fn submit_signing_from_hyperlane(
@@ -224,22 +258,22 @@ async fn submit_signing_from_hyperlane(
     session_expiry_seconds: u64,
     external_request_id: Option<String>,
 ) -> Result<SigningEventResult, ThresholdError> {
-    let payload = extract_signing_payload(message).map_err(ThresholdError::Message)?;
+    let payload = extract_signing_payload(message)?;
     if payload.destination_address.trim().is_empty() || payload.amount_sompi == 0 {
-        return Err(ThresholdError::Message("destination_address and amount_sompi are required to submit signing event".to_string()));
+        return Err(ThresholdError::MissingSigningPayload { message_id: format_h256(message.id()) });
     }
     let external_id = format_h256(message.id());
     let mut meta = metadata_to_map(metadata, &set.mode);
-    meta.insert("hyperlane.quorum".to_string(), set.threshold.to_string());
+    meta.insert(MetadataKey::HyperlaneQuorum.to_string(), set.threshold.to_string());
     // Persist the canonical Hyperlane message fields so the core verifier can recompute `message_id`
     // (like a destination chain Mailbox would) and ensure it matches the signed checkpoint.
-    meta.insert("hyperlane.msg.version".to_string(), message.version.to_string());
-    meta.insert("hyperlane.msg.nonce".to_string(), message.nonce.to_string());
-    meta.insert("hyperlane.msg.origin".to_string(), message.origin.to_string());
-    meta.insert("hyperlane.msg.sender".to_string(), format_h256(message.sender));
-    meta.insert("hyperlane.msg.destination".to_string(), message.destination.to_string());
-    meta.insert("hyperlane.msg.recipient".to_string(), format_h256(message.recipient));
-    meta.insert("hyperlane.msg.body_hex".to_string(), hex::encode(&message.body));
+    meta.insert(MetadataKey::HyperlaneMsgVersion.to_string(), message.version.to_string());
+    meta.insert(MetadataKey::HyperlaneMsgNonce.to_string(), message.nonce.to_string());
+    meta.insert(MetadataKey::HyperlaneMsgOrigin.to_string(), message.origin.to_string());
+    meta.insert(MetadataKey::HyperlaneMsgSender.to_string(), format_h256(message.sender));
+    meta.insert(MetadataKey::HyperlaneMsgDestination.to_string(), message.destination.to_string());
+    meta.insert(MetadataKey::HyperlaneMsgRecipient.to_string(), format_h256(message.recipient));
+    meta.insert(MetadataKey::HyperlaneMsgBodyHex.to_string(), format!("{}", hx(&message.body)));
 
     // Forward Hyperlane ISM signatures to the core verifier. We strip the recovery id byte and
     // pass compact (r||s) signatures, concatenated, so the core verifier can validate them
@@ -314,11 +348,11 @@ pub async fn handle_validators_and_threshold(
         }
     };
     info!(
-        "resolved validators and threshold domain={} threshold={} validator_count={} mode={:?}",
+        "resolved validators and threshold domain={} threshold={} validator_count={} mode={}",
         domain,
         set.threshold,
         set.validators.len(),
-        set.mode
+        ism_mode_str(&set.mode)
     );
 
     let result = ValidatorsAndThresholdResult {
@@ -371,7 +405,7 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
         return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
     };
     let mode = params.mode.unwrap_or(set.mode.clone());
-    debug!("selected ism mode mode={:?} threshold={} validator_count={}", mode, set.threshold, set.validators.len());
+    debug!("selected ism mode mode={} threshold={} validator_count={}", ism_mode_str(&mode), set.threshold, set.validators.len());
     let message_id = message.id();
     let message_id = {
         let bytes = message_id.as_bytes();
@@ -563,7 +597,7 @@ pub async fn handle_mailbox_process(state: &RpcState, id: serde_json::Value, par
                     ProcessMessageResponse {
                         transaction_id: format!("0x{}", delivery.tx_id),
                         transaction_hash: format!("0x{}", delivery.tx_id),
-                        gas_used: Some("100000".to_string()),
+                        gas_used: Some(DEFAULT_PROCESS_GAS_USED.to_string()),
                         success: true,
                         error: None,
                     },
@@ -607,13 +641,12 @@ mod tests {
     use crate::service::metrics::Metrics;
     use async_trait::async_trait;
     use futures_util::stream;
+    use igra_core::application::validation::NoopVerifier;
     use igra_core::application::EventContext;
-    use igra_core::domain::coordination::TwoPhaseConfig;
-    use igra_core::domain::validation::NoopVerifier;
-    use igra_core::domain::GroupPolicy;
+    use igra_core::application::{GroupPolicy, TwoPhaseConfig};
     use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
-    use igra_core::infrastructure::keys::{EnvSecretStore, LocalKeyManager, NoopAuditLogger};
+    use igra_core::infrastructure::keys::{LocalKeyManager, NoopAuditLogger, SecretBytes, SecretName, SecretStore};
     use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -623,6 +656,26 @@ mod tests {
     use tempfile::TempDir;
 
     struct NoopTransport;
+    struct EmptySecretStore;
+
+    impl SecretStore for EmptySecretStore {
+        fn backend(&self) -> &'static str {
+            "empty"
+        }
+
+        fn get<'a>(
+            &'a self,
+            name: &'a SecretName,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SecretBytes, ThresholdError>> + Send + 'a>> {
+            Box::pin(async move { Err(ThresholdError::secret_not_found(name.as_str(), "empty")) })
+        }
+
+        fn list_secrets<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SecretName>, ThresholdError>> + Send + 'a>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
 
     #[async_trait]
     impl Transport for NoopTransport {
@@ -633,7 +686,7 @@ mod tests {
             Ok(())
         }
 
-        async fn publish_proposal(&self, _proposal: igra_core::domain::coordination::ProposalBroadcast) -> Result<(), ThresholdError> {
+        async fn publish_proposal(&self, _proposal: igra_core::application::ProposalBroadcast) -> Result<(), ThresholdError> {
             Ok(())
         }
 
@@ -656,7 +709,7 @@ mod tests {
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
         let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
         let key_audit_log = Arc::new(NoopAuditLogger);
-        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EmptySecretStore), key_audit_log.clone()));
         let ctx = EventContext {
             config: ServiceConfig::default(),
             policy: GroupPolicy::default(),
@@ -692,5 +745,21 @@ mod tests {
         let state = dummy_state();
         let value = handle_validators_and_threshold(&state, serde_json::json!(1), Some(serde_json::json!({}))).await;
         assert_eq!(value["error"]["code"], RpcErrorCode::HyperlaneNotConfigured as i64);
+    }
+
+    #[test]
+    fn extract_signing_payload_rejects_oversized_body() {
+        let message = HyperlaneMessage {
+            version: 0,
+            nonce: 0,
+            origin: 1,
+            sender: H256::zero(),
+            destination: 2,
+            recipient: H256::zero(),
+            body: vec![0u8; MAX_HYPERLANE_BODY_SIZE_BYTES.saturating_add(1)],
+        };
+
+        let err = extract_signing_payload(&message).expect_err("oversized body rejected");
+        assert!(matches!(err, ThresholdError::HyperlaneBodyTooLarge { .. }));
     }
 }

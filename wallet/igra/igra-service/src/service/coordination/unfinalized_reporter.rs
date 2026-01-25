@@ -1,4 +1,4 @@
-use igra_core::domain::coordination::EventPhase;
+use igra_core::application::EventPhase;
 use igra_core::foundation::{now_nanos, EventId, ThresholdError};
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;

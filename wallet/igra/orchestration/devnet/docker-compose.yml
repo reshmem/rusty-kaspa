@@ -12,8 +12,8 @@ services:
     environment:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8088/rpc
-      - KASPA_IGRA_PROFILE=signer-1
-      - KASPA_IGRA_WALLET_SECRET=devnet-secret
+      - IGRA_PROFILE=signer-01
+      - IGRA_SECRETS_PASSPHRASE=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
@@ -37,8 +37,8 @@ services:
     environment:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8089/rpc
-      - KASPA_IGRA_PROFILE=signer-2
-      - KASPA_IGRA_WALLET_SECRET=devnet-secret
+      - IGRA_PROFILE=signer-02
+      - IGRA_SECRETS_PASSPHRASE=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0
@@ -62,8 +62,8 @@ services:
     environment:
       - KASPA_DATA_DIR=/data/igra
       - IGRA_RPC_URL=http://127.0.0.1:8090/rpc
-      - KASPA_IGRA_PROFILE=signer-3
-      - KASPA_IGRA_WALLET_SECRET=devnet-secret
+      - IGRA_PROFILE=signer-03
+      - IGRA_SECRETS_PASSPHRASE=devnet-secret
       - HYPERLANE_KEYS_PATH=/data/igra/hyperlane-keys.json
       - HYPERLANE_INTERVAL_SECS=10
       - HYPERLANE_START_EPOCH_SECS=0

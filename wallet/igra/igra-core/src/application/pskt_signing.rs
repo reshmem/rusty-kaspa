@@ -1,14 +1,24 @@
 use crate::domain::pskt::multisig as pskt_multisig;
 use crate::foundation::{EventId, ThresholdError, TxTemplateHash};
-use crate::infrastructure::config::KeyType;
-use crate::infrastructure::config::{AppConfig, PsktHdConfig, ServiceConfig};
+use crate::infrastructure::config::{validate_signer_profile, AppConfig, KeyType, PsktHdConfig, ServiceConfig};
 use crate::infrastructure::keys::{KeyManagerContext, SecretName};
+use kaspa_bip32::{Language, Mnemonic};
+use kaspa_wallet_core::encryption::EncryptionKind;
 use kaspa_wallet_core::prelude::Secret;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use kaspa_wallet_pskt::prelude::{Signer, PSKT};
 use log::{debug, info, warn};
+use std::sync::OnceLock;
 
 pub type SignPsktResult = (Vec<u8>, Vec<(u32, Vec<u8>)>);
+
+pub const SIGNER_MNEMONIC_SECRET_PREFIX: &str = "igra.signer.mnemonic_";
+pub const SIGNER_PRIVATE_KEY_SECRET_PREFIX: &str = "igra.signer.private_key_";
+pub const SIGNER_PAYMENT_SECRET_PREFIX: &str = "igra.signer.payment_secret_";
+
+/// Recommended minimum length for BIP39 payment secret (optional).
+pub const MIN_PAYMENT_SECRET_LENGTH: usize = 12;
+pub const RECOMMENDED_PAYMENT_SECRET_LENGTH: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct PsktSigningContext<'a> {
@@ -24,7 +34,7 @@ pub async fn sign_pskt_with_app_config(
     ctx: PsktSigningContext<'_>,
 ) -> Result<SignPsktResult, ThresholdError> {
     let hd = app_config.service.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config".to_string()))?;
-    sign_pskt_with_hd_config(hd, key_context, pskt, ctx).await
+    sign_pskt_with_hd_config(&app_config.service, hd, key_context, pskt, ctx).await
 }
 
 pub async fn sign_pskt_with_service_config(
@@ -34,10 +44,11 @@ pub async fn sign_pskt_with_service_config(
     ctx: PsktSigningContext<'_>,
 ) -> Result<SignPsktResult, ThresholdError> {
     let hd = service.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing HD config".to_string()))?;
-    sign_pskt_with_hd_config(hd, key_context, pskt, ctx).await
+    sign_pskt_with_hd_config(service, hd, key_context, pskt, ctx).await
 }
 
 async fn sign_pskt_with_hd_config(
+    service: &ServiceConfig,
     hd: &PsktHdConfig,
     key_context: &KeyManagerContext,
     pskt: PSKT<Signer>,
@@ -45,31 +56,22 @@ async fn sign_pskt_with_hd_config(
 ) -> Result<SignPsktResult, ThresholdError> {
     debug!("pskt_signing: start purpose={} event_id={:#x} tx_template_hash={:#x}", ctx.purpose, ctx.event_id, ctx.tx_template_hash);
 
+    let active_profile = active_profile(service)?;
+
     let signing_keypair = match hd.key_type {
         KeyType::HdMnemonic => {
-            let wallet_secret = load_wallet_secret(key_context).await?;
-            let key_data = decrypt_mnemonics(hd, &wallet_secret).map_err(|err| {
-                warn!(
-                    "pskt_signing: failed to decrypt mnemonics purpose={} event_id={:#x} tx_template_hash={:#x} error={}",
-                    ctx.purpose, ctx.event_id, ctx.tx_template_hash, err
-                );
-                err
-            })?;
-            let signing_key_data = key_data.first().ok_or_else(|| ThresholdError::ConfigError("missing mnemonic".to_string()))?;
-            let payment_secret = load_payment_secret_optional(key_context).await?;
-            crate::foundation::hd::derive_keypair_from_key_data(
-                signing_key_data,
-                hd.derivation_path.as_deref(),
-                payment_secret.as_ref(),
-            )?
+            let (key_data, payment_secret) =
+                load_mnemonic_key_data_and_payment_secret_for_profile(key_context, active_profile).await.map_err(|err| {
+                    warn!(
+                        "pskt_signing: failed to load mnemonic for signing purpose={} event_id={:#x} tx_template_hash={:#x} error={}",
+                        ctx.purpose, ctx.event_id, ctx.tx_template_hash, err
+                    );
+                    err
+                })?;
+            crate::foundation::hd::derive_keypair_from_key_data(&key_data, hd.derivation_path.as_deref(), payment_secret.as_ref())?
         }
         KeyType::RawPrivateKey => {
-            let profile_suffix = std::env::var("KASPA_IGRA_PROFILE")
-                .ok()
-                .map(|s| s.trim().replace('-', "_"))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "default".to_string());
-            let secret_name = SecretName::new(format!("igra.signer.private_key_{}", profile_suffix));
+            let secret_name = signer_secret_name(key_context, SIGNER_PRIVATE_KEY_SECRET_PREFIX, active_profile)?;
             let secret_bytes = key_context.get_secret_with_audit(&secret_name).await?;
             crate::foundation::hd::keypair_from_bytes(secret_bytes.expose_secret()).map_err(|err| {
                 warn!(
@@ -103,27 +105,67 @@ async fn sign_pskt_with_hd_config(
     Ok((pubkey, sigs))
 }
 
-pub fn decrypt_mnemonics(hd: &PsktHdConfig, wallet_secret: &Secret) -> Result<Vec<PrvKeyData>, ThresholdError> {
-    let encrypted = match hd.encrypted_mnemonics.as_ref() {
-        Some(encrypted) => encrypted,
-        None => return Ok(Vec::new()),
-    };
-    let decrypted = encrypted
-        .decrypt(Some(wallet_secret))
-        .map_err(|err| ThresholdError::ConfigError(format!("failed to decrypt hd.mnemonics: {}", err)))?;
-    Ok(decrypted.as_ref().clone())
+pub fn active_profile(service: &ServiceConfig) -> Result<&str, ThresholdError> {
+    let profile = service
+        .active_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ThresholdError::ConfigError("missing service.active_profile".to_string()))?;
+    validate_signer_profile(profile)?;
+    Ok(profile)
 }
 
-pub async fn load_wallet_secret(key_context: &KeyManagerContext) -> Result<Secret, ThresholdError> {
-    let name = SecretName::new("igra.hd.wallet_secret");
+fn profile_suffix_for_secret_backend(key_context: &KeyManagerContext, profile: &str) -> Result<String, ThresholdError> {
+    let store = key_context
+        .key_manager()
+        .secret_store()
+        .ok_or_else(|| ThresholdError::secret_store_unavailable("none", "KeyManager has no SecretStore"))?;
+    if store.backend() == "env" {
+        Ok(profile.replace('-', "_"))
+    } else {
+        Ok(profile.to_string())
+    }
+}
+
+fn signer_secret_name(key_context: &KeyManagerContext, prefix: &str, profile: &str) -> Result<SecretName, ThresholdError> {
+    let suffix = profile_suffix_for_secret_backend(key_context, profile)?;
+    Ok(SecretName::new(format!("{prefix}{suffix}")))
+}
+
+pub async fn load_mnemonic_phrase_for_profile(key_context: &KeyManagerContext, profile: &str) -> Result<String, ThresholdError> {
+    let name = signer_secret_name(key_context, SIGNER_MNEMONIC_SECRET_PREFIX, profile)?;
     let secret_bytes = key_context.get_secret_with_audit(&name).await?;
-    let value = String::from_utf8(secret_bytes.expose_owned())
+    let phrase = String::from_utf8(secret_bytes.expose_owned())
         .map_err(|err| ThresholdError::secret_decode_failed(name.to_string(), "utf8", format!("invalid UTF-8: {}", err)))?;
-    Ok(Secret::from(value))
+    Ok(phrase)
 }
 
-pub async fn load_payment_secret_optional(key_context: &KeyManagerContext) -> Result<Option<Secret>, ThresholdError> {
-    let name = SecretName::new("igra.hd.payment_secret");
+pub async fn load_mnemonic_key_data_for_profile(key_context: &KeyManagerContext, profile: &str) -> Result<PrvKeyData, ThresholdError> {
+    let (key_data, _payment_secret) = load_mnemonic_key_data_and_payment_secret_for_profile(key_context, profile).await?;
+    Ok(key_data)
+}
+
+pub async fn load_mnemonic_key_data_and_payment_secret_for_profile(
+    key_context: &KeyManagerContext,
+    profile: &str,
+) -> Result<(PrvKeyData, Option<Secret>), ThresholdError> {
+    let phrase = load_mnemonic_phrase_for_profile(key_context, profile).await?;
+    let mnemonic = Mnemonic::new(phrase.trim(), Language::English)
+        .map_err(|err| ThresholdError::ConfigError(format!("invalid mnemonic for profile '{profile}': {err}")))?;
+    let payment_secret = load_payment_secret_optional_for_profile(key_context, profile).await?;
+    let key_data =
+        PrvKeyData::try_from_mnemonic(mnemonic, payment_secret.as_ref(), EncryptionKind::XChaCha20Poly1305, None).map_err(|err| {
+            ThresholdError::ConfigError(format!("failed to create key data from mnemonic for profile '{profile}': {err}"))
+        })?;
+    Ok((key_data, payment_secret))
+}
+
+pub async fn load_payment_secret_optional_for_profile(
+    key_context: &KeyManagerContext,
+    profile: &str,
+) -> Result<Option<Secret>, ThresholdError> {
+    let name = signer_secret_name(key_context, SIGNER_PAYMENT_SECRET_PREFIX, profile)?;
     let secret_bytes = match key_context.get_secret_with_audit(&name).await {
         Ok(bytes) => bytes,
         Err(ThresholdError::SecretNotFound { .. }) => return Ok(None),
@@ -134,23 +176,93 @@ pub async fn load_payment_secret_optional(key_context: &KeyManagerContext) -> Re
     }
     let value = String::from_utf8(secret_bytes.expose_owned())
         .map_err(|err| ThresholdError::secret_decode_failed(name.to_string(), "utf8", format!("invalid UTF-8: {}", err)))?;
-    Ok(Some(Secret::from(value)))
+    let secret = Secret::from(value);
+    if let Some(weakness) = validate_payment_secret_strength(&secret) {
+        warn_weak_payment_secret(&weakness);
+    }
+    Ok(Some(secret))
+}
+
+pub fn validate_payment_secret_strength(secret: &Secret) -> Option<String> {
+    let secret_bytes: &[u8] = secret.as_ref();
+    let length = secret_bytes.len();
+
+    if length == 0 {
+        return Some("payment_secret is empty".to_string());
+    }
+
+    let secret_str = match std::str::from_utf8(secret_bytes) {
+        Ok(s) => s,
+        Err(_) => return Some("payment_secret is not valid UTF-8".to_string()),
+    };
+    let lowercase = secret_str.to_ascii_lowercase();
+    const WEAK_PATTERNS: &[&str] = &["password", "123456", "qwerty", "admin", "letmein", "welcome", "monkey", "dragon"];
+    for pattern in WEAK_PATTERNS {
+        if lowercase.contains(pattern) {
+            return Some(format!("payment_secret contains common weak pattern: {}", pattern));
+        }
+    }
+
+    if length < MIN_PAYMENT_SECRET_LENGTH {
+        return Some(format!(
+            "payment_secret too short: {} chars (min: {}, recommended: {})",
+            length, MIN_PAYMENT_SECRET_LENGTH, RECOMMENDED_PAYMENT_SECRET_LENGTH
+        ));
+    }
+
+    if length < RECOMMENDED_PAYMENT_SECRET_LENGTH {
+        return Some(format!(
+            "payment_secret shorter than recommended: {} chars (recommended: {})",
+            length, RECOMMENDED_PAYMENT_SECRET_LENGTH
+        ));
+    }
+
+    None
+}
+
+fn warn_weak_payment_secret(weakness: &str) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_err() {
+        return;
+    }
+
+    warn!("SECURITY NOTE: payment_secret is weak: {} (recommended: {}+ chars)", weakness, RECOMMENDED_PAYMENT_SECRET_LENGTH);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::pskt::multisig::{build_pskt, canonical_schnorr_pubkey_for_keypair, MultisigInput, MultisigOutput};
-    use crate::infrastructure::keys::{EnvSecretStore, LocalKeyManager, NoopAuditLogger};
+    use crate::infrastructure::keys::{LocalKeyManager, NoopAuditLogger, SecretBytes, SecretName, SecretStore};
     use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
     use kaspa_txscript::standard::{multisig_redeem_script, pay_to_script_hash_script};
     use secp256k1::{Keypair, Secp256k1, SecretKey};
-    use std::env;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|err| err.into_inner())
+    struct MapSecretStore {
+        secrets: HashMap<SecretName, SecretBytes>,
+    }
+
+    impl SecretStore for MapSecretStore {
+        fn backend(&self) -> &'static str {
+            "map"
+        }
+
+        fn get<'a>(
+            &'a self,
+            name: &'a SecretName,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SecretBytes, ThresholdError>> + Send + 'a>> {
+            Box::pin(
+                async move { self.secrets.get(name).cloned().ok_or_else(|| ThresholdError::secret_not_found(name.as_str(), "map")) },
+            )
+        }
+
+        fn list_secrets<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SecretName>, ThresholdError>> + Send + 'a>> {
+            Box::pin(async move { Ok(self.secrets.keys().cloned().collect()) })
+        }
     }
 
     fn build_test_pskt(redeem_script: &[u8]) -> PSKT<Signer> {
@@ -169,12 +281,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_pskt_with_service_config_when_key_type_raw_private_key_then_produces_sigs() {
-        let _guard = lock_env();
-
         let secret_bytes = [1u8; 32];
-        let secret_hex = hex::encode(secret_bytes);
-        env::set_var("KASPA_IGRA_PROFILE", "signer-1");
-        env::set_var("IGRA_SECRET__igra_signer__private_key_signer_1", format!("hex:{secret_hex}"));
+        let secret_name = SecretName::new("igra.signer.private_key_signer-01");
+        let secret_store =
+            Arc::new(MapSecretStore { secrets: HashMap::from([(secret_name, SecretBytes::new(secret_bytes.to_vec()))]) });
+        let key_audit_log = Arc::new(NoopAuditLogger);
+        let key_manager = Arc::new(LocalKeyManager::new(secret_store, key_audit_log.clone()));
 
         let secret = SecretKey::from_slice(&secret_bytes).expect("test setup: valid secp256k1 secret key");
         let secp = Secp256k1::new();
@@ -187,12 +299,10 @@ mod tests {
         let event_id = EventId::from([9u8; 32]);
         let ctx = PsktSigningContext { event_id: &event_id, tx_template_hash: &tx_template_hash, purpose: "test_raw_key" };
 
-        let key_context = KeyManagerContext::with_new_request_id(
-            Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), Arc::new(NoopAuditLogger))),
-            Arc::new(NoopAuditLogger),
-        );
+        let key_context = KeyManagerContext::with_new_request_id(key_manager, key_audit_log);
 
         let service = ServiceConfig {
+            active_profile: Some("signer-01".to_string()),
             pskt: crate::infrastructure::config::PsktBuildConfig {
                 redeem_script_hex: hex::encode(&redeem_script),
                 ..Default::default()
@@ -208,8 +318,5 @@ mod tests {
         assert_eq!(sigs.len(), 1);
         assert_eq!(sigs[0].0, 0);
         assert_eq!(sigs[0].1.len(), 64);
-
-        env::remove_var("IGRA_SECRET__igra_signer__private_key_signer_1");
-        env::remove_var("KASPA_IGRA_PROFILE");
     }
 }

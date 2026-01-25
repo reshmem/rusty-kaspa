@@ -1,6 +1,7 @@
 use hyperlane_core::accumulator::merkle::MerkleTree;
 use hyperlane_core::accumulator::TREE_DEPTH;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, Signature, H256, U256};
+use igra_core::foundation::util::hex_fmt::hx;
 use kaspa_addresses::Address;
 use rand::seq::SliceRandom;
 use reqwest::{header, Client, StatusCode};
@@ -164,7 +165,7 @@ fn validate_unordered_events(value: u16) -> Result<(), String> {
 }
 
 fn format_h256(value: H256) -> String {
-    format!("0x{}", hex::encode(value.as_bytes()))
+    format!("{:#x}", hx(value.as_bytes()))
 }
 
 fn build_hyperlane_message(
@@ -207,7 +208,7 @@ fn derive_uncompressed_pubkey_hex(validator: &HyperlaneValidator) -> Result<Stri
     let secret = SecretKey::from_slice(&key_bytes).map_err(|err| format!("invalid private key for {}: {}", validator.name, err))?;
     let secp = Secp256k1::new();
     let pk = secp256k1::PublicKey::from_secret_key(&secp, &secret);
-    Ok(format!("0x{}", hex::encode(pk.serialize_uncompressed())))
+    Ok(format!("{:#x}", hx(&pk.serialize_uncompressed())))
 }
 
 fn derive_evm_address_h256_hex(validator: &HyperlaneValidator) -> Result<String, String> {
@@ -220,7 +221,7 @@ fn derive_evm_address_h256_hex(validator: &HyperlaneValidator) -> Result<String,
     let digest = alloy::primitives::keccak256(&uncompressed[1..]);
     let mut out = [0u8; 32];
     out[12..].copy_from_slice(&digest.as_slice()[12..]);
-    Ok(format!("0x{}", hex::encode(out)))
+    Ok(format!("{:#x}", hx(&out)))
 }
 
 fn sign_checkpoint(checkpoint: &CheckpointWithMessageId, validator: &HyperlaneValidator) -> Result<Signature, String> {
@@ -369,10 +370,18 @@ async fn main() -> Result<(), String> {
     }
     Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
 
-    let sender = igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_SENDER", DEFAULT_SENDER))?;
-    let recipient = igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_RECIPIENT", DEFAULT_RECIPIENT))?;
-    let merkle_tree_hook_address =
-        igra_service::util::hex::parse_h256_hex(&parse_env_string("HYPERLANE_MERKLE_TREE_HOOK", DEFAULT_MERKLE_TREE_HOOK))?;
+    let sender_hex = parse_env_string("HYPERLANE_SENDER", DEFAULT_SENDER);
+    let sender =
+        H256::from(igra_core::foundation::parse_hex_32bytes(&sender_hex).map_err(|err| format!("invalid HYPERLANE_SENDER: {err}"))?);
+    let recipient_hex = parse_env_string("HYPERLANE_RECIPIENT", DEFAULT_RECIPIENT);
+    let recipient = H256::from(
+        igra_core::foundation::parse_hex_32bytes(&recipient_hex).map_err(|err| format!("invalid HYPERLANE_RECIPIENT: {err}"))?,
+    );
+    let merkle_tree_hook_hex = parse_env_string("HYPERLANE_MERKLE_TREE_HOOK", DEFAULT_MERKLE_TREE_HOOK);
+    let merkle_tree_hook_address = H256::from(
+        igra_core::foundation::parse_hex_32bytes(&merkle_tree_hook_hex)
+            .map_err(|err| format!("invalid HYPERLANE_MERKLE_TREE_HOOK: {err}"))?,
+    );
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| format!("read keys file failed path={} error={}", keys_path, err))?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| format!("parse keys json failed: {}", err))?;
@@ -575,7 +584,7 @@ async fn main() -> Result<(), String> {
             }
         };
 
-        let metadata_hex = format!("0x{}", hex::encode(&metadata_bytes));
+        let metadata_hex = format!("{:#x}", hx(&metadata_bytes));
         eprintln!(
             "[fake-hyperlane-relayer] built metadata bytes_len={} sigs={}/{}",
             metadata_bytes.len(),
@@ -596,7 +605,7 @@ async fn main() -> Result<(), String> {
                     "sender": format_h256(msg.sender),
                     "destination": msg.destination,
                     "recipient": format_h256(msg.recipient),
-                    "body": format!("0x{}", hex::encode(&msg.body)),
+                    "body": format!("{:#x}", hx(&msg.body)),
                 },
                 "metadata": metadata_hex,
             }),
@@ -617,7 +626,7 @@ async fn main() -> Result<(), String> {
                     "sender": format_h256(msg.sender),
                     "destination": msg.destination,
                     "recipient": format_h256(msg.recipient),
-                    "body": format!("0x{}", hex::encode(&msg.body)),
+                    "body": format!("{:#x}", hx(&msg.body)),
                 },
                 "metadata": metadata_hex,
             }),
@@ -641,7 +650,7 @@ async fn main() -> Result<(), String> {
                         "sender": format_h256(msg.sender),
                         "destination": msg.destination,
                         "recipient": format_h256(msg.recipient),
-                        "body": format!("0x{}", hex::encode(&msg.body)),
+                        "body": format!("{:#x}", hx(&msg.body)),
                     },
                     "metadata": metadata_hex,
                 }),

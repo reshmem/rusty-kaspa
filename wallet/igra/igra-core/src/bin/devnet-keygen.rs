@@ -23,8 +23,10 @@ enum OutputFormat {
     Json,
     /// Emit environment variables for secrets (IGRA_SECRET__*).
     Env,
-    /// Write an encrypted secrets file (secrets.bin / devnet-secrets.bin).
+    /// Write a single encrypted secrets file for one signer.
     File,
+    /// Write one `secrets.bin` per signer in `--output-dir` (production-aligned).
+    FilePerSigner,
     /// Emit env vars and write secrets file.
     Both,
 }
@@ -32,9 +34,10 @@ enum OutputFormat {
 struct Args {
     format: OutputFormat,
     output: PathBuf,
+    output_dir: Option<PathBuf>,
     passphrase: Option<String>,
     num_signers: usize,
-    wallet_secret: String,
+    signer_profile: Option<String>,
     payment_secret: Option<String>,
     overwrite: bool,
 }
@@ -44,9 +47,10 @@ impl Default for Args {
         Self {
             format: OutputFormat::Json,
             output: PathBuf::from("./devnet-secrets.bin"),
+            output_dir: None,
             passphrase: None,
             num_signers: 3,
-            wallet_secret: "devnet-secret".to_string(),
+            signer_profile: None,
             payment_secret: None,
             overwrite: false,
         }
@@ -59,6 +63,7 @@ impl OutputFormat {
             "json" => Some(Self::Json),
             "env" => Some(Self::Env),
             "file" => Some(Self::File),
+            "file-per-signer" => Some(Self::FilePerSigner),
             "both" => Some(Self::Both),
             _ => None,
         }
@@ -67,12 +72,13 @@ impl OutputFormat {
 
 fn print_usage() {
     eprintln!(
-        "Usage: devnet-keygen [--format json|env|file|both] [--output PATH] [--passphrase PASS] [--num-signers N] [--wallet-secret VALUE] [--payment-secret VALUE] [--overwrite]\n\
+        "Usage: devnet-keygen [--format json|env|file|file-per-signer|both] [--output PATH] [--output-dir DIR] [--passphrase PASS] [--num-signers N] [--signer-profile signer-XX] [--payment-secret VALUE] [--overwrite]\n\
 \n\
 Defaults (no args): prints keyset JSON to stdout.\n\
 Notes:\n\
   - --format env prints IGRA_SECRET__* exports to stdout.\n\
-  - --format file writes an encrypted secrets file (uses IGRA_SECRETS_PASSPHRASE or prompts).\n"
+  - --format file-per-signer writes one secrets file per signer under --output-dir.\n\
+  - --format file writes a single signer secrets file to --output (use --num-signers 1).\n"
     );
 }
 
@@ -95,6 +101,10 @@ fn parse_args() -> Result<Args, ThresholdError> {
                 let value = it.next().ok_or_else(|| ThresholdError::Message("--output requires a value".to_string()))?;
                 args.output = PathBuf::from(value);
             }
+            "--output-dir" => {
+                let value = it.next().ok_or_else(|| ThresholdError::Message("--output-dir requires a value".to_string()))?;
+                args.output_dir = Some(PathBuf::from(value));
+            }
             "--passphrase" => {
                 let value = it.next().ok_or_else(|| ThresholdError::Message("--passphrase requires a value".to_string()))?;
                 args.passphrase = Some(value);
@@ -105,9 +115,9 @@ fn parse_args() -> Result<Args, ThresholdError> {
                     .parse::<usize>()
                     .map_err(|e| ThresholdError::Message(format!("invalid --num-signers value: {} ({})", value, e)))?;
             }
-            "--wallet-secret" => {
-                let value = it.next().ok_or_else(|| ThresholdError::Message("--wallet-secret requires a value".to_string()))?;
-                args.wallet_secret = value;
+            "--signer-profile" => {
+                let value = it.next().ok_or_else(|| ThresholdError::Message("--signer-profile requires a value".to_string()))?;
+                args.signer_profile = Some(value);
             }
             "--payment-secret" => {
                 let value = it.next().ok_or_else(|| ThresholdError::Message("--payment-secret requires a value".to_string()))?;
@@ -134,7 +144,7 @@ struct WalletOut {
     private_key_hex: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SignerOut {
     profile: String,
     mnemonic: String,
@@ -232,25 +242,50 @@ fn derive_wallet_private_key_hex(mnemonic: &Mnemonic) -> Result<String, Threshol
     Ok(hex::encode(leaf.private_key().secret_bytes()))
 }
 
-fn derive_signer_raw_private_key_bytes(mnemonic_phrase: &str, payment_secret: Option<&Secret>) -> Result<[u8; 32], ThresholdError> {
-    let mnemonic = Mnemonic::new(mnemonic_phrase.trim(), Language::English)
-        .map_err(|e| ThresholdError::Message(format!("mnemonic parse: {e}")))?;
-    let key_data = PrvKeyData::try_from_mnemonic(mnemonic, payment_secret, EncryptionKind::XChaCha20Poly1305, None)
-        .map_err(|e| ThresholdError::Message(format!("prv key data: {e}")))?;
-    let signing_keypair = igra_core::foundation::hd::derive_keypair_from_key_data(&key_data, None, payment_secret)?;
-    let keypair = signing_keypair.to_secp256k1()?;
-    Ok(keypair.secret_bytes())
-}
-
 #[tokio::main]
 async fn main() -> Result<(), ThresholdError> {
     let args = parse_args()?;
-    if args.num_signers < 2 {
-        return Err(ThresholdError::ConfigError(format!("num_signers must be >= 2 for 2-of-n multisig; got {}", args.num_signers)));
-    }
 
     let password = "devnet".to_string();
     let name = "devnet".to_string();
+
+    let payment_secret = args.payment_secret.clone().filter(|s| !s.trim().is_empty()).map(Secret::from);
+
+    if args.num_signers == 1 {
+        let profile = args.signer_profile.clone().unwrap_or_else(|| "signer-01".to_string());
+        igra_core::infrastructure::config::validate_signer_profile(&profile)?;
+        let signer = generate_single_signer(profile, payment_secret.as_ref())?;
+
+        match args.format {
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&SingleSignerOutput { signer })?;
+                println!("{json}");
+            }
+            OutputFormat::Env => {
+                print_env_secrets_single(&args, &signer)?;
+            }
+            OutputFormat::File => {
+                write_signer_secrets_file(&args, &signer, &args.output).await?;
+            }
+            OutputFormat::FilePerSigner => {
+                let dir = args
+                    .output_dir
+                    .as_ref()
+                    .ok_or_else(|| ThresholdError::Message("--output-dir is required for --format file-per-signer".to_string()))?;
+                let secrets_path = dir.join(&signer.profile).join("secrets.bin");
+                write_signer_secrets_file(&args, &signer, &secrets_path).await?;
+            }
+            OutputFormat::Both => {
+                print_env_secrets_single(&args, &signer)?;
+                write_signer_secrets_file(&args, &signer, &args.output).await?;
+            }
+        }
+        return Ok(());
+    }
+
+    if args.num_signers < 2 {
+        return Err(ThresholdError::ConfigError(format!("num_signers must be >= 2; got {}", args.num_signers)));
+    }
 
     // Wallet (funding/mining)
     let wallet_mnemonic = mnemonic_phrase()?;
@@ -265,15 +300,11 @@ async fn main() -> Result<(), ThresholdError> {
     };
 
     // Signers
-    let payment_secret = args.payment_secret.clone().filter(|s| !s.trim().is_empty()).map(Secret::from);
     let mut signers = Vec::new();
-    let mut signer_addresses: Vec<String> = Vec::new();
-    let mut signer_mnemonics: Vec<String> = Vec::new();
 
     for signer_index in 0..args.num_signers {
-        let profile = format!("signer-{}", signer_index + 1);
         let mnemonic = mnemonic_phrase()?;
-        signer_mnemonics.push(mnemonic.phrase().to_string());
+        let phrase = mnemonic.phrase().to_string();
 
         // Iroh seed
         let iroh_seed_hex = random_seed_hex();
@@ -288,8 +319,8 @@ async fn main() -> Result<(), ThresholdError> {
 
         // NOTE: `pubkey_hex` and `address` are filled below after we derive the actual Schnorr multisig key material.
         let signer = SignerOut {
-            profile,
-            mnemonic: signer_mnemonics.last().cloned().unwrap_or_default(),
+            profile: format!("tmp-{}", signer_index + 1),
+            mnemonic: phrase,
             iroh_seed_hex,
             iroh_peer_id,
             iroh_pubkey_hex,
@@ -324,8 +355,26 @@ async fn main() -> Result<(), ThresholdError> {
     })?;
 
     // Match `derive_redeem_script_hex()` determinism: sort pubkeys before building the redeem script.
-    let mut ordered_pubkeys = pubkeys.clone();
-    ordered_pubkeys.sort_by_key(|key| key.serialize());
+    let mut ordered_indices: Vec<usize> = (0..pubkeys.len()).collect();
+    ordered_indices.sort_by_key(|idx| pubkeys[*idx].serialize());
+    let ordered_pubkeys = ordered_indices.iter().map(|idx| pubkeys[*idx]).collect::<Vec<_>>();
+
+    // Assign profiles in redeem-script pubkey order (signer-01..signer-N).
+    for (pos, signer_idx) in ordered_indices.iter().enumerate() {
+        signers[*signer_idx].profile = format!("signer-{:02}", pos + 1);
+    }
+
+    // Fill derived signer pubkeys/addresses for debugging / tooling.
+    for (idx, pubkey) in pubkeys.iter().enumerate() {
+        signers[idx].pubkey_hex = pubkey_hex(pubkey);
+        let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
+            .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
+        signers[idx].address = address.to_string();
+    }
+
+    // Output signers ordered by signer-XX.
+    let mut signers = ordered_indices.into_iter().map(|idx| signers[idx].clone()).collect::<Vec<_>>();
+    signers.sort_by(|a, b| a.profile.cmp(&b.profile));
 
     let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem_script);
@@ -335,15 +384,7 @@ async fn main() -> Result<(), ThresholdError> {
         .map_err(|err| ThresholdError::Message(format!("multisig address: {err}")))?
         .to_string();
     let change_address = multisig_address.clone();
-
-    // Fill derived signer pubkeys/addresses for debugging / tooling.
-    for (signer, pubkey) in signers.iter_mut().zip(pubkeys.iter()) {
-        signer.pubkey_hex = pubkey_hex(pubkey);
-        let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
-            .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
-        signer.address = address.to_string();
-        signer_addresses.push(signer.address.clone());
-    }
+    let signer_addresses: Vec<String> = signers.iter().map(|s| s.address.clone()).collect();
 
     // `group.member_pubkeys` must match the redeem script key set. For Schnorr multisig scripts this is x-only pubkeys.
     let member_pubkeys: Vec<String> = ordered_pubkeys
@@ -440,30 +481,80 @@ async fn main() -> Result<(), ThresholdError> {
             print_env_secrets(&args, &output)?;
         }
         OutputFormat::File => {
-            write_secrets_file(&args, &output).await?;
+            return Err(ThresholdError::Message(
+                "--format file requires --num-signers 1 (use --format file-per-signer for multiple signers)".to_string(),
+            ));
+        }
+        OutputFormat::FilePerSigner => {
+            let json = serde_json::to_string_pretty(&output)?;
+            println!("{json}");
+            write_signer_secrets_files(&args, &output).await?;
         }
         OutputFormat::Both => {
             print_env_secrets(&args, &output)?;
-            write_secrets_file(&args, &output).await?;
+            let json = serde_json::to_string_pretty(&output)?;
+            println!("{json}");
+            write_signer_secrets_files(&args, &output).await?;
         }
     }
     Ok(())
 }
 
+#[derive(Serialize)]
+struct SingleSignerOutput {
+    signer: SignerOut,
+}
+
+fn generate_single_signer(profile: String, payment_secret: Option<&Secret>) -> Result<SignerOut, ThresholdError> {
+    let mnemonic = mnemonic_phrase()?;
+    let phrase = mnemonic.phrase().to_string();
+
+    // Iroh seed
+    let iroh_seed_hex = random_seed_hex();
+    let iroh_seed_bytes: [u8; 32] = hex::decode(&iroh_seed_hex)
+        .map_err(|e| ThresholdError::Message(format!("seed hex: {e}")))?
+        .as_slice()
+        .try_into()
+        .map_err(|_| ThresholdError::Message("32-byte seed required".to_string()))?;
+    let iroh_signing = SigningKey::from_bytes(&iroh_seed_bytes);
+    let iroh_pubkey_hex = hex::encode(iroh_signing.verifying_key().to_bytes());
+    let iroh_peer_id = peer_id_from_seed(&iroh_seed_hex)?;
+
+    // Schnorr multisig pubkey/address (for debugging).
+    let key_data = PrvKeyData::try_from_mnemonic(mnemonic, payment_secret, EncryptionKind::XChaCha20Poly1305, None)
+        .map_err(|e| ThresholdError::Message(format!("prv: {e}")))?;
+    let pubkeys = igra_core::foundation::derive_pubkeys(igra_core::foundation::HdInputs {
+        key_data: std::slice::from_ref(&key_data),
+        xpubs: &[],
+        derivation_path: None,
+        payment_secret,
+    })?;
+    let pubkey = pubkeys.first().ok_or_else(|| ThresholdError::Message("failed to derive pubkey".to_string()))?;
+    let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
+        .map_err(|e| ThresholdError::Message(format!("address: {e}")))?;
+
+    Ok(SignerOut {
+        profile,
+        mnemonic: phrase,
+        iroh_seed_hex,
+        iroh_peer_id,
+        iroh_pubkey_hex,
+        pubkey_hex: pubkey_hex(pubkey),
+        address: address.to_string(),
+        derivation_path: String::new(),
+    })
+}
+
 fn print_env_secrets(args: &Args, output: &Output) -> Result<(), ThresholdError> {
     println!("# Igra devnet secrets (copy into your shell / .env)");
-    println!("export KASPA_IGRA_WALLET_SECRET=\"{}\"", args.wallet_secret);
-    println!("export IGRA_SECRET__igra_hd__wallet_secret=\"{}\"", args.wallet_secret);
-    if let Some(payment_secret) = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        println!("export IGRA_SECRET__igra_hd__payment_secret=\"{}\"", payment_secret);
-    }
-
-    let payment_secret = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(Secret::from);
+    let payment_secret = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty());
     for signer in &output.signers {
         let profile_suffix = signer.profile.trim().replace('-', "_");
         println!("export IGRA_SECRET__igra_iroh__signer_seed_{}=\"hex:{}\"", profile_suffix, signer.iroh_seed_hex.trim());
-        let secret_bytes = derive_signer_raw_private_key_bytes(&signer.mnemonic, payment_secret.as_ref())?;
-        println!("export IGRA_SECRET__igra_signer__private_key_{}=\"hex:{}\"", profile_suffix, hex::encode(secret_bytes));
+        println!("export IGRA_SECRET__igra_signer__mnemonic_{}=\"{}\"", profile_suffix, signer.mnemonic.trim());
+        if let Some(ps) = payment_secret {
+            println!("export IGRA_SECRET__igra_signer__payment_secret_{}=\"{}\"", profile_suffix, ps);
+        }
     }
 
     for (idx, val) in output.hyperlane_keys.iter().enumerate() {
@@ -477,68 +568,78 @@ fn print_env_secrets(args: &Args, output: &Output) -> Result<(), ThresholdError>
     Ok(())
 }
 
-async fn write_secrets_file(args: &Args, output: &Output) -> Result<(), ThresholdError> {
-    if args.output.exists() && !args.overwrite {
+async fn write_signer_secrets_files(args: &Args, output: &Output) -> Result<(), ThresholdError> {
+    let out_dir = args
+        .output_dir
+        .as_ref()
+        .ok_or_else(|| ThresholdError::Message("--output-dir is required for --format file-per-signer".to_string()))?;
+    for signer in &output.signers {
+        let secrets_path = out_dir.join(&signer.profile).join("secrets.bin");
+        write_signer_secrets_file(args, signer, &secrets_path).await?;
+    }
+    Ok(())
+}
+
+async fn write_signer_secrets_file(args: &Args, signer: &SignerOut, path: &PathBuf) -> Result<(), ThresholdError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            ThresholdError::secret_store_unavailable("file", format!("failed to create dir {}: {}", parent.display(), e))
+        })?;
+    }
+
+    if path.exists() && !args.overwrite {
         return Err(ThresholdError::secret_store_unavailable(
             "file",
-            format!("secrets file already exists: {} (pass --overwrite to replace it)", args.output.display()),
+            format!("secrets file already exists: {} (pass --overwrite to replace it)", path.display()),
         ));
     }
-    if args.output.exists() && args.overwrite {
-        tokio::fs::remove_file(&args.output)
+    if path.exists() && args.overwrite {
+        tokio::fs::remove_file(path)
             .await
             .map_err(|e| ThresholdError::secret_store_unavailable("file", format!("failed to remove existing secrets file: {}", e)))?;
     }
 
     let passphrase = resolve_passphrase(args.passphrase.clone())?;
-    let store = FileSecretStore::create(&args.output, &passphrase).await?;
+    let store = FileSecretStore::create(path, &passphrase).await?;
 
-    store.set(SecretName::new("igra.hd.wallet_secret"), SecretBytes::new(args.wallet_secret.as_bytes().to_vec())).await?;
+    let seed_bytes = hex::decode(signer.iroh_seed_hex.trim()).map_err(|e| {
+        ThresholdError::secret_decode_failed(
+            format!("igra.iroh.signer_seed_{}", signer.profile),
+            "hex",
+            format!("iroh seed hex decode failed: {}", e),
+        )
+    })?;
+    store.set(SecretName::new(format!("igra.iroh.signer_seed_{}", signer.profile)), SecretBytes::new(seed_bytes)).await?;
+
+    store
+        .set(
+            SecretName::new(format!("igra.signer.mnemonic_{}", signer.profile)),
+            SecretBytes::new(signer.mnemonic.trim().as_bytes().to_vec()),
+        )
+        .await?;
 
     if let Some(payment_secret) = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        store.set(SecretName::new("igra.hd.payment_secret"), SecretBytes::new(payment_secret.as_bytes().to_vec())).await?;
-    }
-
-    let payment_secret = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(Secret::from);
-    for signer in &output.signers {
-        let profile_suffix = signer.profile.trim().replace('-', "_");
-        let seed_bytes = hex::decode(signer.iroh_seed_hex.trim()).map_err(|e| {
-            ThresholdError::secret_decode_failed(
-                format!("igra.iroh.signer_seed_{}", profile_suffix),
-                "hex",
-                format!("iroh seed hex decode failed: {}", e),
+        store
+            .set(
+                SecretName::new(format!("igra.signer.payment_secret_{}", signer.profile)),
+                SecretBytes::new(payment_secret.as_bytes().to_vec()),
             )
-        })?;
-        store.set(SecretName::new(format!("igra.iroh.signer_seed_{}", profile_suffix)), SecretBytes::new(seed_bytes)).await?;
-
-        let raw_priv = derive_signer_raw_private_key_bytes(&signer.mnemonic, payment_secret.as_ref())?;
-        store.set(SecretName::new(format!("igra.signer.private_key_{}", profile_suffix)), SecretBytes::new(raw_priv.to_vec())).await?;
+            .await?;
     }
 
-    for (idx, val) in output.hyperlane_keys.iter().enumerate() {
-        let key_bytes = hex::decode(val.private_key_hex.trim()).map_err(|e| {
-            ThresholdError::secret_decode_failed(
-                format!("igra.hyperlane.validator_{}_key", idx + 1),
-                "hex",
-                format!("validator key hex decode failed: {}", e),
-            )
-        })?;
-        store.set(SecretName::new(format!("igra.hyperlane.validator_{}_key", idx + 1)), SecretBytes::new(key_bytes)).await?;
+    store.save().await?;
+    println!("wrote signer secrets profile={} path={}", signer.profile, path.display());
+    Ok(())
+}
+
+fn print_env_secrets_single(args: &Args, signer: &SignerOut) -> Result<(), ThresholdError> {
+    println!("# Igra signer secrets (copy into your shell / .env)");
+    let profile_suffix = signer.profile.trim().replace('-', "_");
+    println!("export IGRA_SECRET__igra_iroh__signer_seed_{}=\"hex:{}\"", profile_suffix, signer.iroh_seed_hex.trim());
+    println!("export IGRA_SECRET__igra_signer__mnemonic_{}=\"{}\"", profile_suffix, signer.mnemonic.trim());
+    if let Some(payment_secret) = args.payment_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        println!("export IGRA_SECRET__igra_signer__payment_secret_{}=\"{}\"", profile_suffix, payment_secret);
     }
-
-    let evm_bytes = hex::decode(output.evm.private_key_hex.trim()).map_err(|e| {
-        ThresholdError::secret_decode_failed("igra.hyperlane.evm_key", "hex", format!("evm key hex decode failed: {}", e))
-    })?;
-    store.set(SecretName::new("igra.hyperlane.evm_key"), SecretBytes::new(evm_bytes)).await?;
-
-    let wallet_priv_bytes = hex::decode(output.wallet.private_key_hex.trim()).map_err(|e| {
-        ThresholdError::secret_decode_failed("igra.devnet.wallet_private_key", "hex", format!("wallet key hex decode failed: {}", e))
-    })?;
-    store.set(SecretName::new("igra.devnet.wallet_private_key"), SecretBytes::new(wallet_priv_bytes)).await?;
-
-    store.save(&passphrase).await?;
-
-    println!("wrote secrets file path={} (set service.use_encrypted_secrets=true to use it)", args.output.display());
     Ok(())
 }
 
@@ -559,13 +660,5 @@ fn resolve_passphrase(arg: Option<String>) -> Result<String, ThresholdError> {
 }
 
 fn prompt_passphrase() -> Result<String, ThresholdError> {
-    use std::io::{self, Write};
-
-    print!("Enter secrets file passphrase: ");
-    io::stdout().flush().map_err(|e| ThresholdError::secret_store_unavailable("file", format!("failed to flush stdout: {}", e)))?;
-    let mut passphrase = String::new();
-    io::stdin()
-        .read_line(&mut passphrase)
-        .map_err(|e| ThresholdError::secret_store_unavailable("file", format!("failed to read passphrase: {}", e)))?;
-    Ok(passphrase.trim().to_string())
+    igra_core::infrastructure::keys::prompt_hidden_input("Enter secrets file passphrase: ")
 }

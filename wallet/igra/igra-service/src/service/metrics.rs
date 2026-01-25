@@ -43,6 +43,11 @@ pub struct Metrics {
     signer_acks_total: IntCounterVec,
     partial_sigs_total: IntCounter,
     rpc_requests_total: IntCounterVec,
+    iroh_discovery_providers: IntGauge,
+    iroh_discovery_static_enabled: IntGauge,
+    iroh_discovery_pkarr_enabled: IntGauge,
+    iroh_discovery_dns_enabled: IntGauge,
+    iroh_relay_enabled: IntGauge,
     crdt_event_crdts_total: IntGauge,
     crdt_event_crdts_pending: IntGauge,
     crdt_event_crdts_completed: IntGauge,
@@ -50,6 +55,12 @@ pub struct Metrics {
     crdt_cf_estimated_live_data_size_bytes: IntGauge,
     crdt_gc_deleted_total: IntCounter,
     tx_template_hash_mismatches_total: IntCounterVec,
+    passphrase_rotation_enabled: IntGauge,
+    passphrase_age_days: IntGauge,
+    passphrase_rotation_warn_threshold_days: IntGauge,
+    passphrase_rotation_error_threshold_days: IntGauge,
+    passphrase_created_at_unix_seconds: IntGauge,
+    passphrase_last_rotated_at_unix_seconds: IntGauge,
     started_at: Instant,
     submitted_events_total_value: AtomicU64,
     submitted_events_signing_event_total_value: AtomicU64,
@@ -98,6 +109,19 @@ impl Metrics {
         )
         .map_err(|err| metrics_err("rpc_requests_total", err))?;
 
+        let iroh_discovery_providers =
+            IntGauge::new("iroh_discovery_providers", "Number of configured iroh discovery providers (static/pkarr/dns)")
+                .map_err(|err| metrics_err("iroh_discovery_providers", err))?;
+        let iroh_discovery_static_enabled =
+            IntGauge::new("iroh_discovery_static_enabled", "1 if static bootstrap discovery is enabled, else 0")
+                .map_err(|err| metrics_err("iroh_discovery_static_enabled", err))?;
+        let iroh_discovery_pkarr_enabled = IntGauge::new("iroh_discovery_pkarr_enabled", "1 if pkarr discovery is enabled, else 0")
+            .map_err(|err| metrics_err("iroh_discovery_pkarr_enabled", err))?;
+        let iroh_discovery_dns_enabled = IntGauge::new("iroh_discovery_dns_enabled", "1 if DNS discovery is enabled, else 0")
+            .map_err(|err| metrics_err("iroh_discovery_dns_enabled", err))?;
+        let iroh_relay_enabled = IntGauge::new("iroh_relay_enabled", "1 if iroh relay mode is enabled, else 0")
+            .map_err(|err| metrics_err("iroh_relay_enabled", err))?;
+
         let crdt_event_crdts_total = IntGauge::new("crdt_event_states_total", "Total CRDT event states (exact scan)") //
             .map_err(|err| metrics_err("crdt_event_states_total", err))?;
         let crdt_event_crdts_pending = IntGauge::new("crdt_event_states_pending", "Pending CRDT event states (exact scan)") //
@@ -120,6 +144,24 @@ impl Metrics {
         )
         .map_err(|err| metrics_err("tx_template_hash_mismatches_total", err))?;
 
+        let passphrase_rotation_enabled =
+            IntGauge::new("passphrase_rotation_enabled", "1 if passphrase rotation enforcement is enabled, else 0")
+                .map_err(|err| metrics_err("passphrase_rotation_enabled", err))?;
+        let passphrase_age_days = IntGauge::new("passphrase_age_days", "Days since last secrets file passphrase rotation")
+            .map_err(|err| metrics_err("passphrase_age_days", err))?;
+        let passphrase_rotation_warn_threshold_days =
+            IntGauge::new("passphrase_rotation_warn_threshold_days", "Passphrase rotation warning threshold (days)")
+                .map_err(|err| metrics_err("passphrase_rotation_warn_threshold_days", err))?;
+        let passphrase_rotation_error_threshold_days =
+            IntGauge::new("passphrase_rotation_error_threshold_days", "Passphrase rotation error threshold (days, 0=disabled)")
+                .map_err(|err| metrics_err("passphrase_rotation_error_threshold_days", err))?;
+        let passphrase_created_at_unix_seconds =
+            IntGauge::new("passphrase_created_at_unix_seconds", "Secrets file created_at timestamp (unix seconds)")
+                .map_err(|err| metrics_err("passphrase_created_at_unix_seconds", err))?;
+        let passphrase_last_rotated_at_unix_seconds =
+            IntGauge::new("passphrase_last_rotated_at_unix_seconds", "Secrets file last_rotated_at timestamp (unix seconds)")
+                .map_err(|err| metrics_err("passphrase_last_rotated_at_unix_seconds", err))?;
+
         registry
             .register(Box::new(submitted_events_total.clone()))
             .map_err(|err| metrics_err("register submitted_events_total", err))?;
@@ -130,6 +172,19 @@ impl Metrics {
         registry.register(Box::new(signer_acks_total.clone())).map_err(|err| metrics_err("register signer_acks_total", err))?;
         registry.register(Box::new(partial_sigs_total.clone())).map_err(|err| metrics_err("register partial_sigs_total", err))?;
         registry.register(Box::new(rpc_requests_total.clone())).map_err(|err| metrics_err("register rpc_requests_total", err))?;
+        registry
+            .register(Box::new(iroh_discovery_providers.clone()))
+            .map_err(|err| metrics_err("register iroh_discovery_providers", err))?;
+        registry
+            .register(Box::new(iroh_discovery_static_enabled.clone()))
+            .map_err(|err| metrics_err("register iroh_discovery_static_enabled", err))?;
+        registry
+            .register(Box::new(iroh_discovery_pkarr_enabled.clone()))
+            .map_err(|err| metrics_err("register iroh_discovery_pkarr_enabled", err))?;
+        registry
+            .register(Box::new(iroh_discovery_dns_enabled.clone()))
+            .map_err(|err| metrics_err("register iroh_discovery_dns_enabled", err))?;
+        registry.register(Box::new(iroh_relay_enabled.clone())).map_err(|err| metrics_err("register iroh_relay_enabled", err))?;
         registry
             .register(Box::new(crdt_event_crdts_total.clone()))
             .map_err(|err| metrics_err("register crdt_event_crdts_total", err))?;
@@ -151,6 +206,22 @@ impl Metrics {
         registry
             .register(Box::new(tx_template_hash_mismatches_total.clone()))
             .map_err(|err| metrics_err("register tx_template_hash_mismatches_total", err))?;
+        registry
+            .register(Box::new(passphrase_rotation_enabled.clone()))
+            .map_err(|err| metrics_err("register passphrase_rotation_enabled", err))?;
+        registry.register(Box::new(passphrase_age_days.clone())).map_err(|err| metrics_err("register passphrase_age_days", err))?;
+        registry
+            .register(Box::new(passphrase_rotation_warn_threshold_days.clone()))
+            .map_err(|err| metrics_err("register passphrase_rotation_warn_threshold_days", err))?;
+        registry
+            .register(Box::new(passphrase_rotation_error_threshold_days.clone()))
+            .map_err(|err| metrics_err("register passphrase_rotation_error_threshold_days", err))?;
+        registry
+            .register(Box::new(passphrase_created_at_unix_seconds.clone()))
+            .map_err(|err| metrics_err("register passphrase_created_at_unix_seconds", err))?;
+        registry
+            .register(Box::new(passphrase_last_rotated_at_unix_seconds.clone()))
+            .map_err(|err| metrics_err("register passphrase_last_rotated_at_unix_seconds", err))?;
 
         let out = Self {
             registry,
@@ -160,6 +231,11 @@ impl Metrics {
             signer_acks_total,
             partial_sigs_total,
             rpc_requests_total,
+            iroh_discovery_providers,
+            iroh_discovery_static_enabled,
+            iroh_discovery_pkarr_enabled,
+            iroh_discovery_dns_enabled,
+            iroh_relay_enabled,
             crdt_event_crdts_total,
             crdt_event_crdts_pending,
             crdt_event_crdts_completed,
@@ -167,6 +243,12 @@ impl Metrics {
             crdt_cf_estimated_live_data_size_bytes,
             crdt_gc_deleted_total,
             tx_template_hash_mismatches_total,
+            passphrase_rotation_enabled,
+            passphrase_age_days,
+            passphrase_rotation_warn_threshold_days,
+            passphrase_rotation_error_threshold_days,
+            passphrase_created_at_unix_seconds,
+            passphrase_last_rotated_at_unix_seconds,
             started_at: Instant::now(),
             submitted_events_total_value: AtomicU64::new(0),
             submitted_events_signing_event_total_value: AtomicU64::new(0),
@@ -192,6 +274,66 @@ impl Metrics {
         };
         debug!("prometheus metrics registered");
         Ok(out)
+    }
+
+    pub fn set_passphrase_rotation_metrics(
+        &self,
+        enabled: bool,
+        warn_days: u64,
+        error_days: u64,
+        age_days: Option<u64>,
+        created_at_unix_seconds: Option<u64>,
+        last_rotated_at_unix_seconds: Option<u64>,
+    ) {
+        fn to_i64(value: u64) -> i64 {
+            if value > i64::MAX as u64 {
+                i64::MAX
+            } else {
+                value as i64
+            }
+        }
+
+        self.passphrase_rotation_enabled.set(if enabled { 1 } else { 0 });
+        self.passphrase_rotation_warn_threshold_days.set(to_i64(warn_days));
+        self.passphrase_rotation_error_threshold_days.set(to_i64(error_days));
+        if let Some(age_days) = age_days {
+            self.passphrase_age_days.set(to_i64(age_days));
+        }
+        if let Some(created_at) = created_at_unix_seconds {
+            self.passphrase_created_at_unix_seconds.set(to_i64(created_at));
+        }
+        if let Some(last_rotated_at) = last_rotated_at_unix_seconds {
+            self.passphrase_last_rotated_at_unix_seconds.set(to_i64(last_rotated_at));
+        }
+    }
+
+    pub fn refresh_passphrase_age(&self) {
+        let last_rotated_at = self.passphrase_last_rotated_at_unix_seconds.get();
+        if last_rotated_at <= 0 {
+            return;
+        }
+        let now_secs = (igra_core::foundation::now_nanos() / 1_000_000_000) as i64;
+        if now_secs <= last_rotated_at {
+            self.passphrase_age_days.set(0);
+            return;
+        }
+        let age_days = (now_secs.saturating_sub(last_rotated_at)).saturating_div(86_400);
+        self.passphrase_age_days.set(age_days);
+    }
+
+    pub fn set_iroh_discovery_config(
+        &self,
+        provider_count: usize,
+        static_enabled: bool,
+        pkarr_enabled: bool,
+        dns_enabled: bool,
+        relay_enabled: bool,
+    ) {
+        self.iroh_discovery_providers.set(provider_count as i64);
+        self.iroh_discovery_static_enabled.set(if static_enabled { 1 } else { 0 });
+        self.iroh_discovery_pkarr_enabled.set(if pkarr_enabled { 1 } else { 0 });
+        self.iroh_discovery_dns_enabled.set(if dns_enabled { 1 } else { 0 });
+        self.iroh_relay_enabled.set(if relay_enabled { 1 } else { 0 });
     }
 
     pub fn inc_submitted_event(&self, source: &str) {

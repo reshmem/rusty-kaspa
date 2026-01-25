@@ -2,6 +2,10 @@ mod auth_test;
 mod batch_test;
 mod rate_limit_test;
 
+#[allow(dead_code)]
+#[path = "../integration/helpers.rs"]
+mod key_helpers;
+
 use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
@@ -39,7 +43,6 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
     use igra_core::domain::GroupPolicy;
     use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
-    use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
     use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -80,8 +83,7 @@ fn basic_state() -> Arc<igra_service::api::json_rpc::RpcState> {
     let dir_path = temp_dir.into_path();
     let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
     let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager, key_audit_log) = key_helpers::key_manager_with_secrets(std::collections::HashMap::new());
     let ctx = EventContext {
         config: ServiceConfig::default(),
         policy: GroupPolicy::default(),

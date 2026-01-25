@@ -1,6 +1,7 @@
 use blake3::Hash;
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneProof;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
+use igra_core::foundation::util::hex_fmt::hx;
 use kaspa_addresses::Address;
 use rand::seq::SliceRandom;
 use reqwest::Client;
@@ -92,7 +93,7 @@ fn now_nanos() -> u64 {
 
 #[allow(dead_code)]
 fn hash_to_hex(hash: Hash) -> String {
-    hex::encode(hash.as_bytes())
+    format!("{}", hx(hash.as_bytes()))
 }
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
@@ -177,7 +178,7 @@ fn make_signatures(
         let mut out = [0u8; 65];
         out[..64].copy_from_slice(&bytes);
         out[64] = u8::try_from(rec_id.to_i32()).unwrap_or(0);
-        sigs.push(format!("0x{}", hex::encode(out)));
+        sigs.push(format!("{:#x}", hx(&out)));
     }
     Ok(sigs)
 }
@@ -200,24 +201,24 @@ async fn submit_mailbox_process(
                 "version": message.version,
                 "nonce": message.nonce,
                 "origin": message.origin,
-                "sender": format!("0x{}", hex::encode(message.sender.as_ref())),
+                "sender": format!("{:#x}", hx(message.sender.as_ref())),
                 "destination": message.destination,
-                "recipient": format!("0x{}", hex::encode(message.recipient.as_ref())),
-                "body": format!("0x{}", hex::encode(&message.body)),
+                "recipient": format!("{:#x}", hx(message.recipient.as_ref())),
+                "body": format!("{:#x}", hx(&message.body)),
             },
             "metadata": {
                 "checkpoint": {
-                    "merkle_tree_hook_address": format!("0x{}", hex::encode(checkpoint.checkpoint.merkle_tree_hook_address.as_ref())),
+                    "merkle_tree_hook_address": format!("{:#x}", hx(checkpoint.checkpoint.merkle_tree_hook_address.as_ref())),
                     "mailbox_domain": checkpoint.checkpoint.mailbox_domain,
-                    "root": format!("0x{}", hex::encode(checkpoint.checkpoint.root.as_ref())),
+                    "root": format!("{:#x}", hx(checkpoint.checkpoint.root.as_ref())),
                     "index": checkpoint.checkpoint.index,
-                    "message_id": format!("0x{}", hex::encode(checkpoint.message_id.as_ref())),
+                    "message_id": format!("{:#x}", hx(checkpoint.message_id.as_ref())),
                 },
                 "merkle_proof": proof.as_ref().map(|p| {
                     serde_json::json!({
-                        "leaf": format!("0x{}", hex::encode(p.leaf.as_ref())),
+                        "leaf": format!("{:#x}", hx(p.leaf.as_ref())),
                         "index": p.index,
-                        "path": p.path.iter().map(|h| format!("0x{}", hex::encode(h.as_ref()))).collect::<Vec<_>>()
+                        "path": p.path.iter().map(|h| format!("{:#x}", hx(h.as_ref()))).collect::<Vec<_>>()
                     })
                 }),
                 "signatures": signatures,
@@ -267,13 +268,16 @@ async fn main() -> Result<(), String> {
     let domain = env::var("HYPERLANE_DOMAIN").unwrap_or_else(|_| DEFAULT_ORIGIN_DOMAIN.to_string()); // origin domain
     let destination_domain =
         env::var("HYPERLANE_DESTINATION_DOMAIN").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(DEFAULT_DESTINATION_DOMAIN);
-    let sender =
-        env::var("HYPERLANE_SENDER").ok().and_then(|v| igra_service::util::hex::parse_h256_hex(&v).ok()).unwrap_or(H256::zero());
+    let sender = env::var("HYPERLANE_SENDER")
+        .ok()
+        .and_then(|v| igra_core::foundation::parse_hex_32bytes(&v).ok())
+        .map(H256::from)
+        .unwrap_or(H256::zero());
 
     let keys_raw = fs::read_to_string(&keys_path).map_err(|err| err.to_string())?;
     let keys: HyperlaneKeysFile = serde_json::from_str(&keys_raw).map_err(|err| err.to_string())?;
     eprintln!(
-        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} destination_address={} origin_domain={} dest_domain={} sender={} unordered_events={:?}",
+        "[fake-hyperlane] start rpc_url={} keys={} interval={}s start_epoch={} amount_sompi={} destination_address={} origin_domain={} dest_domain={} sender={:#x} unordered_events={:?}",
         rpc_url,
         keys.validators.len(),
         interval_secs,
@@ -282,8 +286,7 @@ async fn main() -> Result<(), String> {
         destination_address,
         domain,
         destination_domain,
-        hex::encode(sender)
-        ,
+        hx(sender.as_ref()),
         unordered_events
     );
     if keys.validators.is_empty() {
@@ -383,11 +386,11 @@ async fn main() -> Result<(), String> {
 
         let mode = "message_id_multisig";
         eprintln!(
-            "[fake-hyperlane] submit nonce={} mode={} amt={} sender={} dest={} sigs={}/{}",
+            "[fake-hyperlane] submit nonce={} mode={} amt={} sender={:#x} dest={} sigs={}/{}",
             nonce,
             mode,
             amount_sompi,
-            hex::encode(sender),
+            hx(sender.as_ref()),
             destination,
             signatures.len(),
             2

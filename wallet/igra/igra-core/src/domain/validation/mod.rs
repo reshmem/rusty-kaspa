@@ -1,3 +1,10 @@
+//! Domain-level validator verification.
+//!
+//! This module contains the chain- and provider-specific proof verification logic used to
+//! validate that a signing request (event) is authorized by an external system (e.g. Hyperlane).
+//!
+//! The `MessageVerifier` trait is the abstraction used by the application/service layers.
+
 pub mod hyperlane;
 pub mod layerzero;
 pub mod types;

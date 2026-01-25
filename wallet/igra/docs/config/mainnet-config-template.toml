@@ -1,0 +1,804 @@
+# Igra Mainnet Configuration Template
+#
+# Threshold Configuration:
+#   - Kaspa: 10-of-15 signers
+#   - Hyperlane: 12-of-15 validators
+#
+# Security Level: MAXIMUM (production-ready)
+# Network: Kaspa Mainnet
+# Last Updated: 2026-01-24
+#
+# IMPORTANT: This is a TEMPLATE. You MUST customize:
+#   1. redeem_script_hex (multisig redeem script; source address is derived)
+#   2. member_pubkeys (your 15 signer pubkeys)
+#   3. hyperlane validators (your 15 validator pubkeys)
+#   4. iroh.verifier_keys (your 15 peer verifying keys)
+#   5. iroh.group_id (your unique group identifier)
+#
+# SECURITY CHECKLIST before using:
+#   [ ] Replace all placeholder values marked with <REPLACE>
+#   [ ] Generate secrets.bin with per-signer raw private keys + Iroh seeds
+#   [ ] Set IGRA_SECRETS_PASSPHRASE environment variable
+#   [ ] Verify file permissions (0600 for config, secrets)
+#   [ ] Run --validate-only before starting
+#   [ ] Review NetworkMode-Security.md
+#   [ ] Review TIMING-ATTACK-ANALYSIS.md (ensure fix applied)
+
+# =============================================================================
+# SERVICE CONFIGURATION
+# =============================================================================
+
+[service]
+# REQUIRED: Explicit network confirmation (prevents accidental test config use)
+# Mainnet validation will ERROR if this is missing or doesn't match --network flag
+network = "mainnet"
+
+# REQUIRED: Kaspa node RPC endpoint
+# SECURITY: MUST be local (127.0.0.1/localhost) for mainnet
+# Remote RPC nodes can lie about UTXO state → loss of funds
+# If you MUST use remote RPC (NOT RECOMMENDED), add --allow-remote-rpc flag
+node_rpc_url = "grpc://127.0.0.1:16110"
+
+# Alternative: Local with TLS
+# node_rpc_url = "grpcs://localhost:16110"
+
+# REQUIRED: Data directory for RocksDB, secrets, and audit logs
+# Mainnet requirements:
+#   - Must exist before startup
+#   - Permissions: 0700 (owner-only)
+#   - Available disk: ≥10 GB
+#   - Must NOT contain "devnet" or "test" in path
+data_dir = "/var/lib/igra"
+
+# REQUIRED: Use encrypted secrets file (FileSecretStore)
+# Mainnet FORBIDS environment variable secrets
+# Requires IGRA_SECRETS_PASSPHRASE environment variable
+use_encrypted_secrets = true
+
+# OPTIONAL: Custom secrets file path (defaults to ${data_dir}/secrets.bin)
+# Mainnet requirements:
+#   - Must exist
+#   - Permissions: 0600 (owner read/write only)
+# secrets_file = "/etc/igra/secrets.bin"
+
+# Passphrase rotation policy (encrypted secrets only).
+# Startup validation warns/errors when the passphrase is too old.
+passphrase_rotation_enabled = true
+passphrase_rotation_warn_days = 60
+passphrase_rotation_error_days = 90
+
+# REQUIRED: Key operation audit log (forensic trail)
+# Mainnet requirements:
+#   - Parent directory must exist
+#   - File permissions: 0600 (if exists)
+# Recommended retention: 90 days minimum (compliance)
+key_audit_log_path = "/var/log/igra/key-audit.log"
+
+# OPTIONAL: Allow remote RPC (NOT RECOMMENDED)
+# Set to true only if you understand the risks:
+#   - Remote node can lie about UTXO state
+#   - Remote node can track your transactions
+#   - Remote node can censor your operations
+# If true, node_rpc_url MUST use grpcs:// and include authentication
+allow_remote_rpc = false
+
+# SECURITY: NEVER set to true in production (data loss risk)
+# Devnet-only: Auto-wipe RocksDB on schema mismatch
+allow_schema_wipe = false
+
+# OPTIONAL: Circuit breaker for node RPC (prevents cascading failures)
+[service.node_rpc_circuit_breaker]
+failure_threshold = 10          # Consecutive failures before opening circuit
+open_duration_secs = 120        # Max time circuit stays open (2 minutes)
+success_threshold = 3           # Successes required to close circuit
+
+# =============================================================================
+# PSKT (PARTIALLY SIGNED KASPA TRANSACTION) CONFIGURATION
+# =============================================================================
+
+[service.pskt]
+# OPTIONAL: Multisig source address (UTXOs to spend from).
+#
+# This is derived automatically from `redeem_script_hex` + `service.network` and will be treated
+# as a single canonical address. If provided, it must exactly match the derived address.
+#
+# source_addresses = ["kaspa:qr<REPLACE_WITH_YOUR_MULTISIG_ADDRESS>"]
+
+# REQUIRED: Multisig redeem script (hex-encoded)
+# Format: OP_10 <pubkey1> <pubkey2> ... <pubkey15> OP_15 OP_CHECKMULTISIG
+# Must use Schnorr x-only pubkeys (32 bytes each) in lexicographic order
+# MUST match group.member_pubkeys exactly (same order, same pubkeys)
+#
+# Generate with: devnet-keygen tool or kaspa-wallet-core::create_multisig_address
+# REPLACE with your actual redeem script
+redeem_script_hex = "<REPLACE_WITH_YOUR_10_OF_15_REDEEM_SCRIPT_HEX>"
+
+# Example format (10-of-15):
+# redeem_script_hex = "5a20<pubkey1_32bytes>20<pubkey2_32bytes>...20<pubkey15_32bytes>5fae"
+#                     ^^                                                              ^^^^
+#                     OP_10                                                           OP_15 OP_CHECKMULTISIG
+
+# REQUIRED: Signature operation count (for fee estimation)
+# IMPORTANT: `sig_op_count` is NOT the multisig threshold (M).
+# For a classic OP_CHECKMULTISIG redeem script, worst-case verification can execute ~N signature checks
+# depending on which subset of signers produced signatures.
+#
+# Recommended for CHECKMULTISIG: set sig_op_count = threshold_n (upper bound ≈ N).
+sig_op_count = 15
+
+# REQUIRED: Fee payment mode
+# Options:
+#   - "recipient_pays" (default) - Deduct fees from recipient amount
+#   - "signers_pay" - Pay fees from multisig (change reduced)
+#   - { split = { recipient_parts = 1, signer_parts = 1 } } - Split 50/50
+fee_payment_mode = "signers_pay"
+
+# OPTIONAL: Override change address (defaults to derived multisig source address)
+# Recommended: Use the derived multisig address
+# change_address = "kaspa:qr<MULTISIG_ADDRESS>"
+
+# OPTIONAL: Fixed fee (bypasses fee estimation)
+# If set, fee estimation is skipped and this value is used
+# Recommended: Omit for automatic fee estimation
+# fee_sompi = 1000
+
+# OPTIONAL: Override node RPC for PSKT operations (rare)
+# Inherits from service.node_rpc_url if not set
+# node_rpc_url = "grpc://127.0.0.1:16110"
+
+# =============================================================================
+# SIGNER KEY CONFIGURATION
+# =============================================================================
+
+[service.hd]
+# REQUIRED: Key material type
+# Options:
+#   - "raw_private_key" (RECOMMENDED FOR MAINNET) - Raw secp256k1 private key (32 bytes) stored in secrets.bin
+#   - "hd_mnemonic" (FORBIDDEN IN MAINNET) - BIP39 mnemonic-based key derivation
+#
+# Mainnet recommendation:
+#   - Use raw private keys + FileSecretStore (secrets.bin).
+#   - Do NOT place mnemonics in config files.
+key_type = "raw_private_key"
+
+# REQUIRED (if group config is not present): required signatures (M)
+# When [group] is configured (recommended), group.threshold_m is the source of truth.
+required_sigs = 10
+
+# OPTIONAL (only if key_type=hd_mnemonic): HD derivation path
+# BIP44 format: m / purpose' / coin_type' / account' / change / address_index
+# Mainnet coin_type: 111110 (Kaspa mainnet)
+# Recommended: Use hardened derivation for first 4 levels (security)
+# Default: None (uses root key directly from mnemonic)
+derivation_path = "m/45'/111110'/0'/0/0" # only used in hd_mnemonic mode
+
+# Raw private keys (recommended) are NOT stored in this config.
+# Each signer loads its private key from secrets.bin under:
+#   igra.signer.private_key_<profile>
+# where <profile> is the exact signer profile string (e.g. signer-01).
+#
+# Populate secrets.bin with the secrets-admin tool (example):
+#
+#   export IGRA_SECRETS_PASSPHRASE="<strong passphrase>"
+#   cargo run -p igra-core --bin secrets-admin -- --path /var/lib/igra/secrets.bin init
+#   cargo run -p igra-core --bin secrets-admin -- --path /var/lib/igra/secrets.bin \
+#     set igra.signer.private_key_signer-01 0x<64-hex-chars> --hex
+#
+# Repeat per signer (signer-02, signer-03, ...), then start each node with `--profile signer-XX`.
+#
+# hd_mnemonic mode is FORBIDDEN in mainnet. For dev/test only, store mnemonics in secrets.bin:
+#   igra.signer.mnemonic_signer-01
+#   igra.signer.payment_secret_signer-01   # optional BIP39 passphrase ("25th word")
+
+# OPTIONAL: Extended public keys (for watch-only wallets)
+# xpubs = ["xpub..."]
+
+# =============================================================================
+# THRESHOLD GROUP CONFIGURATION
+# =============================================================================
+
+[group]
+# REQUIRED: Network ID (must match Kaspa network)
+# Mainnet: 1
+# Testnet: 10 or 11
+network_id = 1
+
+# REQUIRED: Threshold (M-of-N)
+# This is a 10-of-15 configuration
+# Mainnet requirement: M ≥ 2 (single signer is insecure)
+threshold_m = 10
+threshold_n = 15
+
+# REQUIRED: Member public keys (Schnorr x-only pubkeys, 32 bytes each)
+# MUST be in SAME ORDER as redeem_script_hex
+# MUST be lexicographically sorted (deterministic multisig)
+# Format: Hex-encoded 32-byte x-only pubkeys
+#
+# Generate with: devnet-keygen or derive from mnemonics
+# REPLACE with your actual 15 signer pubkeys
+member_pubkeys = [
+    "<REPLACE_PUBKEY_01>",  # Signer 1
+    "<REPLACE_PUBKEY_02>",  # Signer 2
+    "<REPLACE_PUBKEY_03>",  # Signer 3
+    "<REPLACE_PUBKEY_04>",  # Signer 4
+    "<REPLACE_PUBKEY_05>",  # Signer 5
+    "<REPLACE_PUBKEY_06>",  # Signer 6
+    "<REPLACE_PUBKEY_07>",  # Signer 7
+    "<REPLACE_PUBKEY_08>",  # Signer 8
+    "<REPLACE_PUBKEY_09>",  # Signer 9
+    "<REPLACE_PUBKEY_10>",  # Signer 10
+    "<REPLACE_PUBKEY_11>",  # Signer 11
+    "<REPLACE_PUBKEY_12>",  # Signer 12
+    "<REPLACE_PUBKEY_13>",  # Signer 13
+    "<REPLACE_PUBKEY_14>",  # Signer 14
+    "<REPLACE_PUBKEY_15>",  # Signer 15
+]
+
+# REQUIRED: Fee rate for transaction construction (sompi per gram)
+# Mainnet recommendation: 10-1000 (network-dependent)
+# Check current network fee rate: https://explorer.kaspa.org
+fee_rate_sompi_per_gram = 100
+
+# REQUIRED: Finality threshold (blue score depth for UTXO acceptance)
+# Mainnet recommendation: 300-1000 blocks
+# Higher = more secure but slower confirmation
+finality_blue_score_threshold = 600
+
+# REQUIRED: Dust threshold (minimum UTXO value to spend)
+# Prevents uneconomical UTXOs (fee > value)
+# Mainnet recommendation: 10000-100000 sompi
+dust_threshold_sompi = 50000
+
+# REQUIRED: Minimum recipient amount (prevents tiny/spam transactions)
+# Mainnet recommendation: 1000000 sompi (0.01 KAS)
+min_recipient_amount_sompi = 1000000
+
+# REQUIRED: Session timeout (seconds)
+# Range: 10-600 seconds
+# For 10-of-15 threshold, allow more time for signature collection
+# Recommendation: 300-600 seconds (5-10 minutes)
+session_timeout_seconds = 600
+
+# OPTIONAL: Group metadata (for group ID derivation and tracking)
+[group.group_metadata]
+creation_timestamp_nanos = 1706112345000000000  # Unix timestamp when group was created
+group_name = "mainnet-production-signers"
+policy_version = 1
+
+[group.group_metadata.extra]
+# Custom fields for your deployment
+organization = "Your Organization Name"
+environment = "production"
+region = "global"
+
+# =============================================================================
+# TRANSACTION POLICY (Security Controls)
+# =============================================================================
+
+[policy]
+# RECOMMENDED: Whitelist of allowed destination addresses (empty = allow all)
+# Mainnet best practice: Restrict to known addresses
+# Example: Only allow transfers to hot wallet, cold wallet, and exchange deposit
+allowed_destinations = [
+    # "kaspa:qr<HOT_WALLET_ADDRESS>",
+    # "kaspa:qr<COLD_WALLET_ADDRESS>",
+    # "kaspa:qr<EXCHANGE_DEPOSIT_ADDRESS>",
+]
+
+# RECOMMENDED: Minimum transaction amount (prevents dust/spam)
+# 0.1 KAS = 100,000,000 sompi
+min_amount_sompi = 100000000
+
+# RECOMMENDED: Maximum single transaction amount (risk management)
+# 1000 KAS = 1,000,000,000,000 sompi
+# Prevents large unauthorized transfers
+max_amount_sompi = 1000000000000
+
+# RECOMMENDED: Daily volume limit (aggregate across all transactions)
+# 5000 KAS per day = 5,000,000,000,000 sompi
+# Resets at midnight UTC
+max_daily_volume_sompi = 5000000000000
+
+# RECOMMENDED: Require reason field in event metadata (audit trail)
+# Operators must provide justification for each transaction
+require_reason = true
+
+# =============================================================================
+# IROH P2P NETWORKING
+# =============================================================================
+
+[iroh]
+# REQUIRED: Network ID (message filtering)
+# Mainnet: 1
+# Must match group.network_id
+network_id = 1
+
+# REQUIRED: Group ID (gossip topic identifier)
+# Derived from group configuration hash
+# REPLACE with your unique group ID
+# Generate with: Setup scripts or group_id::compute_group_id()
+group_id = "<REPLACE_WITH_YOUR_GROUP_ID_HEX>"
+
+# REQUIRED: Peer verifier keys (Ed25519 public keys for message authentication)
+# Format: "peer_id:hex_pubkey"
+# One entry per signer (15 entries for 15 signers)
+# REPLACE with your actual peer IDs and Ed25519 verifying keys
+verifier_keys = [
+    "signer-01:<REPLACE_ED25519_PUBKEY_01>",
+    "signer-02:<REPLACE_ED25519_PUBKEY_02>",
+    "signer-03:<REPLACE_ED25519_PUBKEY_03>",
+    "signer-04:<REPLACE_ED25519_PUBKEY_04>",
+    "signer-05:<REPLACE_ED25519_PUBKEY_05>",
+    "signer-06:<REPLACE_ED25519_PUBKEY_06>",
+    "signer-07:<REPLACE_ED25519_PUBKEY_07>",
+    "signer-08:<REPLACE_ED25519_PUBKEY_08>",
+    "signer-09:<REPLACE_ED25519_PUBKEY_09>",
+    "signer-10:<REPLACE_ED25519_PUBKEY_10>",
+    "signer-11:<REPLACE_ED25519_PUBKEY_11>",
+    "signer-12:<REPLACE_ED25519_PUBKEY_12>",
+    "signer-13:<REPLACE_ED25519_PUBKEY_13>",
+    "signer-14:<REPLACE_ED25519_PUBKEY_14>",
+    "signer-15:<REPLACE_ED25519_PUBKEY_15>",
+]
+
+# REQUIRED: Bootstrap nodes for initial peer discovery
+# Include EndpointIDs of 2-3 seed nodes (stable, public IPs)
+# Format: Base32-encoded EndpointID
+bootstrap = [
+    "<REPLACE_SEED_NODE_1_ENDPOINT_ID>",
+    "<REPLACE_SEED_NODE_2_ENDPOINT_ID>",
+]
+
+# REQUIRED: Bootstrap addresses (EndpointID@host:port)
+# Include 2-3 seed nodes with DNS names (for cold start)
+bootstrap_addrs = [
+    "<REPLACE_SEED_1_ENDPOINT_ID>@seed1.mainnet.your-domain.io:11205",
+    "<REPLACE_SEED_2_ENDPOINT_ID>@seed2.mainnet.your-domain.io:11205",
+]
+
+# RECOMMENDED: Bind port for QUIC transport
+# Default: Random port (not recommended for production)
+# Mainnet: Use fixed port for firewall rules
+bind_port = 11205
+
+# RECOMMENDED: Pkarr DHT discovery (automatic peer discovery)
+[iroh.discovery]
+enable_pkarr = true             # Enable DHT-based discovery (BitTorrent DHT)
+enable_dns = false              # DNS discovery (optional, requires infrastructure)
+# dns_domain = "discovery.mainnet.your-domain.io"  # If enable_dns=true
+
+# RECOMMENDED: Relay for NAT traversal (if any nodes behind NAT)
+[iroh.relay]
+enable = true                   # Enable relay support
+# custom_url = "https://relay.mainnet.your-domain.io"  # Or use Iroh default
+
+# =============================================================================
+# HYPERLANE CROSS-CHAIN BRIDGE (12-of-15 Validators)
+# =============================================================================
+
+# RECOMMENDED: Polling interval for Hyperlane events
+# Lower = faster cross-chain message processing, higher RPC load
+# Mainnet: 5-30 seconds
+poll_secs = 10
+
+# Domain configuration for Ethereum Mainnet (example)
+# Repeat for each EVM chain you bridge to/from
+[[hyperlane.domains]]
+domain = 1  # Ethereum Mainnet (domain ID)
+
+# REQUIRED: Hyperlane validator public keys (secp256k1, EVM-compatible)
+# 15 validators, 12-of-15 threshold for message verification
+# Format: Hex-encoded secp256k1 public keys (33 or 65 bytes)
+# REPLACE with your actual Hyperlane validator pubkeys
+validators = [
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_01>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_02>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_03>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_04>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_05>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_06>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_07>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_08>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_09>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_10>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_11>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_12>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_13>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_14>",
+    "<REPLACE_HYPERLANE_VALIDATOR_PUBKEY_15>",
+]
+
+# REQUIRED: Validator threshold (M-of-N)
+# 12-of-15 for high security
+threshold = 12
+
+# REQUIRED: ISM mode for message verification
+# Options:
+#   - "message_id_multisig" (recommended) - Verify message ID signatures
+#   - "merkle_root_multisig" - Verify merkle root (legacy)
+mode = "message_id_multisig"
+
+# Repeat for other EVM chains (Polygon, Arbitrum, etc.)
+# [[hyperlane.domains]]
+# domain = 137  # Polygon
+# validators = [...]
+# threshold = 12
+# mode = "message_id_multisig"
+
+# =============================================================================
+# TWO-PHASE CONSENSUS PROTOCOL
+# =============================================================================
+
+[two_phase]
+# Proposal phase timeout (milliseconds)
+# For 10-of-15 threshold, allow enough time for 10 nodes to respond
+# Recommendation: 10-30 seconds for geographically distributed signers
+proposal_timeout_ms = 15000
+
+# OPTIONAL: Commit quorum (defaults to group.threshold_m if 0)
+# Set to 0 to auto-derive from threshold (recommended)
+commit_quorum = 0  # Will use threshold_m = 10
+
+# Minimum blue score depth for input UTXOs (finality requirement)
+# 0 = auto-derive from max(300, group.finality_blue_score_threshold)
+min_input_score_depth = 0  # Will use 600 (from group config)
+
+# Re-validate UTXOs before commit (recommended for security)
+# Prevents race conditions (UTXO spent between proposal and commit)
+revalidate_inputs_on_commit = true
+
+# Retry configuration for transient failures
+[two_phase.retry]
+max_retries = 3                 # Maximum retry attempts
+base_delay_ms = 5000            # Initial retry delay (5 seconds)
+max_delay_ms = 60000            # Maximum retry delay (1 minute)
+backoff_multiplier = 2.0        # Exponential backoff (5s → 10s → 20s → 40s)
+jitter_ms = 500                 # Random jitter to prevent thundering herd
+
+# =============================================================================
+# RUNTIME BEHAVIOR
+# =============================================================================
+
+[runtime]
+# Session timeout (seconds)
+# Must match group.session_timeout_seconds
+# Range: 10-600 seconds
+# For 10-of-15, allow generous timeout (signature collection from 10 nodes)
+session_timeout_seconds = 600
+
+# Session expiry for cleanup (seconds)
+# Old sessions removed after this duration
+# Recommendation: 2-10x session_timeout
+session_expiry_seconds = 3600  # 1 hour
+
+# CRDT garbage collection interval (seconds)
+# How often to clean up completed event states
+# Recommendation: 600-3600 seconds (10-60 minutes)
+crdt_gc_interval_seconds = 1800  # 30 minutes
+
+# CRDT retention TTL (seconds)
+# How long to keep completed events before deletion
+# Mainnet: 24-72 hours (allows delayed signers to catch up)
+crdt_gc_ttl_seconds = 172800  # 48 hours
+
+# =============================================================================
+# JSON-RPC API
+# =============================================================================
+
+[rpc]
+# Enable JSON-RPC server
+# Mainnet: Enable only if you need API access
+# Security: Binds to 127.0.0.1 by default (local only)
+enabled = true
+
+# Listen address
+# SECURITY: 127.0.0.1 for local-only (recommended)
+# 0.0.0.0 for external access (requires firewall + auth)
+addr = "127.0.0.1:8088"
+
+# RECOMMENDED: Bearer token authentication
+# Generate secure random token: openssl rand -hex 32
+# REPLACE with your secure token
+# token = "<REPLACE_WITH_SECURE_RANDOM_TOKEN>"
+
+# RECOMMENDED: Rate limiting (prevents abuse)
+rate_limit_rps = 100            # Requests per second per IP
+rate_limit_burst = 200          # Burst capacity
+
+# OPTIONAL: Hyperlane mailbox processing timeout
+# How long to wait for mailbox.process RPC call
+# hyperlane_mailbox_wait_seconds = 300
+
+# =============================================================================
+# SIGNING BACKEND
+# =============================================================================
+
+[signing]
+# Signing backend selection
+# Current: Only "threshold" is implemented
+# Future: "musig2" (signature aggregation), "mpc" (FROST)
+backend = "threshold"
+
+# =============================================================================
+# PER-SIGNER PROFILES (Multi-Signer Deployment)
+# =============================================================================
+#
+# In a 15-signer deployment, each signer runs with --profile signer-XX
+# Profile overrides apply on top of base configuration
+#
+# Example deployment:
+#   Node 1: kaspa-threshold-service --network mainnet --profile signer-01
+#   Node 2: kaspa-threshold-service --network mainnet --profile signer-02
+#   ...
+#   Node 15: kaspa-threshold-service --network mainnet --profile signer-15
+
+# Signer 1 Profile
+[profiles.signer-01.service]
+data_dir = "/var/lib/igra/signer-01"
+
+[profiles.signer-01.service.hd]
+# Mainnet recommendation: no mnemonics in config.
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-01
+
+[profiles.signer-01.iroh]
+peer_id = "signer-01"
+# Signer seed stored in secrets.bin as: igra.iroh.signer_seed_signer_01
+# Generate with: openssl rand -hex 32
+
+[profiles.signer-01.rpc]
+addr = "127.0.0.1:8088"  # Each signer can have different RPC port if needed
+
+# Signer 2 Profile
+[profiles.signer-02.service]
+data_dir = "/var/lib/igra/signer-02"
+
+[profiles.signer-02.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-02
+
+[profiles.signer-02.iroh]
+peer_id = "signer-02"
+
+[profiles.signer-02.rpc]
+addr = "127.0.0.1:8089"
+
+# Signer 3 Profile
+[profiles.signer-03.service]
+data_dir = "/var/lib/igra/signer-03"
+
+[profiles.signer-03.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-03
+
+[profiles.signer-03.iroh]
+peer_id = "signer-03"
+
+[profiles.signer-03.rpc]
+addr = "127.0.0.1:8090"
+
+# Signer 4 Profile
+[profiles.signer-04.service]
+data_dir = "/var/lib/igra/signer-04"
+
+[profiles.signer-04.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-04
+
+[profiles.signer-04.iroh]
+peer_id = "signer-04"
+
+[profiles.signer-04.rpc]
+addr = "127.0.0.1:8091"
+
+# Signer 5 Profile
+[profiles.signer-05.service]
+data_dir = "/var/lib/igra/signer-05"
+
+[profiles.signer-05.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-05
+
+[profiles.signer-05.iroh]
+peer_id = "signer-05"
+
+[profiles.signer-05.rpc]
+addr = "127.0.0.1:8092"
+
+# Signer 6 Profile
+[profiles.signer-06.service]
+data_dir = "/var/lib/igra/signer-06"
+
+[profiles.signer-06.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-06
+
+[profiles.signer-06.iroh]
+peer_id = "signer-06"
+
+[profiles.signer-06.rpc]
+addr = "127.0.0.1:8093"
+
+# Signer 7 Profile
+[profiles.signer-07.service]
+data_dir = "/var/lib/igra/signer-07"
+
+[profiles.signer-07.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-07
+
+[profiles.signer-07.iroh]
+peer_id = "signer-07"
+
+[profiles.signer-07.rpc]
+addr = "127.0.0.1:8094"
+
+# Signer 8 Profile
+[profiles.signer-08.service]
+data_dir = "/var/lib/igra/signer-08"
+
+[profiles.signer-08.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-08
+
+[profiles.signer-08.iroh]
+peer_id = "signer-08"
+
+[profiles.signer-08.rpc]
+addr = "127.0.0.1:8095"
+
+# Signer 9 Profile
+[profiles.signer-09.service]
+data_dir = "/var/lib/igra/signer-09"
+
+[profiles.signer-09.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-09
+
+[profiles.signer-09.iroh]
+peer_id = "signer-09"
+
+[profiles.signer-09.rpc]
+addr = "127.0.0.1:8096"
+
+# Signer 10 Profile
+[profiles.signer-10.service]
+data_dir = "/var/lib/igra/signer-10"
+
+[profiles.signer-10.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-10
+
+[profiles.signer-10.iroh]
+peer_id = "signer-10"
+
+[profiles.signer-10.rpc]
+addr = "127.0.0.1:8097"
+
+# Signer 11 Profile
+[profiles.signer-11.service]
+data_dir = "/var/lib/igra/signer-11"
+
+[profiles.signer-11.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-11
+
+[profiles.signer-11.iroh]
+peer_id = "signer-11"
+
+[profiles.signer-11.rpc]
+addr = "127.0.0.1:8098"
+
+# Signer 12 Profile
+[profiles.signer-12.service]
+data_dir = "/var/lib/igra/signer-12"
+
+[profiles.signer-12.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-12
+
+[profiles.signer-12.iroh]
+peer_id = "signer-12"
+
+[profiles.signer-12.rpc]
+addr = "127.0.0.1:8099"
+
+# Signer 13 Profile
+[profiles.signer-13.service]
+data_dir = "/var/lib/igra/signer-13"
+
+[profiles.signer-13.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-13
+
+[profiles.signer-13.iroh]
+peer_id = "signer-13"
+
+[profiles.signer-13.rpc]
+addr = "127.0.0.1:8100"
+
+# Signer 14 Profile
+[profiles.signer-14.service]
+data_dir = "/var/lib/igra/signer-14"
+
+[profiles.signer-14.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-14
+
+[profiles.signer-14.iroh]
+peer_id = "signer-14"
+
+[profiles.signer-14.rpc]
+addr = "127.0.0.1:8101"
+
+# Signer 15 Profile
+[profiles.signer-15.service]
+data_dir = "/var/lib/igra/signer-15"
+
+[profiles.signer-15.service.hd]
+# Private key is stored in secrets.bin as: igra.signer.private_key_signer-15
+
+[profiles.signer-15.iroh]
+peer_id = "signer-15"
+
+[profiles.signer-15.rpc]
+addr = "127.0.0.1:8102"
+
+# =============================================================================
+# DEPLOYMENT NOTES
+# =============================================================================
+#
+# BEFORE FIRST START:
+#
+# 1. REPLACE ALL PLACEHOLDERS
+#    - Search for "<REPLACE" in this file
+#    - Fill in: addresses, pubkeys, group_id, endpoint_ids
+#
+# 2. GENERATE SECRETS
+#    - Create secrets.bin (encrypted) and populate:
+#      - 15 signer private keys: igra.signer.private_key_signer-01 .. signer-15
+#      - 15 iroh seeds: igra.iroh.signer_seed_signer-01 .. signer-15
+#      - NOTE: mainnet forbids mnemonic-based signing; do not store mnemonics in secrets.bin
+#    - Set IGRA_SECRETS_PASSPHRASE environment variable
+#
+# 3. SET FILE PERMISSIONS
+#    chmod 600 igra-mainnet-config.toml
+#    chmod 600 /var/lib/igra/secrets.bin
+#    chmod 700 /var/lib/igra
+#    chmod 600 /var/log/igra/key-audit.log
+#
+# 4. CREATE DIRECTORIES
+#    sudo mkdir -p /var/lib/igra/{signer-01..signer-15}
+#    sudo mkdir -p /var/log/igra
+#    sudo chown -R igra-service:igra-service /var/lib/igra /var/log/igra
+#
+# 5. SET ENVIRONMENT VARIABLES
+#    export IGRA_SECRETS_PASSPHRASE="<from-password-manager>"
+#    export KASPA_IGRA_LOG_DIR="/var/log/igra"
+#
+# 6. VALIDATE CONFIGURATION
+#    kaspa-threshold-service --network mainnet --config igra-mainnet-config.toml --validate-only
+#
+# 7. START EACH SIGNER
+#    # Terminal 1 (or systemd unit):
+#    kaspa-threshold-service --network mainnet --profile signer-01
+#
+#    # Terminal 2:
+#    kaspa-threshold-service --network mainnet --profile signer-02
+#
+#    # ... (up to signer-15)
+#
+# MONITORING:
+#
+# - Check logs: tail -f /var/log/igra/igra-service.log
+# - Check audit trail: tail -f /var/log/igra/key-audit.log
+# - Check peers: curl http://127.0.0.1:8088/api/v1/health
+# - Monitor metrics: Prometheus endpoint (if configured)
+#
+# SECURITY REMINDERS:
+#
+# - Never commit this file to git with real values
+# - Rotate IGRA_SECRETS_PASSPHRASE every 90 days
+# - Review key-audit.log weekly
+# - Monitor for unauthorized signing attempts
+# - Keep secrets.bin backed up (encrypted backups only)
+# - Run on dedicated user (not root): useradd -r igra-service
+# - Enable firewall: only allow ports 11205 (Iroh), 8088 (RPC if needed)
+# - Disable core dumps: ulimit -c 0
+# - Set open file limit: ulimit -n 65536
+#
+# DOCUMENTATION:
+#
+# - Network Modes: docs/config/network-modes.md
+# - Iroh Discovery: docs/config/iroh-discovery.md
+# - Hyperlane: docs/config/hyperlane.md
+# - Security: docs/security/timing-attacks.md
+# - Key Management: docs/security/key-management-audit.md
+#
+# =============================================================================

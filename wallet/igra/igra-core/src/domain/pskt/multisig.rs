@@ -29,26 +29,31 @@ pub struct MultisigOutput {
     pub script_public_key: ScriptPublicKey,
 }
 
-pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Result<PsktBuildResult, ThresholdError> {
-    let total_input_amount = inputs.iter().map(|input| input.utxo_entry.amount).sum::<u64>();
-    let total_output_amount = outputs.iter().map(|output| output.amount).sum::<u64>();
+fn build_pskt_inner(
+    inputs: impl IntoIterator<Item = MultisigInput>,
+    outputs: impl IntoIterator<Item = MultisigOutput>,
+) -> Result<PsktBuildResult, ThresholdError> {
+    let mut total_input_amount = 0u64;
+    let mut total_output_amount = 0u64;
     let mut pskt = PSKT::<Creator>::default().inputs_modifiable().outputs_modifiable().constructor();
 
-    for input in inputs.iter() {
+    for input in inputs {
+        total_input_amount = total_input_amount.saturating_add(input.utxo_entry.amount);
         let input = InputBuilder::default()
-            .utxo_entry(input.utxo_entry.clone())
+            .utxo_entry(input.utxo_entry)
             .previous_outpoint(input.previous_outpoint)
             .sig_op_count(input.sig_op_count)
-            .redeem_script(input.redeem_script.clone())
+            .redeem_script(input.redeem_script)
             .build()
             .map_err(|err| ThresholdError::PsktError { operation: "build_input".into(), details: err.to_string() })?;
         pskt = pskt.input(input);
     }
 
-    for output in outputs.iter() {
+    for output in outputs {
+        total_output_amount = total_output_amount.saturating_add(output.amount);
         let output = OutputBuilder::default()
             .amount(output.amount)
-            .script_public_key(output.script_public_key.clone())
+            .script_public_key(output.script_public_key)
             .build()
             .map_err(|err| ThresholdError::PsktError { operation: "build_output".into(), details: err.to_string() })?;
         pskt = pskt.output(output);
@@ -62,6 +67,14 @@ pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Resul
         total_output_amount,
         pskt,
     })
+}
+
+pub fn build_pskt(inputs: &[MultisigInput], outputs: &[MultisigOutput]) -> Result<PsktBuildResult, ThresholdError> {
+    build_pskt_inner(inputs.iter().cloned(), outputs.iter().cloned())
+}
+
+pub fn build_pskt_owned(inputs: Vec<MultisigInput>, outputs: Vec<MultisigOutput>) -> Result<PsktBuildResult, ThresholdError> {
+    build_pskt_inner(inputs, outputs)
 }
 
 pub fn set_sequence_all(pskt: PSKT<Updater>, sequence: u64) -> Result<PSKT<Updater>, ThresholdError> {
@@ -247,7 +260,7 @@ fn signable_tx_from_inner(inner: &Inner) -> SignableTransaction {
         inner.inputs.iter().map(|input: &Input| input.min_time).max().unwrap_or(inner.global.fallback_lock_time).unwrap_or(0),
         SUBNETWORK_ID_NATIVE,
         0,
-        if inner.global.version >= Version::One { inner.global.payload.clone().unwrap_or_default() } else { vec![] },
+        if inner.global.version >= Version::One { inner.global.payload.as_deref().unwrap_or_default().to_vec() } else { Vec::new() },
     );
 
     let entries = inner.inputs.iter().filter_map(|Input { utxo_entry, .. }| utxo_entry.clone()).collect();

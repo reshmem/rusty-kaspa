@@ -1,11 +1,13 @@
 use crate::api::middleware::auth::authorize_rpc;
 use crate::api::state::RpcState;
+use crate::api::util::serde_helpers::{serialize_bytes_with_0x_prefix, serialize_opt_bytes_with_0x_prefix, serialize_with_0x_prefix};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use kaspa_addresses::Address;
 use kaspa_consensus_core::tx::ScriptPublicKey;
+use kaspa_consensus_core::tx::TransactionId as KaspaTransactionId;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -13,14 +15,16 @@ use std::sync::Arc;
 pub struct ChainInfoResponse {
     pub virtual_daa_score: u64,
     pub past_median_time: u64,
-    pub pruning_point_hash: String,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub pruning_point_hash: [u8; 32],
     pub network_name: String,
     pub is_synced: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BlockInfoResponse {
-    pub hash: String,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub hash: [u8; 32],
     pub daa_score: u64,
     pub timestamp: u64,
     pub blue_score: u64,
@@ -33,9 +37,12 @@ pub struct BalanceResponse {
 
 #[derive(Debug, Serialize)]
 pub struct TransactionInfoResponse {
-    pub tx_id: String,
-    pub hash: String,
-    pub block_hash: Option<String>,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub tx_id: igra_core::foundation::TransactionId,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub hash: igra_core::foundation::TransactionId,
+    #[serde(serialize_with = "serialize_opt_bytes_with_0x_prefix")]
+    pub block_hash: Option<[u8; 32]>,
     pub daa_score: Option<u64>,
     pub timestamp: Option<u64>,
     pub inputs: Vec<TxInput>,
@@ -44,15 +51,18 @@ pub struct TransactionInfoResponse {
 
 #[derive(Debug, Serialize)]
 pub struct TxInput {
-    pub previous_outpoint_hash: String,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub previous_outpoint_hash: igra_core::foundation::TransactionId,
     pub previous_outpoint_index: u32,
-    pub signature_script: String,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub signature_script: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TxOutput {
     pub value: u64,
-    pub script_public_key: String,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub script_public_key: Vec<u8>,
 }
 
 pub async fn get_chain_info(State(state): State<Arc<RpcState>>, headers: HeaderMap) -> Response {
@@ -72,7 +82,7 @@ pub async fn get_chain_info(State(state): State<Arc<RpcState>>, headers: HeaderM
     Json(ChainInfoResponse {
         virtual_daa_score: dag.virtual_daa_score,
         past_median_time: dag.past_median_time,
-        pruning_point_hash: format!("0x{}", hex::encode(dag.pruning_point_hash.as_bytes())),
+        pruning_point_hash: dag.pruning_point_hash.as_bytes(),
         network_name: server_info.network_id.to_string(),
         is_synced: server_info.is_synced,
     })
@@ -97,7 +107,7 @@ pub async fn get_block_by_daa(State(state): State<Arc<RpcState>>, headers: Heade
     };
 
     Json(BlockInfoResponse {
-        hash: format!("0x{}", hex::encode(block.header.hash.as_bytes())),
+        hash: block.header.hash.as_bytes(),
         daa_score: block.header.daa_score,
         timestamp: block.header.timestamp,
         blue_score: block.header.blue_score,
@@ -124,10 +134,11 @@ pub async fn get_transaction(State(state): State<Arc<RpcState>>, headers: Header
         return (StatusCode::UNAUTHORIZED, err).into_response();
     }
 
-    let tx_id = match crate::util::hex::parse_kaspa_tx_id_hex(&hash_hex) {
-        Ok(id) => id,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    let tx_id_bytes = match igra_core::foundation::parse_hex_32bytes_allow_64bytes(&hash_hex) {
+        Ok(bytes) => bytes,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
     };
+    let tx_id = KaspaTransactionId::from_bytes(tx_id_bytes);
 
     let entry = match state.kaspa_query.get_mempool_entry(tx_id).await {
         Ok(entry) => entry,
@@ -139,35 +150,26 @@ pub async fn get_transaction(State(state): State<Arc<RpcState>>, headers: Header
         .inputs
         .iter()
         .map(|input| TxInput {
-            previous_outpoint_hash: format!("0x{}", hex::encode(input.previous_outpoint.transaction_id.as_bytes())),
+            previous_outpoint_hash: igra_core::foundation::TransactionId::from(input.previous_outpoint.transaction_id),
             previous_outpoint_index: input.previous_outpoint.index,
-            signature_script: format!("0x{}", hex::encode(&input.signature_script)),
+            signature_script: input.signature_script.clone(),
         })
         .collect::<Vec<_>>();
     let outputs = entry
         .transaction
         .outputs
         .iter()
-        .map(|output| TxOutput {
-            value: output.value,
-            script_public_key: format!("0x{}", format_script_public_key(&output.script_public_key)),
-        })
+        .map(|output| TxOutput { value: output.value, script_public_key: script_public_key_bytes(&output.script_public_key) })
         .collect::<Vec<_>>();
 
-    Json(TransactionInfoResponse {
-        tx_id: format!("0x{}", hex::encode(tx_id.as_bytes())),
-        hash: format!("0x{}", hex::encode(tx_id.as_bytes())),
-        block_hash: None,
-        daa_score: None,
-        timestamp: None,
-        inputs,
-        outputs,
-    })
-    .into_response()
+    let tx_id = igra_core::foundation::TransactionId::from(tx_id);
+    Json(TransactionInfoResponse { tx_id, hash: tx_id, block_hash: None, daa_score: None, timestamp: None, inputs, outputs })
+        .into_response()
 }
 
-fn format_script_public_key(spk: &ScriptPublicKey) -> String {
-    let ver = hex::encode(spk.version().to_be_bytes());
-    let script = hex::encode(spk.script());
-    format!("{ver}{script}")
+fn script_public_key_bytes(spk: &ScriptPublicKey) -> Vec<u8> {
+    let mut out = Vec::with_capacity(spk.script().len().saturating_add(2));
+    out.extend_from_slice(&spk.version().to_be_bytes());
+    out.extend_from_slice(spk.script());
+    out
 }

@@ -6,12 +6,15 @@ mod modes;
 mod setup;
 
 use crate::cli::Cli;
+use igra_core::application::validation::{parse_validator_pubkeys, CompositeVerifier};
 use igra_core::application::EventContext;
-use igra_core::domain::coordination::TwoPhaseConfig;
-use igra_core::domain::validation::{parse_validator_pubkeys, CompositeVerifier};
+use igra_core::application::TwoPhaseConfig;
 use igra_core::foundation::ThresholdError;
-use igra_core::infrastructure::config::{derive_redeem_script_hex, PsktOutput};
+use igra_core::infrastructure::config::{derive_redeem_script_hex, pskt_source_address_from_redeem_script_hex, AppConfig, PsktOutput};
 use igra_core::infrastructure::hyperlane::ConfiguredIsm;
+use igra_core::infrastructure::keys::backends::file_format::SecretFile;
+use igra_core::infrastructure::network_mode::{NetworkMode, SecurityValidator, ValidationContext};
+use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
 use igra_core::infrastructure::storage::Storage;
 use igra_service::api::json_rpc::{run_hyperlane_watcher, run_json_rpc_server, RpcState};
@@ -28,19 +31,106 @@ use std::time::Duration;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse_args();
+    let network_mode: NetworkMode = args.network.parse()?;
     setup::init_logging(&args.log_level)?;
     args.apply_to_env();
     info!("kaspa-threshold-service starting log_level={}", args.log_level);
 
-    // If a profile is provided (via KASPA_IGRA_PROFILE), load `[profiles.<name>]` overrides from the TOML.
-    let app_config = if let Ok(profile) = std::env::var("KASPA_IGRA_PROFILE") {
-        info!("loading config profile profile={}", profile.trim());
-        let data_dir = igra_core::infrastructure::config::resolve_data_dir()?;
-        let config_path = igra_core::infrastructure::config::resolve_config_path(&data_dir)?;
-        setup::load_app_config_profile(&config_path, profile.trim())?
-    } else {
-        setup::load_app_config()?
+    let data_dir = igra_core::infrastructure::config::resolve_data_dir()?;
+    let config_path = igra_core::infrastructure::config::resolve_config_path(&data_dir)?;
+
+    let active_profile = match args.profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(profile) => profile.to_string(),
+        None => {
+            let base = setup::load_app_config()?;
+            base.service
+                .active_profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ThresholdError::ConfigError(
+                        "missing active profile: set CLI --profile signer-XX or service.active_profile in config".to_string(),
+                    )
+                })?
+                .to_string()
+        }
     };
+    igra_core::infrastructure::config::validate_signer_profile(&active_profile)?;
+    info!("loading config profile profile={}", active_profile);
+
+    let loaded = setup::load_app_config_profile(&config_path, &active_profile)?;
+    let mut app_config: AppConfig = (*loaded).clone();
+    app_config.service.active_profile = Some(active_profile);
+    apply_pskt_source_address_config(&mut app_config, network_mode)?;
+    let app_config = Arc::new(app_config);
+
+    // Network-mode security validation (static checks).
+    let validation_config_path = args.config.clone().or(Some(config_path.clone()));
+    let log_dir = match std::env::var("KASPA_IGRA_LOG_DIR") {
+        Ok(v) => {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(err) => {
+            warn!("failed to read KASPA_IGRA_LOG_DIR env var; continuing error={}", err);
+            None
+        }
+    };
+    let allow_remote_rpc = args.allow_remote_rpc || app_config.service.allow_remote_rpc;
+    let validation_ctx = ValidationContext {
+        config_path: validation_config_path,
+        allow_remote_rpc,
+        log_filters: Some(args.log_level.clone()),
+        log_dir,
+    };
+    let validator = SecurityValidator::new(network_mode);
+    let report = validator.validate_static(&app_config, &validation_ctx);
+    if report.has_errors() || report.has_warnings() {
+        println!("{}", report);
+    }
+    if network_mode.is_production() && report.has_errors() {
+        std::process::exit(1);
+    }
+
+    if args.validate_only {
+        let (key_manager, key_audit_log) = setup::setup_key_manager(&app_config.service, network_mode).await?;
+        let key_ctx = igra_core::infrastructure::keys::KeyManagerContext::with_new_request_id(key_manager, key_audit_log);
+        let kaspa_query = match network_mode {
+            NetworkMode::Mainnet => KaspaGrpcQueryClient::connect(app_config.service.node_rpc_url.clone()).await?,
+            NetworkMode::Testnet | NetworkMode::Devnet => {
+                match KaspaGrpcQueryClient::connect(app_config.service.node_rpc_url.clone()).await {
+                    Ok(client) => client,
+                    Err(err) => {
+                        warn!("validate-only: kaspa query client unavailable (non-mainnet); continuing error={}", err);
+                        KaspaGrpcQueryClient::unimplemented()
+                    }
+                }
+            }
+        };
+        match validator.validate_startup(&app_config, &kaspa_query, &key_ctx).await {
+            Ok(startup_report) => {
+                if startup_report.has_errors() || startup_report.has_warnings() {
+                    println!("{}", startup_report);
+                }
+                if network_mode.is_production() && startup_report.has_errors() {
+                    std::process::exit(1);
+                }
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+        info!("validate-only complete");
+        return Ok(());
+    }
+
     info!(
         "config loaded rpc_enabled={} network_id={} has_group_config={}",
         app_config.rpc.enabled,
@@ -73,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let (key_manager, key_audit_log) = setup::setup_key_manager(&app_config.service).await?;
+    let (key_manager, key_audit_log) = setup::setup_key_manager(&app_config.service, network_mode).await?;
 
     info!("initializing iroh identity");
     let identity = setup::init_signer_identity(&app_config, &key_manager, &key_audit_log).await?;
@@ -81,9 +171,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup::log_startup_banner(&app_config, &identity.peer_id, &group_id);
     let static_addrs = setup::parse_bootstrap_addrs(&app_config.iroh.bootstrap_addrs)?;
     let iroh_secret = setup::derive_iroh_secret(identity.seed);
+    let iroh_static_enabled = !static_addrs.is_empty();
+    let iroh_pkarr_enabled = app_config.iroh.discovery.enable_pkarr;
+    let iroh_dns_enabled = app_config.iroh.discovery.enable_dns;
+    let iroh_relay_enabled = app_config.iroh.relay.enable;
+    let iroh_provider_count = (iroh_static_enabled as usize) + (iroh_pkarr_enabled as usize) + (iroh_dns_enabled as usize);
 
-    info!("iroh identity ready peer_id={} group_id={:#x} bootstrap_addrs={}", identity.peer_id, group_id, static_addrs.len());
-    let (gossip, _iroh_router) = setup::init_iroh_gossip(app_config.iroh.bind_port, static_addrs, iroh_secret).await?;
+    info!(
+        "iroh identity ready peer_id={} group_id={:#x} bootstrap_addrs={} pkarr={} dns={} relay={}",
+        identity.peer_id,
+        group_id,
+        static_addrs.len(),
+        app_config.iroh.discovery.enable_pkarr,
+        app_config.iroh.discovery.enable_dns,
+        app_config.iroh.relay.enable
+    );
+    let (gossip, _iroh_router) = setup::init_iroh_gossip(
+        app_config.iroh.bind_port,
+        static_addrs,
+        iroh_secret,
+        &app_config.iroh.discovery,
+        &app_config.iroh.relay,
+    )
+    .await?;
 
     let iroh_config =
         IrohConfig { network_id: app_config.iroh.network_id, group_id, bootstrap_nodes: app_config.iroh.bootstrap.clone() };
@@ -105,7 +215,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let flow = Arc::new(flow);
-    spawn_status_reporter(flow.metrics(), storage.clone());
+    let metrics = flow.metrics();
+    metrics.set_iroh_discovery_config(
+        iroh_provider_count,
+        iroh_static_enabled,
+        iroh_pkarr_enabled,
+        iroh_dns_enabled,
+        iroh_relay_enabled,
+    );
+    set_passphrase_rotation_metrics(metrics.as_ref(), &app_config.service, network_mode);
+
+    // Network-mode security validation (startup checks).
+    let startup_report = validator.validate_startup(&app_config, &flow.kaspa_query(), &flow.key_context()).await?;
+    if startup_report.has_errors() || startup_report.has_warnings() {
+        println!("{}", startup_report);
+    }
+
+    spawn_status_reporter(metrics.clone(), storage.clone());
     let transport = flow.transport();
     let peer_id = identity.peer_id;
     let peer_id_for_state = peer_id.clone();
@@ -196,9 +322,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    run_test_pskt_mode(&app_config, flow.as_ref()).await?;
+    run_test_pskt_mode(&app_config, flow.as_ref(), network_mode).await?;
 
     Ok(())
+}
+
+fn set_passphrase_rotation_metrics(metrics: &Metrics, service: &igra_core::infrastructure::config::ServiceConfig, mode: NetworkMode) {
+    let enabled = service.passphrase_rotation_enabled.unwrap_or(match mode {
+        NetworkMode::Mainnet => true,
+        NetworkMode::Testnet => true,
+        NetworkMode::Devnet => false,
+    });
+    let warn_days = service.passphrase_rotation_warn_days.unwrap_or(match mode {
+        NetworkMode::Mainnet => 60,
+        NetworkMode::Testnet => 90,
+        NetworkMode::Devnet => 0,
+    });
+    let error_days = service.passphrase_rotation_error_days.unwrap_or(match mode {
+        NetworkMode::Mainnet => 90,
+        NetworkMode::Testnet => 0,
+        NetworkMode::Devnet => 0,
+    });
+
+    let mut age_days: Option<u64> = None;
+    let mut created_at_secs: Option<u64> = None;
+    let mut last_rotated_at_secs: Option<u64> = None;
+
+    if service.use_encrypted_secrets {
+        let secrets_path = match service.secrets_file.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(path) => PathBuf::from(path),
+            None => PathBuf::from(&service.data_dir).join("secrets.bin"),
+        };
+        if let Ok(data) = std::fs::read(&secrets_path) {
+            match SecretFile::from_bytes(&data) {
+                Ok(file) => {
+                    let now = igra_core::foundation::now_nanos();
+                    let rotation = file.rotation_metadata();
+                    age_days = Some(rotation.age_days(now));
+                    created_at_secs = Some(rotation.created_at_nanos / 1_000_000_000);
+                    last_rotated_at_secs = Some(rotation.last_rotated_at_nanos / 1_000_000_000);
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to parse secrets file for passphrase rotation metrics secrets_file={} error={}",
+                        secrets_path.display(),
+                        err
+                    );
+                }
+            }
+        }
+    }
+
+    metrics.set_passphrase_rotation_metrics(enabled, warn_days, error_days, age_days, created_at_secs, last_rotated_at_secs);
 }
 
 fn spawn_status_reporter(metrics: Arc<Metrics>, storage: Arc<dyn Storage>) {
@@ -211,6 +386,7 @@ fn spawn_status_reporter(metrics: Arc<Metrics>, storage: Arc<dyn Storage>) {
             if let Ok(stats) = storage.crdt_storage_stats() {
                 metrics.set_crdt_storage_stats(stats);
             }
+            metrics.refresh_passphrase_age();
             let snapshot = metrics.snapshot();
             info!(
                 "periodic status report uptime_minutes={} sessions_total={} sessions_finalized={} sessions_timed_out={} signer_acks_accepted={} signer_acks_rejected={} partial_sigs_total={} rpc_ok={} rpc_error={} crdt_total={} crdt_pending={} crdt_completed={} crdt_cf_estimated_live_data_size_bytes={} crdt_gc_deleted_total={} tx_template_hash_mismatches_total={}",
@@ -234,17 +410,45 @@ fn spawn_status_reporter(metrics: Arc<Metrics>, storage: Arc<dyn Storage>) {
     });
 }
 
+fn apply_pskt_source_address_config(app_config: &mut AppConfig, mode: NetworkMode) -> Result<(), ThresholdError> {
+    let redeem_hex = app_config.service.pskt.redeem_script_hex.trim();
+    if redeem_hex.is_empty() {
+        return Ok(());
+    }
+
+    let expected = pskt_source_address_from_redeem_script_hex(mode, redeem_hex)?;
+    let provided = app_config.service.pskt.source_addresses.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
+
+    if !provided.is_empty() {
+        for addr in &provided {
+            if *addr != expected {
+                return Err(ThresholdError::ConfigError(format!(
+                    "service.pskt.source_addresses must match the address derived from service.pskt.redeem_script_hex; expected='{expected}' got='{addr}'"
+                )));
+            }
+        }
+    }
+
+    app_config.service.pskt.source_addresses = vec![expected.clone()];
+    if app_config.service.pskt.change_address.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        app_config.service.pskt.change_address = Some(expected);
+    }
+
+    Ok(())
+}
+
 async fn run_test_pskt_mode(
     app_config: &igra_core::infrastructure::config::AppConfig,
     flow: &ServiceFlow,
+    network_mode: NetworkMode,
 ) -> Result<(), ThresholdError> {
     let runtime = &app_config.runtime;
-    let recipient = runtime.test_recipient.clone().unwrap_or_default();
+    let recipient = runtime.test_recipient.as_deref().map(str::trim).unwrap_or_default();
     let amount_sompi = runtime.test_amount_sompi.unwrap_or(0);
     let is_test_mode = runtime.test_mode;
 
     let test_outputs = if is_test_mode && !recipient.is_empty() && amount_sompi > 0 {
-        vec![PsktOutput { address: recipient.clone(), amount_sompi }]
+        vec![PsktOutput { address: recipient.to_string(), amount_sompi }]
     } else {
         Vec::new()
     };
@@ -267,10 +471,12 @@ async fn run_test_pskt_mode(
             match hd.key_type {
                 igra_core::infrastructure::config::KeyType::HdMnemonic => {
                     let key_ctx = flow.key_context();
-                    let wallet_secret = igra_core::application::pskt_signing::load_wallet_secret(&key_ctx).await?;
-                    let key_data = igra_core::application::pskt_signing::decrypt_mnemonics(hd, &wallet_secret)?;
-                    let payment_secret = igra_core::application::pskt_signing::load_payment_secret_optional(&key_ctx).await?;
-                    test_pskt_config.redeem_script_hex = derive_redeem_script_hex(hd, &key_data, Some(path), payment_secret.as_ref())?;
+                    let profile = igra_core::application::pskt_signing::active_profile(&app_config.service)?;
+                    let (key_data, payment_secret) =
+                        igra_core::application::pskt_signing::load_mnemonic_key_data_and_payment_secret_for_profile(&key_ctx, profile)
+                            .await?;
+                    test_pskt_config.redeem_script_hex =
+                        derive_redeem_script_hex(hd, std::slice::from_ref(&key_data), Some(path), payment_secret.as_ref())?;
                 }
                 igra_core::infrastructure::config::KeyType::RawPrivateKey => {
                     return Err(ThresholdError::ConfigError(
@@ -281,6 +487,13 @@ async fn run_test_pskt_mode(
         }
     }
     test_pskt_config.outputs = test_outputs;
+    if !test_pskt_config.redeem_script_hex.trim().is_empty() {
+        let expected = pskt_source_address_from_redeem_script_hex(network_mode, &test_pskt_config.redeem_script_hex)?;
+        test_pskt_config.source_addresses = vec![expected.clone()];
+        if test_pskt_config.change_address.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            test_pskt_config.change_address = Some(expected);
+        }
+    }
 
     let (_selection, build) = igra_service::service::build_pskt_via_rpc(&test_pskt_config).await?;
     let json = serde_json::to_string_pretty(&build.pskt)?;

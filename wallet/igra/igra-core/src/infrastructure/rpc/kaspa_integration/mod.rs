@@ -32,6 +32,13 @@ pub async fn build_pskt_with_client_seeded(
     selection_seed: Option<Hash32>,
 ) -> Result<(UtxoSelectionResult, PsktBuildResult), ThresholdError> {
     let redeem_script = hex::decode(&config.redeem_script_hex)?;
+    let has_sources = config.source_addresses.iter().any(|s| !s.trim().is_empty());
+    if !has_sources {
+        return Err(ThresholdError::ConfigError(
+            "missing service.pskt.source_addresses (it can be derived from service.pskt.redeem_script_hex + service.network; see docs/dev/pskt-source-address-derivation.md)"
+                .to_string(),
+        ));
+    }
 
     let params = PsktParams {
         source_addresses: config.source_addresses.clone(),

@@ -1,4 +1,4 @@
-use igra_core::domain::pskt::multisig::ordered_pubkeys_from_redeem_script;
+use igra_core::application::pskt_multisig::ordered_pubkeys_from_redeem_script;
 use igra_core::foundation::ThresholdError;
 use kaspa_consensus_core::config::params::{DEVNET_PARAMS, MAINNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
 use secp256k1::PublicKey;

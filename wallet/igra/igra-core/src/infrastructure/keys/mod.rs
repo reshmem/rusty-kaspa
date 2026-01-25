@@ -6,14 +6,18 @@ pub mod context;
 pub mod error;
 pub mod key_manager;
 pub mod panic_guard;
+pub mod passphrase;
 pub mod protected_memory;
 pub mod secret_store;
 pub mod types;
 
 pub use audit::{FileAuditLogger, KeyAuditLogger, NoopAuditLogger};
-pub use backends::{EnvSecretStore, FileSecretStore, LocalKeyManager};
+#[cfg(any(test, feature = "devnet-env-secrets"))]
+pub use backends::EnvSecretStore;
+pub use backends::{FileSecretStore, LocalKeyManager};
 pub use context::KeyManagerContext;
 pub use key_manager::KeyManager;
+pub use passphrase::prompt_hidden_input;
 pub use secret_store::{SecretBytes, SecretStore};
 pub use types::{KeyManagerCapabilities, KeyRef, RequestId, SecretName, SignatureScheme, SigningPayload};
 

@@ -5,7 +5,7 @@ use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{EventId, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::KeyType;
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
-use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
+use igra_core::infrastructure::keys::{KeyAuditLogger, KeyManager};
 use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -16,47 +16,36 @@ use igra_service::service::flow::ServiceFlow;
 use kaspa_bip32::{Language, Mnemonic};
 use kaspa_consensus_core::tx::{TransactionId as KaspaTransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::standard::pay_to_script_hash_script;
-use kaspa_wallet_core::encryption::{Encryptable, EncryptionKind};
-use kaspa_wallet_core::prelude::Secret;
+use kaspa_wallet_core::encryption::EncryptionKind;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Once;
 use std::time::Duration;
 
-const WALLET_SECRET: &str = "test-wallet-secret";
+use super::helpers::key_manager_with_signer_mnemonic;
+
 const LOOP_STARTUP_GRACE: Duration = Duration::from_millis(50);
 
-fn ensure_wallet_secret() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        std::env::set_var("KASPA_IGRA_WALLET_SECRET", WALLET_SECRET);
-    });
-}
+/// Timeout for waiting for event completion in tests (seconds).
+const TEST_COMPLETION_TIMEOUT_SECS: u64 = 3;
+
+/// CRDT GC interval for tests (seconds) - much shorter than production default.
+const TEST_CRDT_GC_INTERVAL_SECS: u64 = 5;
+
+/// CRDT GC TTL for tests (seconds) - keep events for short time.
+const TEST_CRDT_GC_TTL_SECS: u64 = 60;
+
+/// Short delay for checking completion status in tests (milliseconds).
+const TEST_COMPLETION_CHECK_DELAY_MS: u64 = 100;
 
 fn prv_key_data_from_mnemonic(phrase: &str) -> PrvKeyData {
     let mnemonic = Mnemonic::new(phrase, Language::English).expect("mnemonic");
-    PrvKeyData::try_new_from_mnemonic(mnemonic, None, EncryptionKind::XChaCha20Poly1305).expect("prv key data")
+    PrvKeyData::try_from_mnemonic(mnemonic, None, EncryptionKind::XChaCha20Poly1305, None).expect("prv key data")
 }
 
-fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, required_sigs: usize) -> PsktHdConfig {
-    let wallet_secret = Secret::from(WALLET_SECRET);
-
-    let mut ordered = Vec::with_capacity(all_key_data.len());
-    ordered.push(all_key_data[local_index].clone());
-    for (idx, kd) in all_key_data.iter().enumerate() {
-        if idx != local_index {
-            ordered.push(kd.clone());
-        }
-    }
-
-    let encrypted =
-        Encryptable::from(ordered).into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305).expect("encrypt mnemonics");
-
+fn hd_config_for_signer(required_sigs: usize) -> PsktHdConfig {
     PsktHdConfig {
         key_type: KeyType::HdMnemonic,
-        mnemonics: Vec::new(),
-        encrypted_mnemonics: Some(encrypted),
         xpubs: Vec::new(),
         required_sigs,
         derivation_path: Some("m/45'/111111'/0'/0/0".to_string()),
@@ -82,6 +71,11 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
         service,
         policy: GroupPolicy::default(),
         iroh: igra_core::infrastructure::config::IrohRuntimeConfig { network_id: 2, ..Default::default() },
+        runtime: igra_core::infrastructure::config::RuntimeConfig {
+            crdt_gc_interval_seconds: Some(TEST_CRDT_GC_INTERVAL_SECS),
+            crdt_gc_ttl_seconds: Some(TEST_CRDT_GC_TTL_SECS),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -101,8 +95,6 @@ fn signing_event(label: &str) -> SigningEventWire {
 
 #[tokio::test]
 async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdError> {
-    ensure_wallet_secret();
-
     let group_id = GroupId::new([9u8; 32]);
     let hub = Arc::new(MockHub::new());
 
@@ -114,16 +106,25 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     ];
     let key_data = mnemonics.iter().map(|m| prv_key_data_from_mnemonic(m)).collect::<Vec<_>>();
 
-    let pubkeys = key_data
+    let mut indexed_pubkeys = key_data
         .iter()
-        .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
+        .enumerate()
+        .map(|(idx, kd)| {
+            let pubkey = igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
-                .public_key()
+                .public_key();
+            (idx, pubkey)
         })
         .collect::<Vec<_>>();
-    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2)?;
+    indexed_pubkeys.sort_by_key(|(_, pk)| pk.serialize());
+    let ordered_pubkeys = indexed_pubkeys.iter().map(|(_, pk)| *pk).collect::<Vec<_>>();
+    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem.clone());
+
+    let mut profiles_by_signer = vec![String::new(); mnemonics.len()];
+    for (pos, (idx, _)) in indexed_pubkeys.iter().enumerate() {
+        profiles_by_signer[*idx] = format!("signer-{:02}", pos + 1);
+    }
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let spk = pay_to_script_hash_script(&redeem);
@@ -134,9 +135,9 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     });
 
     let transports = [
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-1"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[0].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[1].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[2].clone()), group_id, 2)),
     ];
 
     let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
@@ -146,17 +147,24 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     let mut configs = Vec::new();
     for i in 0..3usize {
         let mut app = build_config(redeem_script_hex.clone());
-        app.service.hd = Some(hd_config_for_signer(&key_data, i, 2));
+        app.service.active_profile = Some(profiles_by_signer[i].clone());
+        app.service.hd = Some(hd_config_for_signer(2));
         configs.push(Arc::new(app));
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager_0, key_audit_log_0): (Arc<dyn KeyManager>, Arc<dyn KeyAuditLogger>) =
+        key_manager_with_signer_mnemonic(&profiles_by_signer[0], mnemonics[0]);
+    let (key_manager_1, key_audit_log_1): (Arc<dyn KeyManager>, Arc<dyn KeyAuditLogger>) =
+        key_manager_with_signer_mnemonic(&profiles_by_signer[1], mnemonics[1]);
+    let (key_manager_2, key_audit_log_2): (Arc<dyn KeyManager>, Arc<dyn KeyAuditLogger>) =
+        key_manager_with_signer_mnemonic(&profiles_by_signer[2], mnemonics[2]);
+    let key_managers: [Arc<dyn KeyManager>; 3] = [key_manager_0.clone(), key_manager_1.clone(), key_manager_2.clone()];
+    let key_audit_logs: [Arc<dyn KeyAuditLogger>; 3] = [key_audit_log_0.clone(), key_audit_log_1.clone(), key_audit_log_2.clone()];
     let flows = [
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_0.clone(),
+            key_audit_log_0.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[0].clone(),
@@ -164,8 +172,8 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_1.clone(),
+            key_audit_log_1.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[1].clone(),
@@ -173,8 +181,8 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_2.clone(),
+            key_audit_log_2.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[2].clone(),
@@ -193,7 +201,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             transports[0].clone(),
             storages[0].clone(),
             phase_storages[0].clone(),
-            PeerId::from("signer-1"),
+            PeerId::from(profiles_by_signer[0].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -203,7 +211,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             transports[1].clone(),
             storages[1].clone(),
             phase_storages[1].clone(),
-            PeerId::from("signer-2"),
+            PeerId::from(profiles_by_signer[1].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -213,7 +221,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
             transports[2].clone(),
             storages[2].clone(),
             phase_storages[2].clone(),
-            PeerId::from("signer-3"),
+            PeerId::from(profiles_by_signer[2].clone()),
             group_id,
         )),
     ];
@@ -223,24 +231,25 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     // Ingest the same event on all 3 nodes (as if each had its own watcher).
     let mut event_id_hex = None;
     for i in 0..3usize {
+        let local_profile = profiles_by_signer[i].clone();
         let ctx = EventContext {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
             two_phase: two_phase.clone(),
-            local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
+            local_peer_id: PeerId::from(local_profile.clone()),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
             phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
-            key_manager: key_manager.clone(),
-            key_audit_log: key_audit_log.clone(),
+            key_manager: key_managers[i].clone(),
+            key_audit_log: key_audit_logs[i].clone(),
         };
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([1u8; 32]),
             external_request_id: Some(format!("req-{}", i + 1)),
-            coordinator_peer_id: format!("signer-{}", i + 1),
+            coordinator_peer_id: local_profile,
             expires_at_nanos: 0,
             event: signing_event("event-1"),
         };
@@ -254,7 +263,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
     let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Wait for a completion record to appear on all nodes.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS);
     loop {
         if tokio::time::Instant::now() > deadline {
             return Err(ThresholdError::Message("timeout waiting for CRDT completion".to_string()));
@@ -270,7 +279,7 @@ async fn crdt_three_signer_converges_and_completes() -> Result<(), ThresholdErro
         if done {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(TEST_COMPLETION_CHECK_DELAY_MS)).await;
     }
 
     // Stop loops.

@@ -13,7 +13,26 @@ use zeroize::Zeroize;
 
 const MAGIC: [u8; 4] = *b"ISEC";
 const VERSION: u8 = 1;
-const HEADER_LEN: usize = 4 + 1 + 12 + 32 + 24;
+const LEGACY_HEADER_LEN: usize = 4 + 1 + 12 + 32 + 24;
+const ROTATION_TAG: [u8; 4] = *b"RTM1";
+const HEADER_LEN: usize = LEGACY_HEADER_LEN + 4 + 8 + 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationMetadata {
+    pub created_at_nanos: u64,
+    pub last_rotated_at_nanos: u64,
+}
+
+impl RotationMetadata {
+    pub const fn new(created_at_nanos: u64, last_rotated_at_nanos: u64) -> Self {
+        Self { created_at_nanos, last_rotated_at_nanos }
+    }
+
+    pub fn age_days(&self, now_nanos: u64) -> u64 {
+        let age_nanos = now_nanos.saturating_sub(self.last_rotated_at_nanos);
+        age_nanos / crate::foundation::NANOS_PER_DAY
+    }
+}
 
 #[derive(Debug)]
 pub struct SecretFile {
@@ -21,6 +40,8 @@ pub struct SecretFile {
     pub kdf_params: Argon2Params,
     pub salt: [u8; 32],
     pub nonce: [u8; 24],
+    pub created_at_nanos: u64,
+    pub last_rotated_at_nanos: u64,
     pub ciphertext_and_tag: Vec<u8>,
 }
 
@@ -52,6 +73,16 @@ impl Drop for SecretMap {
 
 impl SecretFile {
     pub fn encrypt(secrets: &SecretMap, passphrase: &str, kdf_params: Argon2Params) -> Result<Self, ThresholdError> {
+        let now = crate::foundation::now_nanos();
+        Self::encrypt_with_metadata(secrets, passphrase, kdf_params, RotationMetadata::new(now, now))
+    }
+
+    pub fn encrypt_with_metadata(
+        secrets: &SecretMap,
+        passphrase: &str,
+        kdf_params: Argon2Params,
+        rotation: RotationMetadata,
+    ) -> Result<Self, ThresholdError> {
         let mut salt = [0u8; 32];
         let mut nonce = [0u8; 24];
         let mut rng = OsRng;
@@ -62,15 +93,35 @@ impl SecretFile {
         let plaintext = bincode::serialize(secrets)
             .map_err(|e| ThresholdError::secret_store_unavailable("file", format!("Failed to serialize secrets: {}", e)))?;
 
+        let header_aad = Self {
+            version: VERSION,
+            kdf_params: kdf_params.clone(),
+            salt,
+            nonce,
+            created_at_nanos: rotation.created_at_nanos,
+            last_rotated_at_nanos: rotation.last_rotated_at_nanos,
+            ciphertext_and_tag: Vec::new(),
+        }
+        .aad_bytes()?;
+
         let cipher = XChaCha20Poly1305::new(&key.into());
-        let ciphertext_and_tag =
-            cipher.encrypt(&nonce.into(), plaintext.as_ref()).map_err(|e| ThresholdError::SecretDecryptFailed {
+        let ciphertext_and_tag = cipher
+            .encrypt(&nonce.into(), chacha20poly1305::aead::Payload { msg: plaintext.as_ref(), aad: header_aad.as_ref() })
+            .map_err(|e| ThresholdError::SecretDecryptFailed {
                 backend: "file".to_string(),
                 details: format!("Encryption failed: {}", e),
                 source: None,
             })?;
 
-        Ok(Self { version: VERSION, kdf_params, salt, nonce, ciphertext_and_tag })
+        Ok(Self {
+            version: VERSION,
+            kdf_params,
+            salt,
+            nonce,
+            created_at_nanos: rotation.created_at_nanos,
+            last_rotated_at_nanos: rotation.last_rotated_at_nanos,
+            ciphertext_and_tag,
+        })
     }
 
     pub fn decrypt(&self, passphrase: &str) -> Result<SecretMap, ThresholdError> {
@@ -78,9 +129,14 @@ impl SecretFile {
             return Err(ThresholdError::secret_store_unavailable("file", format!("Unsupported file version: {}", self.version)));
         }
         let key = Self::derive_key(passphrase, &self.salt, &self.kdf_params)?;
+        let header_aad = self.aad_bytes()?;
         let cipher = XChaCha20Poly1305::new(&key.into());
-        let plaintext =
-            cipher.decrypt(&self.nonce.into(), self.ciphertext_and_tag.as_ref()).map_err(|e| ThresholdError::SecretDecryptFailed {
+        let plaintext = cipher
+            .decrypt(
+                &self.nonce.into(),
+                chacha20poly1305::aead::Payload { msg: self.ciphertext_and_tag.as_ref(), aad: header_aad.as_ref() },
+            )
+            .map_err(|e| ThresholdError::SecretDecryptFailed {
                 backend: "file".to_string(),
                 details: format!("Decryption failed (wrong passphrase?): {}", e),
                 source: None,
@@ -91,20 +147,13 @@ impl SecretFile {
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ThresholdError> {
-        let mut buf = Vec::with_capacity(HEADER_LEN + self.ciphertext_and_tag.len());
-        buf.extend_from_slice(&MAGIC);
-        buf.push(self.version);
-        buf.extend_from_slice(&self.kdf_params.m_cost.to_le_bytes());
-        buf.extend_from_slice(&self.kdf_params.t_cost.to_le_bytes());
-        buf.extend_from_slice(&self.kdf_params.p_cost.to_le_bytes());
-        buf.extend_from_slice(&self.salt);
-        buf.extend_from_slice(&self.nonce);
+        let mut buf = self.aad_bytes()?;
         buf.extend_from_slice(&self.ciphertext_and_tag);
         Ok(buf)
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, ThresholdError> {
-        if data.len() < HEADER_LEN {
+        if data.len() < LEGACY_HEADER_LEN {
             return Err(ThresholdError::secret_store_unavailable("file", "File too short to be valid secret file".to_string()));
         }
         if &data[0..4] != &MAGIC {
@@ -113,6 +162,11 @@ impl SecretFile {
         let version = data[4];
         if version != VERSION {
             return Err(ThresholdError::secret_store_unavailable("file", format!("Unsupported file version: {}", version)));
+        }
+        if data.len() < HEADER_LEN || data[73..77] != ROTATION_TAG {
+            return Err(ThresholdError::unsupported_secret_file_format(
+                "secrets file uses an older incompatible format; regenerate secrets.bin with secrets-admin init".to_string(),
+            ));
         }
         let m_cost = u32::from_le_bytes(
             data[5..9]
@@ -135,8 +189,37 @@ impl SecretFile {
         let nonce: [u8; 24] = data[49..73]
             .try_into()
             .map_err(|_| ThresholdError::secret_store_unavailable("file", "Invalid nonce bytes".to_string()))?;
-        let ciphertext_and_tag = data[73..].to_vec();
-        Ok(Self { version, kdf_params, salt, nonce, ciphertext_and_tag })
+        let created_at_nanos = u64::from_le_bytes(
+            data[77..85]
+                .try_into()
+                .map_err(|_| ThresholdError::secret_store_unavailable("file", "Invalid created_at_nanos bytes".to_string()))?,
+        );
+        let last_rotated_at_nanos = u64::from_le_bytes(
+            data[85..93]
+                .try_into()
+                .map_err(|_| ThresholdError::secret_store_unavailable("file", "Invalid last_rotated_at_nanos bytes".to_string()))?,
+        );
+        let ciphertext_and_tag = data[93..].to_vec();
+        Ok(Self { version, kdf_params, salt, nonce, created_at_nanos, last_rotated_at_nanos, ciphertext_and_tag })
+    }
+
+    pub const fn rotation_metadata(&self) -> RotationMetadata {
+        RotationMetadata::new(self.created_at_nanos, self.last_rotated_at_nanos)
+    }
+
+    fn aad_bytes(&self) -> Result<Vec<u8>, ThresholdError> {
+        let mut buf = Vec::with_capacity(HEADER_LEN);
+        buf.extend_from_slice(&MAGIC);
+        buf.push(self.version);
+        buf.extend_from_slice(&self.kdf_params.m_cost.to_le_bytes());
+        buf.extend_from_slice(&self.kdf_params.t_cost.to_le_bytes());
+        buf.extend_from_slice(&self.kdf_params.p_cost.to_le_bytes());
+        buf.extend_from_slice(&self.salt);
+        buf.extend_from_slice(&self.nonce);
+        buf.extend_from_slice(&ROTATION_TAG);
+        buf.extend_from_slice(&self.created_at_nanos.to_le_bytes());
+        buf.extend_from_slice(&self.last_rotated_at_nanos.to_le_bytes());
+        Ok(buf)
     }
 
     fn derive_key(passphrase: &str, salt: &[u8; 32], params: &Argon2Params) -> Result<[u8; 32], ThresholdError> {
@@ -189,5 +272,19 @@ mod tests {
         let file2 = SecretFile::from_bytes(&bytes).unwrap();
         let decrypted = file2.decrypt("pass").unwrap();
         assert_eq!(decrypted.secrets.get(&SecretName::new("test.key")).unwrap(), b"secret");
+    }
+
+    #[test]
+    fn test_legacy_header_rejected() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.push(VERSION);
+        bytes.extend_from_slice(&[0u8; 12]); // Argon2 params
+        bytes.extend_from_slice(&[0u8; 32]); // salt
+        bytes.extend_from_slice(&[0u8; 24]); // nonce
+        bytes.push(0u8); // ciphertext placeholder
+
+        let err = SecretFile::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, ThresholdError::UnsupportedSecretFileFormat { .. }));
     }
 }

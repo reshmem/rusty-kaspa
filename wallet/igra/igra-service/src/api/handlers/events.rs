@@ -1,7 +1,8 @@
 use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
+use crate::api::util::serde_helpers::{serialize_opt_with_0x_prefix, serialize_with_0x_prefix};
 use axum::http::HeaderMap;
-use igra_core::domain::coordination::EventPhase;
+use igra_core::application::EventPhase;
 use igra_core::foundation::{EventId, TransactionId, TxTemplateHash};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,8 @@ pub struct EventsStatusResult {
 
 #[derive(Debug, Serialize)]
 pub struct EventStatusItem {
-    pub event_id_hex: EventId,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub event_id: EventId,
     pub phase: String,
     pub round: u32,
     pub retry_count: u32,
@@ -34,10 +36,14 @@ pub struct EventStatusItem {
     pub age_seconds: u64,
     pub external_id: Option<String>,
     pub source: Option<String>,
-    pub active_template_hash_hex: Option<TxTemplateHash>,
-    pub canonical_hash_hex: Option<TxTemplateHash>,
-    pub own_proposal_hash_hex: Option<TxTemplateHash>,
-    pub completion_tx_id_hex: Option<TransactionId>,
+    #[serde(serialize_with = "serialize_opt_with_0x_prefix")]
+    pub active_template_hash: Option<TxTemplateHash>,
+    #[serde(serialize_with = "serialize_opt_with_0x_prefix")]
+    pub canonical_hash: Option<TxTemplateHash>,
+    #[serde(serialize_with = "serialize_opt_with_0x_prefix")]
+    pub own_proposal_hash: Option<TxTemplateHash>,
+    #[serde(serialize_with = "serialize_opt_with_0x_prefix")]
+    pub completion_tx_id: Option<TransactionId>,
 }
 
 pub async fn handle_events_status(
@@ -110,7 +116,7 @@ pub async fn handle_events_status(
         };
 
         unfinalized.push(EventStatusItem {
-            event_id_hex: event_id,
+            event_id,
             phase: phase_to_string(phase_state.phase),
             round: phase_state.round,
             retry_count: phase_state.retry_count,
@@ -118,14 +124,14 @@ pub async fn handle_events_status(
             age_seconds,
             external_id: event.as_ref().map(|e| e.audit.external_id_raw.clone()),
             source: event.as_ref().map(|e| format!("{:?}", e.event.source)),
-            active_template_hash_hex,
-            canonical_hash_hex: phase_state.canonical_hash,
-            own_proposal_hash_hex: phase_state.own_proposal_hash,
-            completion_tx_id_hex: completion.map(|c| c.tx_id),
+            active_template_hash: active_template_hash_hex,
+            canonical_hash: phase_state.canonical_hash,
+            own_proposal_hash: phase_state.own_proposal_hash,
+            completion_tx_id: completion.map(|c| c.tx_id),
         });
     }
 
-    unfinalized.sort_by(|a, b| b.age_seconds.cmp(&a.age_seconds).then_with(|| a.event_id_hex.cmp(&b.event_id_hex)));
+    unfinalized.sort_by(|a, b| b.age_seconds.cmp(&a.age_seconds).then_with(|| a.event_id.cmp(&b.event_id)));
     if unfinalized.len() > limit {
         unfinalized.truncate(limit);
     }

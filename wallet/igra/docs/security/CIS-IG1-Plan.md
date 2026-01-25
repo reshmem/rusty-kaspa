@@ -61,9 +61,9 @@ For each control area we capture:
   - `orchestration/devnet/scripts/run_local_devnet_with_avail_and_hyperlane.sh`
 - Architecture and service composition documented in:
   - `CODE-GUIDELINE.md`
-  - `docs/SOC2.md`
-  - `Observability.md`
-  - `Igra-Obeserver.md`
+  - `docs/security/soc2-compliance.md`
+  - `docs/ops/monitoring.md`
+  - `docs/ops/observer-setup.md`
 
 **Gaps**
 
@@ -228,8 +228,8 @@ For each control area we capture:
   - `igra-core/src/domain/audit/types.rs`
   - `igra-core/src/infrastructure/audit/mod.rs`
 - Observability design:
-  - `Observability.md`
-  - `Igra-Obeserver.md`
+  - `docs/ops/monitoring.md`
+  - `docs/ops/observer-setup.md`
 
 **Gaps**
 
@@ -439,4 +439,3 @@ Implementing the above yields straightforward SOC 2 evidence:
 - Backup/recovery runbooks → CC7.4/Availability
 - Change management / CI gates → CC8.*
 - Encryption and key management → CC6.7, confidentiality (when applicable)
-

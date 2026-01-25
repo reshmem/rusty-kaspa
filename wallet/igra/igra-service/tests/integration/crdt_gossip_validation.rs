@@ -3,7 +3,6 @@ use igra_core::domain::validation::{MessageVerifier, ValidationSource, Verificat
 use igra_core::domain::{CrdtSigningMaterial, Event, EventAuditData, SourceType, StoredEvent};
 use igra_core::foundation::{ExternalId, GroupId, PeerId, ThresholdError, TxTemplateHash};
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, ServiceConfig};
-use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
 use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -16,8 +15,16 @@ use igra_service::service::flow::ServiceFlow;
 use kaspa_consensus_core::tx::{TransactionId as KaspaTransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use secp256k1::SecretKey;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+
+use super::helpers::key_manager_with_secrets;
+
+/// CRDT GC interval for tests (seconds) - much shorter than production default.
+const TEST_CRDT_GC_INTERVAL_SECS: u64 = 5;
+
+/// CRDT GC TTL for tests (seconds) - keep events for short time.
+const TEST_CRDT_GC_TTL_SECS: u64 = 60;
 
 #[derive(Clone)]
 struct DenyAllVerifier;
@@ -106,8 +113,7 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
     let phase_storage: Arc<dyn PhaseStorage> = store.clone();
     let rpc = Arc::new(UnimplementedRpc::new());
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager, key_audit_log) = key_manager_with_secrets(HashMap::new());
     let flow = ServiceFlow::new_with_rpc(
         key_manager,
         key_audit_log,
@@ -130,7 +136,7 @@ async fn gossip_rejects_invalid_source_proof() -> Result<(), ThresholdError> {
     };
 
     let local_peer_id = PeerId::from("signer-1");
-    let ctx = igra_service::service::coordination::crdt_handler::CrdtHandlerContext {
+    let ctx = igra_service::service::coordination::crdt::CrdtHandlerContext {
         app_config: &AppConfig::default(),
         flow: &flow,
         transport: &transport,
@@ -182,10 +188,17 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
         },
         ..Default::default()
     };
-    let app_config = AppConfig { service, ..Default::default() };
+    let app_config = AppConfig {
+        service,
+        runtime: igra_core::infrastructure::config::RuntimeConfig {
+            crdt_gc_interval_seconds: Some(TEST_CRDT_GC_INTERVAL_SECS),
+            crdt_gc_ttl_seconds: Some(TEST_CRDT_GC_TTL_SECS),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager, key_audit_log) = key_manager_with_secrets(HashMap::new());
     let flow = ServiceFlow::new_with_rpc(
         key_manager,
         key_audit_log,
@@ -208,7 +221,7 @@ async fn gossip_rejects_tx_template_hash_mismatch() -> Result<(), ThresholdError
     };
 
     let local_peer_id = PeerId::from("signer-1");
-    let ctx = igra_service::service::coordination::crdt_handler::CrdtHandlerContext {
+    let ctx = igra_service::service::coordination::crdt::CrdtHandlerContext {
         app_config: &app_config,
         flow: &flow,
         transport: &transport,

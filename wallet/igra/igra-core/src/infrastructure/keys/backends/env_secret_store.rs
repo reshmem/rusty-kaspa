@@ -1,4 +1,24 @@
-//! Environment variable based secret store (devnet/CI only).
+#![cfg(any(test, feature = "devnet-env-secrets"))]
+//! Environment variable secret storage backend.
+//!
+//! ⚠️ **SECURITY WARNING: DEVNET/TEST ONLY**
+//!
+//! This backend reads secrets from environment variables, which are:
+//! - Visible in process listings (`ps auxe`)
+//! - Readable from `/proc/<pid>/environ` on Linux
+//! - Stored in shell history files (depending on how they were set)
+//! - Potentially propagated to child processes
+//!
+//! ## Build Configuration
+//!
+//! This module is only available when:
+//! - Building unit tests (`cfg(test)` for `igra-core`)
+//! - Building with `--features devnet-env-secrets`
+//!
+//! ## Production Usage
+//!
+//! **NEVER** enable `devnet-env-secrets` in production builds.
+//! Use `FileSecretStore` with encrypted at-rest storage instead.
 
 use crate::foundation::ThresholdError;
 use crate::infrastructure::keys::secret_store::{SecretBytes, SecretStore};
@@ -30,14 +50,6 @@ impl EnvSecretStore {
                         }
                     }
                 }
-            }
-        }
-
-        // Legacy compatibility: `KASPA_IGRA_WALLET_SECRET` -> `igra.hd.wallet_secret`
-        if let Ok(value) = std::env::var(crate::infrastructure::config::HD_WALLET_SECRET_ENV) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                cache.entry(SecretName::new("igra.hd.wallet_secret")).or_insert_with(|| SecretBytes::new(trimmed.as_bytes().to_vec()));
             }
         }
 

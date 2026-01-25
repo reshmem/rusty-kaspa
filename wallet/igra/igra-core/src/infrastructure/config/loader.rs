@@ -7,16 +7,15 @@
 //! 4. Environment variables (IGRA_* prefix)
 
 use crate::domain::{GroupConfig, GroupMetadata, GroupPolicy};
+use crate::foundation::MAX_CONFIG_FILE_SIZE_BYTES;
 use crate::foundation::{
     ThresholdError, DEFAULT_CRDT_GC_INTERVAL_SECS, DEFAULT_CRDT_GC_TTL_SECS, DEFAULT_NODE_RPC_URL, DEFAULT_POLL_SECS,
     DEFAULT_RPC_ADDR, DEFAULT_SESSION_EXPIRY_SECS, DEFAULT_SESSION_TIMEOUT_SECS, DEFAULT_SIG_OP_COUNT,
 };
-use crate::infrastructure::config::encryption::encrypt_mnemonics;
 use crate::infrastructure::config::types::AppConfig;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::value::{Dict, Map, Value};
 use figment::{Figment, Profile};
-use kaspa_wallet_core::prelude::Secret;
 use log::{debug, info};
 use serde::Deserialize;
 use std::path::Path;
@@ -91,7 +90,7 @@ pub fn load_config_with_profile(data_dir: &Path, profile: &str) -> Result<AppCon
 /// Load configuration from a specific file path.
 pub fn load_config_from_file(path: &Path, data_dir: &Path) -> Result<AppConfig, ThresholdError> {
     info!("loading configuration path={} data_dir={}", path.display(), data_dir.display());
-    let figment = figment_base(path, data_dir).merge(Env::prefixed(ENV_PREFIX).split("__"));
+    let figment = figment_base(path, data_dir)?.merge(Env::prefixed(ENV_PREFIX).split("__"));
     let raw: AppConfigRaw = figment.extract().map_err(|e| ThresholdError::ConfigError(format!("config extraction failed: {e}")))?;
     let mut config = convert_raw(raw)?;
     postprocess(&mut config, data_dir)?;
@@ -115,13 +114,14 @@ pub fn load_config_from_file_with_profile(path: &Path, data_dir: &Path, profile:
 
     // Extract once to access `profiles.<name>` overrides from the file.
     let base_config: AppConfigRaw =
-        figment_base(path, data_dir).extract().map_err(|e| ThresholdError::ConfigError(format!("config extraction failed: {e}")))?;
+        figment_base(path, data_dir)?.extract().map_err(|e| ThresholdError::ConfigError(format!("config extraction failed: {e}")))?;
 
     let overrides = profile_overrides(&base_config, profile)?;
 
     // Full extraction with overrides + env.
-    let figment =
-        figment_base(path, data_dir).merge(Serialized::from(overrides, Profile::Default)).merge(Env::prefixed(ENV_PREFIX).split("__"));
+    let figment = figment_base(path, data_dir)?
+        .merge(Serialized::from(overrides, Profile::Default))
+        .merge(Env::prefixed(ENV_PREFIX).split("__"));
 
     let raw: AppConfigRaw = figment
         .extract()
@@ -146,9 +146,19 @@ pub fn load_config_from_file_with_profile(path: &Path, data_dir: &Path, profile:
     Ok(config)
 }
 
-fn figment_base(path: &Path, data_dir: &Path) -> Figment {
+fn figment_base(path: &Path, data_dir: &Path) -> Result<Figment, ThresholdError> {
     let mut figment = Figment::new().merge(Serialized::defaults(AppConfig::default()));
     if path.exists() {
+        let metadata =
+            std::fs::metadata(path).map_err(|e| ThresholdError::ConfigError(format!("cannot read config file metadata: {}", e)))?;
+        if metadata.len() > MAX_CONFIG_FILE_SIZE_BYTES {
+            return Err(ThresholdError::ConfigError(format!(
+                "config file too large: {} bytes (max: {} bytes) path={}",
+                metadata.len(),
+                MAX_CONFIG_FILE_SIZE_BYTES,
+                path.display()
+            )));
+        }
         figment = figment.merge(Toml::file(path));
     } else {
         debug!("configuration file missing; using defaults and env only path={}", path.display());
@@ -156,7 +166,7 @@ fn figment_base(path: &Path, data_dir: &Path) -> Figment {
     // Always seed data_dir into service.data_dir if the config doesn't set it.
     // (Done post-extraction to keep the figment pipeline simple.)
     let _data_dir = data_dir;
-    figment
+    Ok(figment)
 }
 
 fn profile_overrides(config: &AppConfigRaw, profile: &str) -> Result<Dict, ThresholdError> {
@@ -209,6 +219,7 @@ fn postprocess(config: &mut AppConfig, data_dir: &Path) -> Result<(), ThresholdE
         config.service.pskt.node_rpc_url = config.service.node_rpc_url.clone();
     }
 
+    apply_pskt_source_address_defaults(config)?;
     normalize_pskt_change_address(config);
 
     if config.service.pskt.sig_op_count == 0 {
@@ -239,8 +250,76 @@ fn postprocess(config: &mut AppConfig, data_dir: &Path) -> Result<(), ThresholdE
         config.runtime.crdt_gc_ttl_seconds = Some(DEFAULT_CRDT_GC_TTL_SECS);
     }
 
-    encrypt_hd_config(config)?;
+    apply_legacy_iroh_env_overrides(config)?;
     normalize_group_config(config);
+
+    Ok(())
+}
+
+fn apply_pskt_source_address_defaults(config: &mut AppConfig) -> Result<(), ThresholdError> {
+    let has_sources = config.service.pskt.source_addresses.iter().any(|s| !s.trim().is_empty());
+    if has_sources {
+        return Ok(());
+    }
+    let redeem_hex = config.service.pskt.redeem_script_hex.trim();
+    if redeem_hex.is_empty() {
+        return Ok(());
+    }
+    let configured_network = config.service.network.as_deref().map(str::trim).unwrap_or("");
+    if configured_network.is_empty() {
+        return Ok(());
+    }
+    let mode = configured_network.parse::<crate::infrastructure::network_mode::NetworkMode>()?;
+    let derived = super::pskt_source_address_from_redeem_script_hex(mode, redeem_hex)?;
+    config.service.pskt.source_addresses = vec![derived];
+    Ok(())
+}
+
+fn apply_legacy_iroh_env_overrides(config: &mut AppConfig) -> Result<(), ThresholdError> {
+    fn parse_env_bool(name: &str) -> Result<Option<bool>, ThresholdError> {
+        let Ok(value) = std::env::var(name) else {
+            return Ok(None);
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(Some(true)),
+            "0" | "false" | "no" | "off" => Ok(Some(false)),
+            _ => Err(ThresholdError::ConfigError(format!("invalid env bool {name}='{trimmed}' (expected true/false/1/0)"))),
+        }
+    }
+
+    fn parse_env_string(name: &str) -> Option<String> {
+        std::env::var(name).ok().and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
+    // Compatibility with older scripts/docs that used KASPA_IGRA_* names (config overrides
+    // still prefer the Figment `IGRA_*` mapping).
+    if let Some(v) = parse_env_bool("KASPA_IGRA_IROH_DISCOVERY_ENABLE_PKARR")? {
+        config.iroh.discovery.enable_pkarr = v;
+    }
+    if let Some(v) = parse_env_bool("KASPA_IGRA_IROH_DISCOVERY_ENABLE_DNS")? {
+        config.iroh.discovery.enable_dns = v;
+    }
+    if let Some(domain) = parse_env_string("KASPA_IGRA_IROH_DISCOVERY_DNS_DOMAIN") {
+        config.iroh.discovery.dns_domain = Some(domain);
+    }
+
+    if let Some(v) = parse_env_bool("KASPA_IGRA_IROH_RELAY_ENABLE")? {
+        config.iroh.relay.enable = v;
+    }
+    if let Some(url) = parse_env_string("KASPA_IGRA_IROH_RELAY_CUSTOM_URL") {
+        config.iroh.relay.custom_url = Some(url);
+    }
 
     Ok(())
 }
@@ -332,31 +411,6 @@ fn convert_group_config(iroh_network_id: u8, policy: &GroupPolicy, group: GroupC
     })
 }
 
-fn encrypt_hd_config(config: &mut AppConfig) -> Result<(), ThresholdError> {
-    let Some(hd) = config.service.hd.as_mut() else {
-        return Ok(());
-    };
-
-    if hd.mnemonics.is_empty() {
-        return Ok(());
-    }
-
-    let env_store = crate::infrastructure::keys::EnvSecretStore::new();
-    let wallet_secret_bytes =
-        env_store.get_cached(&crate::infrastructure::keys::SecretName::new("igra.hd.wallet_secret")).ok_or_else(|| {
-            ThresholdError::ConfigError(format!(
-                "{} (or IGRA_SECRET__igra_hd__wallet_secret) is required to encrypt hd.mnemonics",
-                crate::infrastructure::config::HD_WALLET_SECRET_ENV
-            ))
-        })?;
-    let wallet_secret_str = String::from_utf8(wallet_secret_bytes.expose_owned())
-        .map_err(|err| ThresholdError::secret_decode_failed("igra.hd.wallet_secret", "utf8", format!("invalid UTF-8: {}", err)))?;
-    let wallet_secret = Secret::from(wallet_secret_str);
-    let encrypted = encrypt_mnemonics(std::mem::take(&mut hd.mnemonics), None, &wallet_secret)?;
-    hd.encrypted_mnemonics = Some(encrypted);
-    Ok(())
-}
-
 fn redact_url(url: &str) -> String {
     let Some(scheme_end) = url.find("://") else {
         return url.to_string();
@@ -372,6 +426,17 @@ fn redact_url(url: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_load_config_rejects_oversized_file() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("igra-config.toml");
+        let file = std::fs::File::create(&config_path).unwrap();
+        file.set_len(crate::foundation::MAX_CONFIG_FILE_SIZE_BYTES.saturating_add(1)).unwrap();
+
+        let err = load_config(dir.path()).expect_err("oversized config rejected");
+        assert!(err.to_string().contains("config file too large"));
+    }
 
     #[test]
     fn test_load_minimal_toml() {
@@ -446,6 +511,32 @@ mod tests {
             config.service.pskt.change_address.as_deref(),
             Some("kaspatest:qz0hz8jkn6ptfhq3v9fg3jhqw5jtsfgy62wan8dhe8fqkhdqsahswcpe2ch3m")
         );
+    }
+
+    #[test]
+    fn test_pskt_source_addresses_derived_when_missing() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("igra-config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [service]
+            network = "testnet"
+
+            [service.pskt]
+            redeem_script_hex = "00"
+        "#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path()).unwrap();
+        let expected = crate::infrastructure::config::pskt_source_address_from_redeem_script_hex(
+            crate::infrastructure::network_mode::NetworkMode::Testnet,
+            "00",
+        )
+        .unwrap();
+        assert_eq!(config.service.pskt.source_addresses, vec![expected.clone()]);
+        assert_eq!(config.service.pskt.change_address.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

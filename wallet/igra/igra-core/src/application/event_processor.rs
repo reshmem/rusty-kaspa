@@ -8,6 +8,7 @@ use crate::foundation::{PeerId, SessionId, ThresholdError};
 use crate::infrastructure::audit::{audit, AuditEvent};
 use crate::infrastructure::config::{PsktBuildConfig, PsktOutput, ServiceConfig};
 use crate::infrastructure::keys::{KeyAuditLogger, KeyManager, KeyManagerContext};
+use crate::infrastructure::network_mode::NetworkMode;
 use crate::infrastructure::rpc::NodeRpc;
 use crate::infrastructure::storage::phase::PhaseStorage;
 use crate::infrastructure::storage::Storage;
@@ -45,12 +46,18 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
     let SigningEventParams { session_id_hex, external_request_id, expires_at_nanos, event: wire, .. } = params;
     trace!("signing event wire={:?}", wire);
 
-    let expected_network = match ctx.config.pskt.source_addresses.first() {
-        Some(addr) => ExpectedNetwork::Prefix(Address::constructor(addr).prefix),
-        None => {
-            warn!("pskt.source_addresses is empty; skipping network prefix validation");
-            ExpectedNetwork::Any
-        }
+    let expected_network = if let Some(network) = ctx.config.network.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let mode = network.parse::<NetworkMode>()?;
+        ExpectedNetwork::Prefix(match mode {
+            NetworkMode::Mainnet => kaspa_addresses::Prefix::Mainnet,
+            NetworkMode::Testnet => kaspa_addresses::Prefix::Testnet,
+            NetworkMode::Devnet => kaspa_addresses::Prefix::Devnet,
+        })
+    } else if let Some(addr) = ctx.config.pskt.source_addresses.iter().find(|s| !s.trim().is_empty()) {
+        ExpectedNetwork::Prefix(Address::constructor(addr).prefix)
+    } else {
+        warn!("pskt.source_addresses is empty and service.network is not set; skipping network prefix validation");
+        ExpectedNetwork::Any
     };
 
     let crate::domain::event::SigningEventWire { external_id, source, destination_address, amount_sompi, metadata, proof_hex, proof } =
@@ -120,12 +127,13 @@ pub async fn submit_signing_event(ctx: &EventContext, params: SigningEventParams
             });
         }
         if matches!(report.source, ValidationSource::Hyperlane | ValidationSource::LayerZero) && report.validator_count == 0 {
-            let message = match report.source {
-                ValidationSource::Hyperlane => "no hyperlane validators configured",
-                ValidationSource::LayerZero => "no layerzero endpoint pubkeys configured",
-                ValidationSource::None => "no validators configured",
-            };
-            return Err(ThresholdError::ConfigError(message.to_string()));
+            return Err(ThresholdError::NoValidatorsConfigured {
+                validator_type: match report.source {
+                    ValidationSource::Hyperlane => "hyperlane".to_string(),
+                    ValidationSource::LayerZero => "layerzero".to_string(),
+                    ValidationSource::None => "unknown".to_string(),
+                },
+            });
         }
         return Err(ThresholdError::EventSignatureInvalid);
     }
@@ -297,12 +305,13 @@ pub async fn resolve_pskt_config(
         let hd = config.hd.as_ref().ok_or_else(|| ThresholdError::ConfigError("missing redeem script or HD config".to_string()))?;
         match hd.key_type {
             crate::infrastructure::config::KeyType::HdMnemonic => {
-                let wallet_secret = crate::application::pskt_signing::load_wallet_secret(key_context).await?;
-                let key_data = crate::application::pskt_signing::decrypt_mnemonics(hd, &wallet_secret)?;
-                let payment_secret = crate::application::pskt_signing::load_payment_secret_optional(key_context).await?;
+                let profile = crate::application::pskt_signing::active_profile(config)?;
+                let (key_data, payment_secret) =
+                    crate::application::pskt_signing::load_mnemonic_key_data_and_payment_secret_for_profile(key_context, profile)
+                        .await?;
                 pskt.redeem_script_hex = crate::infrastructure::config::derive_redeem_script_hex(
                     hd,
-                    &key_data,
+                    std::slice::from_ref(&key_data),
                     hd.derivation_path.as_deref(),
                     payment_secret.as_ref(),
                 )?;
@@ -313,6 +322,39 @@ pub async fn resolve_pskt_config(
                 ));
             }
         }
+    }
+
+    let provided = pskt.source_addresses.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    let configured_network = config.network.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    if provided.is_empty() {
+        let mode = configured_network
+            .ok_or_else(|| ThresholdError::ConfigError("service.network is required to derive pskt.source_addresses".to_string()))?
+            .parse::<NetworkMode>()?;
+        let expected_source =
+            crate::infrastructure::config::pskt_source_address_from_redeem_script_hex(mode, &pskt.redeem_script_hex)?;
+        pskt.source_addresses = vec![expected_source.clone()];
+        if pskt.change_address.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            pskt.change_address = Some(expected_source);
+        }
+    } else if let Some(network) = configured_network {
+        let mode = network.parse::<NetworkMode>()?;
+        let expected_source =
+            crate::infrastructure::config::pskt_source_address_from_redeem_script_hex(mode, &pskt.redeem_script_hex)?;
+        for addr in &provided {
+            if *addr != expected_source {
+                return Err(ThresholdError::ConfigError(format!(
+                    "service.pskt.source_addresses must match the address derived from service.pskt.redeem_script_hex; expected='{expected_source}' got='{addr}'"
+                )));
+            }
+        }
+        pskt.source_addresses = vec![expected_source.clone()];
+        if pskt.change_address.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            pskt.change_address = Some(expected_source);
+        }
+    } else if pskt.change_address.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        // Keep backwards compatibility for configs that still provide explicit source addresses.
+        pskt.change_address = Some(provided[0].to_string());
     }
 
     Ok(pskt)

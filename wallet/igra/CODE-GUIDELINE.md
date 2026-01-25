@@ -3072,8 +3072,1147 @@ cargo test -- --nocapture
 
 ---
 
-*Version: 1.4*
-*Last Updated: 2026-01-16*
+## 8. Security Guidelines 🔒
+
+**CRITICAL**: Igra handles private keys for real funds. Security is non-negotiable.
+
+This section covers security requirements for key management, network mode validation, and secure coding practices. **Every developer MUST read and follow these guidelines.**
+
+---
+
+### 8.1 Security Principles
+
+#### Core Security Tenets
+
+1. **Defense in Depth** - Multiple security layers, fail-safe defaults
+2. **Principle of Least Privilege** - Minimal permissions, explicit opt-ins
+3. **Fail Fast** - Reject invalid configurations at startup, not runtime
+4. **Audit Everything** - Log all security-relevant operations with context
+5. **Assume Breach** - Design to minimize damage if one component is compromised
+6. **Explicit is Better** - No magic remote connections, no implicit secrets
+
+#### Threat Model
+
+**What we protect against:**
+- ❌ Private key exposure (memory dumps, logs, config files)
+- ❌ Untrusted RPC endpoints (MITM, malicious nodes)
+- ❌ Configuration drift (test config in production)
+- ❌ Weak authentication (default passwords)
+- ❌ File permission errors (world-readable secrets)
+- ❌ Environment variable leaks (shell history, process listings)
+
+**Out of scope:**
+- Physical security of host machine
+- Network-level DDoS attacks
+- Cryptographic algorithm vulnerabilities
+
+---
+
+### 8.2 Network Mode Security Model
+
+Igra operates in three security modes with different validation strictness:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     NETWORK MODE HIERARCHY                        │
+└──────────────────────────────────────────────────────────────────┘
+
+MAINNET (Default) → MAXIMUM SECURITY
+───────────────────────────────────
+Real funds, zero tolerance for misconfigurations
+
+Validation: ALL ERRORS block startup
+Secrets: Encrypted file required, no env vars
+RPC: Local node required (--allow-remote-rpc to override)
+Logging: Info/Warn only, audit log required
+Permissions: 0600/0700 enforced
+
+
+TESTNET → MODERATE SECURITY
+────────────────────────────
+Pre-production testing, warnings allowed
+
+Validation: Warnings don't block startup
+Secrets: Encrypted file recommended (warns if not)
+RPC: Remote allowed with warnings
+Logging: Debug allowed, audit log recommended
+Permissions: Warns on group/world readable
+
+
+DEVNET → FLEXIBLE SECURITY
+───────────────────────────
+Local development, minimal restrictions
+
+Validation: Info only, no blocking
+Secrets: Env vars allowed
+RPC: Any configuration allowed
+Logging: Trace allowed, no audit required
+Permissions: Not enforced
+```
+
+#### Usage Example
+
+```bash
+# Production (default is --network mainnet)
+kaspa-threshold-service --config prod.toml
+
+# Testnet
+kaspa-threshold-service --config test.toml --network testnet
+
+# Local development
+kaspa-threshold-service --config dev.toml --network devnet
+```
+
+**⚠️ CRITICAL RULE**: Never use `--network devnet` or `--network testnet` with production configuration files or real funds.
+
+---
+
+### 8.3 Key Management Security
+
+#### 8.3.1 Secret Storage Rules
+
+**GOLDEN RULE**: Secrets MUST be encrypted at rest in production.
+
+```rust
+// ❌ BAD - Environment variable secrets in production
+IGRA_SECRET__igra_hd__wallet_secret=mypassword123
+KASPA_IGRA_WALLET_SECRET=changeme
+
+// ✅ GOOD - Encrypted file storage
+use_encrypted_secrets = true
+secrets_file = "/var/lib/igra/secrets.bin"
+```
+
+**Mainnet Requirements:**
+- ✅ `service.use_encrypted_secrets = true` in config
+- ✅ Secrets file must be `0600` permissions (owner read/write only)
+- ✅ Passphrase from `IGRA_SECRETS_PASSPHRASE` env var (never stdin in production)
+- ✅ Key audit log enabled and `0600` permissions
+- ❌ **FORBIDDEN**: `KASPA_IGRA_WALLET_SECRET` env var
+- ❌ **FORBIDDEN**: Default/test passphrases
+
+**File Permissions Validation:**
+```bash
+# Correct permissions
+chmod 600 /var/lib/igra/secrets.bin
+chmod 600 /var/lib/igra/config.toml
+chmod 600 /var/log/igra/key-audit.log
+chmod 700 /var/lib/igra/
+```
+
+**Check your setup:**
+```bash
+# Verify file permissions
+ls -la /var/lib/igra/secrets.bin
+# Should show: -rw------- (0600)
+
+# Verify directory permissions
+ls -ld /var/lib/igra/
+# Should show: drwx------ (0700)
+```
+
+---
+
+#### 8.3.2 Key Types and Lifecycle
+
+**Key Taxonomy:**
+
+```
+1. SIGNING KEYS (Kaspa Transactions)
+   ├── Mode A: HD Mnemonic (BIP32/BIP39)
+   │   └── Encrypted with wallet_secret
+   │   └── Optional payment_secret (25th word)
+   │   └── Derivation: m/45'/111110'/0'/0/n (mainnet)
+   │
+   └── Mode B: Raw Private Key
+       └── Direct 32-byte secp256k1 key
+       └── No derivation
+
+2. TRANSPORT KEYS (Iroh P2P)
+   └── Ed25519 signer seed
+   └── Used for peer authentication only
+
+3. HYPERLANE KEYS (Cross-Chain)
+   └── Validator keys (secp256k1)
+   └── EVM deployer key (devnet only)
+```
+
+**Key Generation Best Practices:**
+
+```rust
+// ✅ GOOD - Use proper key generation utilities
+// See: igra-core/src/bin/devnet-keygen.rs
+
+// Generate HD mnemonic
+let mnemonic = bip39::Mnemonic::generate(24)?; // 24 words for production
+let encrypted = encrypt_with_wallet_secret(&mnemonic, wallet_secret)?;
+
+// Generate raw key
+use rand::rngs::OsRng;
+use secp256k1::SecretKey;
+let secret_key = SecretKey::new(&mut OsRng);
+
+// ❌ BAD - Never hardcode keys
+const SECRET_KEY: &str = "0123456789abcdef..."; // NEVER DO THIS
+```
+
+**Key Rotation:**
+- 🟡 **TODO**: Key rotation not yet implemented
+- **Workaround**: Generate new keys and update multisig group configuration
+- **Future**: Automated key rotation with rollover period
+
+---
+
+#### 8.3.3 Memory Protection
+
+**In-Memory Secret Handling:**
+
+```rust
+// ✅ GOOD - Use SecretBytes wrapper (auto-zeroizes on drop)
+use crate::foundation::secret_bytes::SecretBytes;
+
+fn handle_secret(secret: SecretBytes) -> Result<()> {
+    // Use secret
+    let data = secret.as_bytes();
+    perform_signing(data)?;
+    Ok(())
+    // Secret automatically zeroized when dropped
+}
+
+// ❌ BAD - Plain Vec<u8> for secrets (may leak in memory)
+fn handle_secret(secret: Vec<u8>) -> Result<()> {
+    // No zeroization guarantee
+    perform_signing(&secret)?;
+    Ok(())
+}
+```
+
+**Memory Locking:**
+- ✅ Secrets locked in memory via `mlock()` (Unix)
+- ✅ `SecretBytes` type zeroizes on drop
+- ✅ No swapping of secret data to disk
+
+**Core Dumps:**
+- Mainnet: Core dumps MUST be disabled (`ulimit -c 0`)
+- Validation checks at startup
+
+---
+
+#### 8.3.4 Audit Logging Requirements
+
+**Key Usage Must Be Auditable:**
+
+```rust
+// ✅ GOOD - Comprehensive audit logging
+audit_log.log_sign_request(SignRequest {
+    request_id: external_request_id,
+    event_id,
+    tx_template_hash,
+    utxo_count: pskt.inputs.len(),
+    timestamp: Utc::now(),
+})?;
+
+// After signing
+audit_log.log_sign_success(SignSuccess {
+    request_id: external_request_id,
+    event_id,
+    signature: sig.serialize(),
+    timestamp: Utc::now(),
+})?;
+
+// ❌ BAD - No audit trail
+let sig = key_manager.sign(&msg)?;
+// No record of what was signed, when, or why
+```
+
+**Audit Log Format:**
+- One JSON line per operation
+- Include: `request_id`, `event_id`, `timestamp`, `operation`, `outcome`
+- File permissions: `0600`
+- Rotation: Daily or size-based
+
+**Mainnet Requirement:**
+```toml
+[key_audit]
+enabled = true
+log_path = "/var/log/igra/key-audit.log"
+rotation_size_mb = 100
+```
+
+**Grep Audit Example:**
+```bash
+# Find all signing operations for specific event
+grep '"event_id":"abc123"' /var/log/igra/key-audit.log
+
+# Count daily signing operations
+grep "$(date +%Y-%m-%d)" /var/log/igra/key-audit.log | wc -l
+```
+
+---
+
+### 8.4 RPC Security
+
+#### 8.4.1 Local-First RPC Model
+
+**CRITICAL SECURITY PRINCIPLE**: In mainnet, trust **only local Kaspa nodes** by default.
+
+**Why Local RPC Only?**
+- ✅ **Trust Boundary**: Your local node is under your control
+- ✅ **No MITM**: Localhost traffic cannot be intercepted
+- ✅ **Performance**: Lower latency, no network issues
+- ✅ **Reliability**: No external dependencies
+- ✅ **Auditability**: Your node, your validation rules
+
+**Remote RPC Risks:**
+- ❌ Malicious node can lie about UTXO state → **loss of funds**
+- ❌ MITM attack can modify transactions → **wrong recipient**
+- ❌ Network failures can cause timeouts → **stuck transactions**
+- ❌ Third-party can track your addresses → **privacy leak**
+- ❌ Rate limiting / censorship → **denial of service**
+
+#### 8.4.2 RPC Configuration Validation
+
+**Mainnet Enforcement:**
+
+```toml
+# ✅ GOOD - Local RPC endpoint
+[service]
+node_url = "grpc://127.0.0.1:16110"
+
+# ❌ BAD - Remote RPC (blocked by default in mainnet)
+[service]
+node_url = "grpc://remote-node.example.com:16110"
+# ERROR: Mainnet requires local Kaspa RPC endpoint
+```
+
+**Override for Remote RPC (NOT RECOMMENDED):**
+
+```bash
+# Explicitly allow remote RPC (requires TLS + auth)
+kaspa-threshold-service \
+  --config prod.toml \
+  --network mainnet \
+  --allow-remote-rpc
+
+# Config requirements when using remote RPC:
+[service]
+node_url = "grpcs://user:token@node.example.com:16110"  # Must be grpcs://
+#          ^^^^^^ Must use TLS
+#                 ^^^^^^^^^^^ Must include auth
+```
+
+**Validation Rules:**
+
+| Network Mode | RPC Location | TLS Required | Auth Required | Action if Remote |
+|--------------|--------------|--------------|---------------|------------------|
+| Mainnet | localhost | No | No | ✅ Allow |
+| Mainnet | remote | **YES** | **YES** | ❌ Block (unless `--allow-remote-rpc`) |
+| Testnet | localhost | No | No | ✅ Allow |
+| Testnet | remote | No | No | ⚠️ Warning |
+| Devnet | any | No | No | ✅ Allow |
+
+**Implementation Location:** `igra-core/src/infrastructure/network_mode/rules/rpc.rs`
+
+---
+
+#### 8.4.3 How to Verify RPC Security
+
+**Pre-Deployment Checklist:**
+
+```bash
+# 1. Verify your config file RPC endpoint
+grep node_url /var/lib/igra/config.toml
+# Should output: node_url = "grpc://127.0.0.1:16110"
+
+# 2. Test with --validate-only flag
+kaspa-threshold-service --config prod.toml --validate-only
+# Should show: ✓ Using local Kaspa RPC endpoint
+
+# 3. Verify kaspad is running locally
+ps aux | grep kaspad
+netstat -tlnp | grep 16110
+
+# 4. Test connection
+grpcurl -plaintext 127.0.0.1:16110 kaspa.kaspad.v1.KaspadService/GetInfo
+```
+
+**Common RPC Validation Errors:**
+
+```bash
+# Error: Remote RPC detected
+❌ [RpcEndpoint] mainnet requires local RPC by default (use --allow-remote-rpc to override)
+→ Solution: Change node_url to 127.0.0.1 or start local kaspad
+
+# Error: Remote RPC without TLS
+❌ [RpcEndpoint] mainnet remote RPC must use grpcs:// or https://
+→ Solution: Use grpcs:// scheme or run local node
+
+# Error: Remote RPC without auth
+❌ [RpcEndpoint] mainnet remote RPC requires authentication token
+→ Solution: Add user:pass@ in URL or use node_rpc_auth_token config
+```
+
+---
+
+### 8.5 Configuration Validation
+
+#### 8.5.1 Startup Validation Rules
+
+**Mainnet startup validation MUST pass before service starts.**
+
+**Validation Categories:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  MAINNET VALIDATION CHECKLIST                    │
+└─────────────────────────────────────────────────────────────────┘
+
+1. SECRETS MANAGEMENT
+   ✓ Encrypted secrets enabled
+   ✓ Secrets file exists and is 0600
+   ✓ No KASPA_IGRA_WALLET_SECRET env var
+   ✓ Audit log path configured
+   ✓ Audit log file is 0600 (if exists)
+
+2. RPC ENDPOINT
+   ✓ Local RPC endpoint (or --allow-remote-rpc with TLS+auth)
+   ✓ Kaspa node connectivity verified
+   ✓ Network ID matches expected (mainnet, testnet, devnet)
+
+3. CONFIGURATION
+   ✓ Explicit network="mainnet" in config
+   ✓ Address prefix matches network (kaspa: for mainnet)
+   ✓ Threshold m >= 2 (single-sig is insecure)
+   ✓ Group configuration present
+   ✓ Derivation path coin type matches network
+
+4. LOGGING
+   ✓ Log level is info/warn/error (no debug/trace)
+   ✓ KASPA_IGRA_LOG_DIR env var set
+   ✓ Log directory exists and is writable
+
+5. FILE PERMISSIONS (Unix)
+   ✓ Data directory is 0700
+   ✓ Config file is 0600
+   ✓ Secrets file is 0600
+   ✓ Audit log is 0600
+
+6. SYSTEM RESOURCES
+   ✓ Disk space >= 10 GB available
+   ✓ Memory >= 1 GB available
+   ✓ Open file limit >= 4096
+   ✓ Core dumps disabled (ulimit -c 0)
+   ✓ Not running as root
+
+7. REQUIRED SECRETS
+   ✓ All required secrets present in secret store
+```
+
+**Implementation:** `igra-core/src/infrastructure/network_mode/validator.rs`
+
+---
+
+#### 8.5.2 Configuration File Security
+
+**Config File Structure:**
+
+```toml
+# /var/lib/igra/config.toml (chmod 600)
+
+[service]
+network = "mainnet"  # MUST explicitly set for mainnet
+data_dir = "/var/lib/igra"
+node_url = "grpc://127.0.0.1:16110"
+use_encrypted_secrets = true
+
+[group]
+threshold_m = 2  # Mainnet requires m >= 2
+threshold_n = 3
+group_id = "0x1234..."
+
+[key_audit]
+enabled = true
+log_path = "/var/log/igra/key-audit.log"
+
+[logging]
+level = "info"  # Mainnet: must be info/warn/error (no debug/trace)
+```
+
+**Common Configuration Mistakes:**
+
+```toml
+# ❌ BAD - Missing explicit network
+[service]
+# network not set → defaults to mainnet silently
+# ERROR: Mainnet requires explicit network="mainnet" in config
+
+# ❌ BAD - Test data directory name in production
+[service]
+data_dir = "/var/lib/igra-devnet"  # Contains "devnet"
+# ERROR: Production data_dir path contains 'devnet' or 'test'
+
+# ❌ BAD - Single-signature (m=1) in mainnet
+[group]
+threshold_m = 1
+threshold_n = 1
+# ERROR: Mainnet requires threshold_m >= 2 (single-sig is insecure)
+
+# ❌ BAD - Debug logging in production
+[logging]
+level = "debug"
+# ERROR: Mainnet forbids debug/trace logging (use info/warn/error)
+```
+
+---
+
+#### 8.5.3 How to Test Your Configuration
+
+**Step 1: Static Validation**
+
+```bash
+# Validate configuration without starting service
+kaspa-threshold-service --config prod.toml --validate-only
+
+# Expected output:
+🔍 Security Validation Report (mainnet)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ NO ERRORS - Configuration is valid
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Static validation passed (no errors)
+```
+
+**Step 2: Check Validation Report**
+
+If validation fails, you'll see detailed errors:
+
+```bash
+🔍 Security Validation Report (mainnet)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❌ 3 ERROR(S) FOUND:
+
+  1. [Secrets] mainnet requires service.use_encrypted_secrets=true
+  2. [RpcEndpoint] mainnet requires local RPC endpoint (got: grpc://remote:16110)
+  3. [FilePermissions] secrets file has insecure permissions: 0644 (expected 0600)
+
+⚠️  1 WARNING(S):
+
+  1. [Configuration] data_dir path contains 'test' - ensure this is intentional
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ VALIDATION FAILED - Fix errors above before starting
+```
+
+**Step 3: Fix Issues and Revalidate**
+
+```bash
+# Fix permissions
+chmod 600 /var/lib/igra/secrets.bin
+chmod 600 /var/lib/igra/config.toml
+chmod 700 /var/lib/igra/
+
+# Update config
+vim /var/lib/igra/config.toml
+# Set: use_encrypted_secrets = true
+# Set: node_url = "grpc://127.0.0.1:16110"
+
+# Revalidate
+kaspa-threshold-service --config prod.toml --validate-only
+```
+
+---
+
+### 8.6 Logging Security
+
+#### 8.6.1 What NOT to Log
+
+**CRITICAL**: Never log sensitive data.
+
+```rust
+// ❌ BAD - Logging secrets
+info!("wallet secret: {}", wallet_secret); // NEVER
+debug!("private key: {:?}", secret_key);   // NEVER
+warn!("mnemonic: {}", mnemonic);           // NEVER
+error!("passphrase: {}", passphrase);      // NEVER
+
+// ❌ BAD - Logging full transaction details in production
+info!("signed tx: {:?}", signed_transaction); // May contain sensitive info
+
+// ✅ GOOD - Log only non-sensitive identifiers
+info!("signed event event_id={} tx_hash={}", event_id, tx_hash);
+debug!("signature produced event_id={} sig_len={}", event_id, sig.len());
+```
+
+**Safe to Log:**
+- ✅ Event IDs (hashes)
+- ✅ Transaction hashes
+- ✅ UTXO counts
+- ✅ Round numbers
+- ✅ Peer IDs
+- ✅ Timestamps
+- ✅ Success/failure status
+
+**NEVER Log:**
+- ❌ Private keys
+- ❌ Mnemonics
+- ❌ Passphrases
+- ❌ Secret bytes
+- ❌ Signatures (raw bytes - hash is OK)
+- ❌ Decryption keys
+
+---
+
+#### 8.6.2 Log Levels by Network Mode
+
+**Mainnet:**
+- ✅ Allowed: `info`, `warn`, `error`
+- ❌ Forbidden: `debug`, `trace`
+- **Reason**: Debug logs may accidentally leak sensitive data
+
+**Testnet:**
+- ✅ Allowed: All levels
+- ⚠️ Warning: `debug`/`trace` should not be used long-term
+
+**Devnet:**
+- ✅ Allowed: All levels including `trace`
+
+**Environment Variable:**
+```bash
+# Mainnet
+export RUST_LOG="info,kaspa_igra=info"
+
+# Testnet (debug for troubleshooting)
+export RUST_LOG="debug,kaspa_igra=debug"
+
+# Devnet (full trace for development)
+export RUST_LOG="trace,kaspa_igra=trace"
+```
+
+**Log Output Configuration:**
+```toml
+[logging]
+level = "info"  # Validated against network mode
+log_dir = "/var/log/igra"
+log_file_prefix = "igra"
+rotation_size_mb = 100
+rotation_keep_count = 10
+```
+
+---
+
+### 8.7 Security Code Review Checklist
+
+**Before submitting PR involving security-sensitive code:**
+
+#### 8.7.1 Secret Handling
+- [ ] No secrets in logs (even at `debug` level)
+- [ ] No secrets in error messages (use `event_id` or hash instead)
+- [ ] Secrets use `SecretBytes` wrapper (auto-zeroizes)
+- [ ] No `.clone()` on secrets unless necessary
+- [ ] No secrets in struct `Debug` implementations
+- [ ] No secrets in test fixtures (use dummy data)
+
+#### 8.7.2 Key Management
+- [ ] All key operations logged to audit log
+- [ ] Audit log entries include `request_id` and `event_id`
+- [ ] Key derivation uses correct network coin type
+- [ ] No hardcoded keys or mnemonics
+- [ ] Key generation uses `OsRng` (not pseudo-random)
+
+#### 8.7.3 RPC Calls
+- [ ] RPC endpoint validated by network mode rules
+- [ ] RPC errors don't leak sensitive info in logs
+- [ ] Timeouts configured for all RPC calls
+- [ ] RPC failures logged with context (`method`, `endpoint`)
+
+#### 8.7.4 Configuration
+- [ ] New config fields validated at startup
+- [ ] File paths validated (exist, permissions, not world-readable)
+- [ ] Defaults are secure (fail-safe)
+- [ ] Dangerous options require explicit opt-in
+
+#### 8.7.5 Network Mode
+- [ ] New validation rules added to appropriate `rules/*.rs` module
+- [ ] Validation respects `NetworkMode` strictness
+- [ ] Mainnet validations return `Error`, not `Warning`
+- [ ] Testnet validations return `Warning`, not `Error`
+- [ ] Devnet validations return `Ignore`
+
+---
+
+### 8.8 Common Security Mistakes
+
+#### Mistake #1: Logging Secrets at Debug Level
+
+```rust
+// ❌ BAD - Assuming debug logs are safe
+debug!("decrypted mnemonic: {}", mnemonic); // Still leaks to logs!
+
+// ✅ GOOD - Never log secrets at any level
+debug!("mnemonic decrypted successfully mnemonic_id={}", mnemonic_id);
+```
+
+**Why this is dangerous:**
+- Operators often enable debug logging to troubleshoot issues
+- Debug logs may be captured by log aggregation systems
+- Logs may be shared with support teams or stored long-term
+
+---
+
+#### Mistake #2: Exposing Secrets in Error Messages
+
+```rust
+// ❌ BAD - Secret in error message
+if !validate_passphrase(&passphrase) {
+    return Err(format!("invalid passphrase: {}", passphrase));
+}
+
+// ✅ GOOD - Generic error message
+if !validate_passphrase(&passphrase) {
+    return Err("invalid passphrase".to_string());
+}
+```
+
+---
+
+#### Mistake #3: Using Default/Weak Secrets
+
+```rust
+// ❌ BAD - Default/test secrets
+const DEFAULT_WALLET_SECRET: &str = "changeme";
+const TEST_MNEMONIC: &str = "abandon abandon abandon...";
+
+// ✅ GOOD - No defaults, require user to provide
+// Validation should reject known test mnemonics
+if mnemonic.phrase() == "abandon abandon abandon..." {
+    return Err("test mnemonic not allowed in mainnet");
+}
+```
+
+---
+
+#### Mistake #4: Insufficient Context in Audit Logs
+
+```rust
+// ❌ BAD - Audit log without context
+audit_log.log_sign_request(SignRequest {
+    timestamp: now,
+});
+
+// ✅ GOOD - Comprehensive context
+audit_log.log_sign_request(SignRequest {
+    request_id: external_request_id,
+    event_id,
+    tx_template_hash,
+    utxo_count: pskt.inputs.len(),
+    requester_peer_id,
+    timestamp: now,
+})?;
+```
+
+---
+
+#### Mistake #5: Trusting Remote RPC in Mainnet
+
+```rust
+// ❌ BAD - No validation of RPC endpoint
+let utxos = rpc_client.get_utxos(&addresses).await?;
+
+// ✅ GOOD - Validate RPC endpoint first (done at startup)
+// Trust only local RPC in mainnet
+// If remote RPC is allowed (--allow-remote-rpc), verify with multiple sources
+```
+
+---
+
+#### Mistake #6: File Permissions Not Validated
+
+```rust
+// ❌ BAD - Write secrets without checking permissions
+std::fs::write(&secrets_path, encrypted_data)?;
+
+// ✅ GOOD - Validate and set permissions
+let file = std::fs::File::create(&secrets_path)?;
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(&secrets_path, perms)?;
+}
+std::fs::write(&secrets_path, encrypted_data)?;
+```
+
+---
+
+#### Mistake #7: Skipping Validation in Tests
+
+```rust
+// ❌ BAD - Test bypasses security validation
+#[test]
+fn test_mainnet_signing() {
+    let config = AppConfig {
+        network: NetworkMode::Mainnet,
+        use_encrypted_secrets: false, // Invalid for mainnet!
+        node_url: "grpc://remote:16110", // Invalid for mainnet!
+    };
+    // Test runs without validation
+}
+
+// ✅ GOOD - Test includes validation
+#[test]
+fn test_mainnet_signing() {
+    let config = AppConfig {
+        network: NetworkMode::Mainnet,
+        use_encrypted_secrets: true,
+        node_url: "grpc://127.0.0.1:16110",
+    };
+
+    // Validate config first
+    let report = validate_static_config(&config, &ValidationContext::default());
+    assert!(!report.has_errors(), "Config must pass mainnet validation");
+
+    // Now test signing
+}
+```
+
+---
+
+### 8.9 Security Testing
+
+#### 8.9.1 Testing Network Mode Validation
+
+**Test File:** `igra-core/tests/unit/network_mode_security.rs`
+
+**Required Test Coverage:**
+
+```rust
+// Test mainnet validation
+#[test]
+fn test_mainnet_rejects_unencrypted_secrets() {
+    let config = config_builder()
+        .network(NetworkMode::Mainnet)
+        .use_encrypted_secrets(false)
+        .build();
+
+    let report = validate_static_config(&config, &ValidationContext::default());
+    assert!(report.has_errors());
+    assert!(report.errors().iter().any(|e|
+        e.message.contains("encrypted secrets")
+    ));
+}
+
+#[test]
+fn test_mainnet_rejects_remote_rpc_without_flag() {
+    let config = config_builder()
+        .network(NetworkMode::Mainnet)
+        .node_url("grpc://remote.example.com:16110")
+        .build();
+
+    let ctx = ValidationContext {
+        allow_remote_rpc: false,
+        ..Default::default()
+    };
+
+    let report = validate_static_config(&config, &ctx);
+    assert!(report.has_errors());
+}
+
+#[test]
+fn test_testnet_allows_with_warnings() {
+    let config = config_builder()
+        .network(NetworkMode::Testnet)
+        .use_encrypted_secrets(false)
+        .build();
+
+    let report = validate_static_config(&config, &ValidationContext::default());
+    assert!(!report.has_errors()); // Warnings OK
+    assert!(report.has_warnings());
+}
+
+#[test]
+fn test_devnet_allows_all() {
+    let config = config_builder()
+        .network(NetworkMode::Devnet)
+        .use_encrypted_secrets(false)
+        .node_url("grpc://anywhere:16110")
+        .build();
+
+    let report = validate_static_config(&config, &ValidationContext::default());
+    assert!(!report.has_errors());
+    assert!(!report.has_warnings());
+}
+```
+
+---
+
+#### 8.9.2 Testing Secret Handling
+
+**Test File:** `igra-core/tests/unit/key_management.rs`
+
+```rust
+#[test]
+fn test_secret_bytes_zeroizes_on_drop() {
+    let data = vec![0xAB; 32];
+    let ptr = data.as_ptr();
+
+    {
+        let secret = SecretBytes::from(data);
+        assert_eq!(secret.as_bytes().len(), 32);
+    } // secret dropped here
+
+    // Verify memory was zeroized (implementation-dependent)
+    // This is a simplified example
+}
+
+#[test]
+fn test_encrypted_secrets_require_passphrase() {
+    let store = FileSecretStore::new("/tmp/test-secrets.bin");
+    let result = store.load_without_passphrase();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("passphrase required"));
+}
+
+#[test]
+fn test_audit_log_contains_event_id() {
+    let audit_log = KeyAuditLog::new("/tmp/test-audit.log")?;
+
+    audit_log.log_sign_request(SignRequest {
+        request_id: "req-123".to_string(),
+        event_id: test_event_id(),
+        ..Default::default()
+    })?;
+
+    let contents = std::fs::read_to_string("/tmp/test-audit.log")?;
+    assert!(contents.contains("event_id"));
+    assert!(contents.contains("req-123"));
+}
+```
+
+---
+
+#### 8.9.3 Integration Testing with Security
+
+**Test File:** `igra-service/tests/integration/security_validation.rs`
+
+```rust
+#[tokio::test]
+async fn test_mainnet_startup_with_invalid_config_fails() {
+    let config = create_invalid_mainnet_config(); // Remote RPC, no encryption
+
+    let result = start_service_with_config(config).await;
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("mainnet requires"));
+}
+
+#[tokio::test]
+async fn test_mainnet_validate_only_mode() {
+    let config = create_valid_mainnet_config();
+
+    let result = validate_config_only(config).await;
+
+    assert!(result.is_ok());
+    // Service should not start, just validate
+}
+```
+
+---
+
+### 8.10 Security Verification Commands
+
+**Pre-Deployment Security Audit:**
+
+```bash
+#!/bin/bash
+# security-audit.sh - Run before production deployment
+
+echo "🔒 Igra Security Audit"
+echo "====================="
+echo
+
+# 1. Check for secrets in logs
+echo "1. Checking for secret leaks in logs..."
+if grep -rn "private.key\|mnemonic\|passphrase" igra-core/src igra-service/src | \
+   grep -E "info!\|warn!\|error!\|debug!\|trace!"; then
+    echo "❌ FAIL: Potential secret leak in logs"
+    exit 1
+fi
+echo "✅ PASS: No secret leaks found in log statements"
+
+# 2. Check for hardcoded secrets
+echo "2. Checking for hardcoded secrets..."
+if grep -rn "changeme\|password123\|secret.*=.*\".*\"" igra-core/src igra-service/src | \
+   grep -v "tests/\|examples/"; then
+    echo "❌ FAIL: Potential hardcoded secrets found"
+    exit 1
+fi
+echo "✅ PASS: No hardcoded secrets found"
+
+# 3. Check for unwrap/expect in key management code
+echo "3. Checking for panic risks in key management..."
+if grep -rn "\.unwrap()\|\.expect(" igra-core/src/foundation/hd.rs \
+                                      igra-core/src/infrastructure/secrets/ | \
+   grep -v "#\[cfg(test)\]"; then
+    echo "❌ FAIL: Found unwrap/expect in key management code"
+    exit 1
+fi
+echo "✅ PASS: No panic risks in key management"
+
+# 4. Check NetworkMode usage
+echo "4. Checking NetworkMode enforcement..."
+if ! grep -q "NetworkMode::Mainnet" igra-service/src/bin/kaspa-threshold-service.rs; then
+    echo "⚠️  WARNING: NetworkMode may not be enforced"
+fi
+echo "✅ PASS: NetworkMode enforcement present"
+
+# 5. Validate test configuration
+echo "5. Testing configuration validation..."
+cargo test -p igra-core network_mode_security --quiet
+if [ $? -ne 0 ]; then
+    echo "❌ FAIL: Network mode security tests failed"
+    exit 1
+fi
+echo "✅ PASS: All security tests passed"
+
+# 6. Check file permissions in config
+echo "6. Checking file permission validation..."
+if ! grep -q "0o600\|0o700" igra-core/src/infrastructure/network_mode/rules/filesystem.rs; then
+    echo "❌ FAIL: File permission validation missing"
+    exit 1
+fi
+echo "✅ PASS: File permission validation present"
+
+echo
+echo "🎉 Security audit completed successfully!"
+echo
+echo "Next steps:"
+echo "  1. Run: kaspa-threshold-service --config prod.toml --validate-only"
+echo "  2. Verify file permissions: ls -la /var/lib/igra/"
+echo "  3. Test with test data first: --network testnet"
+echo "  4. Monitor audit logs: tail -f /var/log/igra/key-audit.log"
+```
+
+**Run the audit:**
+```bash
+chmod +x security-audit.sh
+./security-audit.sh
+```
+
+---
+
+### 8.11 Production Deployment Security Checklist
+
+**Before deploying to mainnet:**
+
+#### 8.11.1 Configuration
+- [ ] `network = "mainnet"` explicitly set in config file
+- [ ] `use_encrypted_secrets = true` in config
+- [ ] Config file is `0600` permissions
+- [ ] `node_url` points to local Kaspa node (127.0.0.1)
+- [ ] Threshold `m >= 2` (multi-signature required)
+- [ ] Audit logging enabled with `key_audit.enabled = true`
+
+#### 8.11.2 File System
+- [ ] Data directory is `0700` permissions
+- [ ] Secrets file is `0600` permissions
+- [ ] Audit log file is `0600` permissions
+- [ ] Log directory exists and is writable
+- [ ] At least 10 GB disk space available
+
+#### 8.11.3 Secrets Management
+- [ ] Secrets generated using `devnet-keygen` or `secrets-admin`
+- [ ] Strong passphrase set (min 16 chars, mixed case, numbers, symbols)
+- [ ] Passphrase stored in secure location (password manager, HSM, KMS)
+- [ ] No `KASPA_IGRA_WALLET_SECRET` env var set
+- [ ] `IGRA_SECRETS_PASSPHRASE` env var set (not interactive stdin)
+- [ ] Test mnemonic (abandon abandon...) not used
+
+#### 8.11.4 System Configuration
+- [ ] Service not running as root
+- [ ] Core dumps disabled: `ulimit -c 0`
+- [ ] Open file limit >= 4096: `ulimit -n`
+- [ ] Memory >= 1 GB available
+- [ ] Local Kaspa node running and synced
+
+#### 8.11.5 Logging
+- [ ] Log level is `info` or `warn` (not `debug` or `trace`)
+- [ ] `KASPA_IGRA_LOG_DIR` env var set
+- [ ] Log rotation configured
+- [ ] Logs monitored (journalctl, systemd, etc.)
+
+#### 8.11.6 Validation
+- [ ] `--validate-only` mode passes without errors
+- [ ] Test run with `--network testnet` successful
+- [ ] Key audit log verified (check for sign operations)
+- [ ] Backup of config and secrets taken
+
+#### 8.11.7 Monitoring
+- [ ] Audit log monitoring set up (alerts on sign_failure)
+- [ ] System resource monitoring (disk, memory, CPU)
+- [ ] Kaspa node health monitoring
+- [ ] Service uptime monitoring
+
+**Final Command:**
+```bash
+# Run validation
+kaspa-threshold-service --config /var/lib/igra/config.toml --validate-only
+
+# If validation passes, start service
+systemctl start igra-threshold-service
+
+# Monitor logs
+journalctl -u igra-threshold-service -f
+```
+
+---
+
+### 8.12 Incident Response
+
+**If you suspect a security breach:**
+
+1. **Immediately stop the service**
+   ```bash
+   systemctl stop igra-threshold-service
+   ```
+
+2. **Review audit logs**
+   ```bash
+   # Check for unauthorized signing operations
+   grep "sign_request" /var/log/igra/key-audit.log | tail -100
+
+   # Check for sign failures
+   grep "sign_failure" /var/log/igra/key-audit.log
+   ```
+
+3. **Check file permissions**
+   ```bash
+   ls -la /var/lib/igra/
+   ls -la /var/lib/igra/secrets.bin
+   ```
+
+4. **Review system logs**
+   ```bash
+   journalctl -u igra-threshold-service --since "1 hour ago"
+   ```
+
+5. **If secrets may be compromised:**
+   - Generate new keys immediately
+   - Update multisig group configuration
+   - Rotate validator keys
+   - Notify other participants
+
+6. **Document the incident**
+   - What happened
+   - When it was detected
+   - What data may have been exposed
+   - What actions were taken
+
+---
+
+*Version: 1.5*
+*Last Updated: 2026-01-24*
 
 ---
 
@@ -3081,4 +4220,5 @@ cargo test -- --nocapture
 
 | Date | Version | Violations Found | Key Issues |
 |------|---------|------------------|------------|
+| 2026-01-24 | 1.5 | 220+ | Manual hex::encode in APIs (40+), duplicate parse functions (3), test code without guards (18+), security section added (8.0) |
 | 2026-01-16 | 1.4 | 198 | `ThresholdError::Message` overuse (154), magic numbers (30), missing context (11) |

@@ -1,7 +1,8 @@
-use crate::service::coordination::crdt_handler::{maybe_sign_and_broadcast, maybe_submit_and_broadcast, CrdtHandlerContext};
+use crate::service::coordination::crdt::{maybe_sign_and_broadcast, maybe_submit_and_broadcast, CrdtHandlerContext};
 use crate::service::flow::ServiceFlow;
-use igra_core::domain::coordination::{EventPhase, PhaseContext, ProposalBroadcast, TwoPhaseConfig};
-use igra_core::domain::{CrdtSigningMaterial, StoredEvent};
+use igra_core::application::{
+    selection, CrdtOperations, CrdtSigningMaterial, EventPhase, PhaseContext, ProposalBroadcast, StoredEvent, TwoPhaseConfig,
+};
 use igra_core::foundation::{EventId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::AppConfig;
 use igra_core::infrastructure::storage::phase::{PhaseStorage, StoreProposalResult};
@@ -91,7 +92,7 @@ fn validate_proposal(
     proposal.validate_structure().map_err(|e| ThresholdError::ProposalValidationFailed { details: e.to_string() })?;
     proposal.verify_hash_consistency().map_err(|e| ThresholdError::ProposalValidationFailed { details: e.to_string() })?;
 
-    let computed_event_id = igra_core::domain::hashes::compute_event_id(&proposal.signing_material.event);
+    let computed_event_id = CrdtOperations::compute_event_id(&proposal.signing_material.event);
     if computed_event_id != proposal.event_id {
         return Err(ThresholdError::ProposalEventIdMismatch {
             claimed: proposal.event_id.to_string(),
@@ -209,8 +210,7 @@ pub async fn try_commit_and_sign(ctx: &TwoPhaseHandlerContext<'_>, event_id: Eve
 
     let proposals = ctx.phase_storage.get_proposals(&event_id, round)?;
     let commit_quorum = usize::from(ctx.two_phase.commit_quorum);
-    let Some(canonical) = igra_core::domain::coordination::selection::select_canonical_proposal_for_commit(&proposals, commit_quorum)
-    else {
+    let Some(canonical) = selection::select_canonical_proposal_for_commit(&proposals, commit_quorum) else {
         return Ok(());
     };
 

@@ -7,7 +7,6 @@ use igra_core::domain::{GroupPolicy, SourceType};
 use igra_core::foundation::{EventId, GroupId, PeerId, ThresholdError};
 use igra_core::infrastructure::config::KeyType;
 use igra_core::infrastructure::config::{AppConfig, PsktBuildConfig, PsktHdConfig, ServiceConfig};
-use igra_core::infrastructure::keys::{EnvSecretStore, KeyAuditLogger, KeyManager, LocalKeyManager, NoopAuditLogger};
 use igra_core::infrastructure::rpc::{KaspaGrpcQueryClient, UnimplementedRpc, UtxoWithOutpoint};
 use igra_core::infrastructure::storage::memory::MemoryStorage;
 use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -21,48 +20,44 @@ use igra_service::service::flow::ServiceFlow;
 use kaspa_bip32::{Language, Mnemonic};
 use kaspa_consensus_core::tx::{TransactionId as KaspaTransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_txscript::standard::pay_to_script_hash_script;
-use kaspa_wallet_core::encryption::{Encryptable, EncryptionKind};
-use kaspa_wallet_core::prelude::Secret;
+use kaspa_wallet_core::encryption::EncryptionKind;
 use kaspa_wallet_core::storage::keydata::PrvKeyData;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
-const WALLET_SECRET: &str = "test-wallet-secret";
+use super::helpers::key_manager_with_signer_mnemonic;
 const LOOP_STARTUP_GRACE: Duration = Duration::from_millis(50);
 
-fn ensure_wallet_secret() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        std::env::set_var("KASPA_IGRA_WALLET_SECRET", WALLET_SECRET);
-    });
-}
+/// Timeout for waiting for event completion in tests (seconds).
+const TEST_COMPLETION_TIMEOUT_SECS: u64 = 3;
+
+/// Timeout for chaos/partition recovery tests (seconds).
+/// Slightly longer to account for network recovery delays.
+const TEST_PARTITION_RECOVERY_TIMEOUT_SECS: u64 = 5;
+
+/// CRDT GC interval for tests (seconds) - much shorter than production default.
+const TEST_CRDT_GC_INTERVAL_SECS: u64 = 5;
+
+/// CRDT GC TTL for tests (seconds) - keep events for short time.
+const TEST_CRDT_GC_TTL_SECS: u64 = 60;
+
+/// Short delay for message propagation in tests (milliseconds).
+const TEST_MESSAGE_PROPAGATION_DELAY_MS: u64 = 100;
+
+/// Delay for node restart stabilization in tests (milliseconds).
+const TEST_NODE_RESTART_DELAY_MS: u64 = 200;
 
 fn prv_key_data_from_mnemonic(phrase: &str) -> PrvKeyData {
     let mnemonic = Mnemonic::new(phrase, Language::English).expect("mnemonic");
-    PrvKeyData::try_new_from_mnemonic(mnemonic, None, EncryptionKind::XChaCha20Poly1305).expect("prv key data")
+    PrvKeyData::try_from_mnemonic(mnemonic, None, EncryptionKind::XChaCha20Poly1305, None).expect("prv key data")
 }
 
-fn hd_config_for_signer(all_key_data: &[PrvKeyData], local_index: usize, required_sigs: usize) -> PsktHdConfig {
-    let wallet_secret = Secret::from(WALLET_SECRET);
-
-    let mut ordered = Vec::with_capacity(all_key_data.len());
-    ordered.push(all_key_data[local_index].clone());
-    for (idx, kd) in all_key_data.iter().enumerate() {
-        if idx != local_index {
-            ordered.push(kd.clone());
-        }
-    }
-
-    let encrypted =
-        Encryptable::from(ordered).into_encrypted(&wallet_secret, EncryptionKind::XChaCha20Poly1305).expect("encrypt mnemonics");
-
+fn hd_config_for_signer(required_sigs: usize) -> PsktHdConfig {
     PsktHdConfig {
         key_type: KeyType::HdMnemonic,
-        mnemonics: Vec::new(),
-        encrypted_mnemonics: Some(encrypted),
         xpubs: Vec::new(),
         required_sigs,
         derivation_path: Some("m/45'/111111'/0'/0/0".to_string()),
@@ -88,6 +83,11 @@ fn build_config(redeem_script_hex: String) -> AppConfig {
         service,
         policy: GroupPolicy::default(),
         iroh: igra_core::infrastructure::config::IrohRuntimeConfig { network_id: 2, ..Default::default() },
+        runtime: igra_core::infrastructure::config::RuntimeConfig {
+            crdt_gc_interval_seconds: Some(TEST_CRDT_GC_INTERVAL_SECS),
+            crdt_gc_ttl_seconds: Some(TEST_CRDT_GC_TTL_SECS),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -121,7 +121,7 @@ async fn wait_for_all_complete(storages: &[Arc<dyn Storage>], event_id: &EventId
         if completed == storages.len() {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(TEST_MESSAGE_PROPAGATION_DELAY_MS)).await;
     }
 }
 
@@ -134,7 +134,7 @@ async fn wait_for_complete(storage: &Arc<dyn Storage>, event_id: &EventId, timeo
         if storage.get_event_completion(event_id)?.is_some() {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(TEST_MESSAGE_PROPAGATION_DELAY_MS)).await;
     }
 }
 
@@ -244,8 +244,6 @@ impl Transport for FilteringTransport {
 
 #[tokio::test]
 async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError> {
-    ensure_wallet_secret();
-
     let group_id = GroupId::new([11u8; 32]);
     let hub = Arc::new(MockHub::new());
 
@@ -256,16 +254,25 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     ];
     let key_data = mnemonics.iter().map(|m| prv_key_data_from_mnemonic(m)).collect::<Vec<_>>();
 
-    let pubkeys = key_data
+    let mut indexed_pubkeys = key_data
         .iter()
-        .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
+        .enumerate()
+        .map(|(idx, kd)| {
+            let pubkey = igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
-                .public_key()
+                .public_key();
+            (idx, pubkey)
         })
         .collect::<Vec<_>>();
-    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2)?;
+    indexed_pubkeys.sort_by_key(|(_, pk)| pk.serialize());
+    let ordered_pubkeys = indexed_pubkeys.iter().map(|(_, pk)| *pk).collect::<Vec<_>>();
+    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem.clone());
+
+    let mut profiles_by_signer = vec![String::new(); mnemonics.len()];
+    for (pos, (idx, _)) in indexed_pubkeys.iter().enumerate() {
+        profiles_by_signer[*idx] = format!("signer-{:02}", pos + 1);
+    }
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let spk = pay_to_script_hash_script(&redeem);
@@ -276,9 +283,9 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     });
 
     let raw_transports = [
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-1"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[0].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[1].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[2].clone()), group_id, 2)),
     ];
 
     let partitioned = Arc::new(AtomicBool::new(true));
@@ -286,7 +293,8 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
         raw_transports[0].clone(),
         raw_transports[1].clone(),
         Arc::new(
-            FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_partition_flag(partitioned.clone()),
+            FilteringTransport::new(raw_transports[2].clone(), PeerId::from(profiles_by_signer[2].clone()))
+                .with_partition_flag(partitioned.clone()),
         ),
     ];
 
@@ -297,17 +305,21 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     let mut configs = Vec::new();
     for i in 0..3usize {
         let mut app = build_config(redeem_script_hex.clone());
-        app.service.hd = Some(hd_config_for_signer(&key_data, i, 2));
+        app.service.active_profile = Some(profiles_by_signer[i].clone());
+        app.service.hd = Some(hd_config_for_signer(2));
         configs.push(Arc::new(app));
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager_0, key_audit_log_0) = key_manager_with_signer_mnemonic(&profiles_by_signer[0], mnemonics[0]);
+    let (key_manager_1, key_audit_log_1) = key_manager_with_signer_mnemonic(&profiles_by_signer[1], mnemonics[1]);
+    let (key_manager_2, key_audit_log_2) = key_manager_with_signer_mnemonic(&profiles_by_signer[2], mnemonics[2]);
+    let key_managers = [key_manager_0.clone(), key_manager_1.clone(), key_manager_2.clone()];
+    let key_audit_logs = [key_audit_log_0.clone(), key_audit_log_1.clone(), key_audit_log_2.clone()];
     let flows = [
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_0.clone(),
+            key_audit_log_0.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[0].clone(),
@@ -315,8 +327,8 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_1.clone(),
+            key_audit_log_1.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[1].clone(),
@@ -324,8 +336,8 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_2.clone(),
+            key_audit_log_2.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[2].clone(),
@@ -344,7 +356,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             transports[0].clone(),
             storages[0].clone(),
             phase_storages[0].clone(),
-            PeerId::from("signer-1"),
+            PeerId::from(profiles_by_signer[0].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -354,7 +366,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             transports[1].clone(),
             storages[1].clone(),
             phase_storages[1].clone(),
-            PeerId::from("signer-2"),
+            PeerId::from(profiles_by_signer[1].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -364,7 +376,7 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             transports[2].clone(),
             storages[2].clone(),
             phase_storages[2].clone(),
-            PeerId::from("signer-3"),
+            PeerId::from(profiles_by_signer[2].clone()),
             group_id,
         )),
     ];
@@ -378,20 +390,20 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
             two_phase: two_phase.clone(),
-            local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
+            local_peer_id: PeerId::from(profiles_by_signer[i].clone()),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
             phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
-            key_manager: key_manager.clone(),
-            key_audit_log: key_audit_log.clone(),
+            key_manager: key_managers[i].clone(),
+            key_audit_log: key_audit_logs[i].clone(),
         };
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([1u8; 32]),
             external_request_id: Some(format!("req-{}", i + 1)),
-            coordinator_peer_id: format!("signer-{}", i + 1),
+            coordinator_peer_id: profiles_by_signer[i].clone(),
             expires_at_nanos: 0,
             event: signing_event("event-partition"),
         };
@@ -404,7 +416,8 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Nodes 1 and 2 should complete without node 3 seeing their messages.
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], &event_id, Duration::from_secs(10)).await?;
+    wait_for_all_complete(&[storages[0].clone(), storages[1].clone()], &event_id, Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS))
+        .await?;
 
     // Node 3 is partitioned; it should not have completed the event yet.
     let phase3 = phase_storages[2].get_phase(&event_id)?.expect("phase state");
@@ -413,11 +426,14 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
     // Heal the partition and request sync.
     partitioned.store(false, Ordering::Relaxed);
     raw_transports[2]
-        .publish_state_sync_request(StateSyncRequest { event_ids: vec![event_id], requester_peer_id: PeerId::from("signer-3") })
+        .publish_state_sync_request(StateSyncRequest {
+            event_ids: vec![event_id],
+            requester_peer_id: PeerId::from(profiles_by_signer[2].clone()),
+        })
         .await?;
 
     // Node 3 catches up via response merge.
-    wait_for_complete(&storages[2].clone(), &event_id, Duration::from_secs(10)).await?;
+    wait_for_complete(&storages[2].clone(), &event_id, Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS)).await?;
 
     for handle in loops {
         handle.abort();
@@ -427,8 +443,6 @@ async fn chaos_partition_recovery_via_state_sync() -> Result<(), ThresholdError>
 
 #[tokio::test]
 async fn chaos_random_message_loss_eventual_convergence() -> Result<(), ThresholdError> {
-    ensure_wallet_secret();
-
     let group_id = GroupId::new([12u8; 32]);
     let hub = Arc::new(MockHub::new());
 
@@ -439,16 +453,25 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     ];
     let key_data = mnemonics.iter().map(|m| prv_key_data_from_mnemonic(m)).collect::<Vec<_>>();
 
-    let pubkeys = key_data
+    let mut indexed_pubkeys = key_data
         .iter()
-        .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
+        .enumerate()
+        .map(|(idx, kd)| {
+            let pubkey = igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
-                .public_key()
+                .public_key();
+            (idx, pubkey)
         })
         .collect::<Vec<_>>();
-    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2)?;
+    indexed_pubkeys.sort_by_key(|(_, pk)| pk.serialize());
+    let ordered_pubkeys = indexed_pubkeys.iter().map(|(_, pk)| *pk).collect::<Vec<_>>();
+    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem.clone());
+
+    let mut profiles_by_signer = vec![String::new(); mnemonics.len()];
+    for (pos, (idx, _)) in indexed_pubkeys.iter().enumerate() {
+        profiles_by_signer[*idx] = format!("signer-{:02}", pos + 1);
+    }
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let spk = pay_to_script_hash_script(&redeem);
@@ -459,16 +482,25 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     });
 
     let raw_transports = [
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-1"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[0].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[1].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[2].clone()), group_id, 2)),
     ];
 
     // Drop ~50% of EventStateBroadcast messages deterministically.
     let transports: [Arc<dyn Transport>; 3] = [
-        Arc::new(FilteringTransport::new(raw_transports[0].clone(), PeerId::from("signer-1")).with_drop_broadcast_threshold(128)),
-        Arc::new(FilteringTransport::new(raw_transports[1].clone(), PeerId::from("signer-2")).with_drop_broadcast_threshold(128)),
-        Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_drop_broadcast_threshold(128)),
+        Arc::new(
+            FilteringTransport::new(raw_transports[0].clone(), PeerId::from(profiles_by_signer[0].clone()))
+                .with_drop_broadcast_threshold(128),
+        ),
+        Arc::new(
+            FilteringTransport::new(raw_transports[1].clone(), PeerId::from(profiles_by_signer[1].clone()))
+                .with_drop_broadcast_threshold(128),
+        ),
+        Arc::new(
+            FilteringTransport::new(raw_transports[2].clone(), PeerId::from(profiles_by_signer[2].clone()))
+                .with_drop_broadcast_threshold(128),
+        ),
     ];
 
     let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
@@ -478,17 +510,21 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     let mut configs = Vec::new();
     for i in 0..3usize {
         let mut app = build_config(redeem_script_hex.clone());
-        app.service.hd = Some(hd_config_for_signer(&key_data, i, 2));
+        app.service.active_profile = Some(profiles_by_signer[i].clone());
+        app.service.hd = Some(hd_config_for_signer(2));
         configs.push(Arc::new(app));
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager_0, key_audit_log_0) = key_manager_with_signer_mnemonic(&profiles_by_signer[0], mnemonics[0]);
+    let (key_manager_1, key_audit_log_1) = key_manager_with_signer_mnemonic(&profiles_by_signer[1], mnemonics[1]);
+    let (key_manager_2, key_audit_log_2) = key_manager_with_signer_mnemonic(&profiles_by_signer[2], mnemonics[2]);
+    let key_managers = [key_manager_0.clone(), key_manager_1.clone(), key_manager_2.clone()];
+    let key_audit_logs = [key_audit_log_0.clone(), key_audit_log_1.clone(), key_audit_log_2.clone()];
     let flows = [
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_0.clone(),
+            key_audit_log_0.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[0].clone(),
@@ -496,8 +532,8 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_1.clone(),
+            key_audit_log_1.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[1].clone(),
@@ -505,8 +541,8 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_2.clone(),
+            key_audit_log_2.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[2].clone(),
@@ -525,7 +561,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             transports[0].clone(),
             storages[0].clone(),
             phase_storages[0].clone(),
-            PeerId::from("signer-1"),
+            PeerId::from(profiles_by_signer[0].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -535,7 +571,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             transports[1].clone(),
             storages[1].clone(),
             phase_storages[1].clone(),
-            PeerId::from("signer-2"),
+            PeerId::from(profiles_by_signer[1].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -545,7 +581,7 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             transports[2].clone(),
             storages[2].clone(),
             phase_storages[2].clone(),
-            PeerId::from("signer-3"),
+            PeerId::from(profiles_by_signer[2].clone()),
             group_id,
         )),
     ];
@@ -558,20 +594,20 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
             two_phase: two_phase.clone(),
-            local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
+            local_peer_id: PeerId::from(profiles_by_signer[i].clone()),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
             phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
-            key_manager: key_manager.clone(),
-            key_audit_log: key_audit_log.clone(),
+            key_manager: key_managers[i].clone(),
+            key_audit_log: key_audit_logs[i].clone(),
         };
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([2u8; 32]),
             external_request_id: Some(format!("req-{}", i + 1)),
-            coordinator_peer_id: format!("signer-{}", i + 1),
+            coordinator_peer_id: profiles_by_signer[i].clone(),
             expires_at_nanos: 0,
             event: signing_event("event-loss"),
         };
@@ -587,13 +623,17 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
     for (idx, raw) in raw_transports.iter().enumerate() {
         raw.publish_state_sync_request(StateSyncRequest {
             event_ids: vec![event_id],
-            requester_peer_id: PeerId::from(format!("signer-{}", idx + 1)),
+            requester_peer_id: PeerId::from(profiles_by_signer[idx].clone()),
         })
         .await?;
     }
 
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], &event_id, Duration::from_secs(15))
-        .await?;
+    wait_for_all_complete(
+        &[storages[0].clone(), storages[1].clone(), storages[2].clone()],
+        &event_id,
+        Duration::from_secs(TEST_PARTITION_RECOVERY_TIMEOUT_SECS),
+    )
+    .await?;
 
     for handle in loops {
         handle.abort();
@@ -603,8 +643,6 @@ async fn chaos_random_message_loss_eventual_convergence() -> Result<(), Threshol
 
 #[tokio::test]
 async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
-    ensure_wallet_secret();
-
     let group_id = GroupId::new([13u8; 32]);
     let hub = Arc::new(MockHub::new());
 
@@ -615,16 +653,25 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     ];
     let key_data = mnemonics.iter().map(|m| prv_key_data_from_mnemonic(m)).collect::<Vec<_>>();
 
-    let pubkeys = key_data
+    let mut indexed_pubkeys = key_data
         .iter()
-        .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
+        .enumerate()
+        .map(|(idx, kd)| {
+            let pubkey = igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
-                .public_key()
+                .public_key();
+            (idx, pubkey)
         })
         .collect::<Vec<_>>();
-    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2)?;
+    indexed_pubkeys.sort_by_key(|(_, pk)| pk.serialize());
+    let ordered_pubkeys = indexed_pubkeys.iter().map(|(_, pk)| *pk).collect::<Vec<_>>();
+    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem.clone());
+
+    let mut profiles_by_signer = vec![String::new(); mnemonics.len()];
+    for (pos, (idx, _)) in indexed_pubkeys.iter().enumerate() {
+        profiles_by_signer[*idx] = format!("signer-{:02}", pos + 1);
+    }
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let spk = pay_to_script_hash_script(&redeem);
@@ -635,14 +682,20 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     });
 
     let raw_transports = [
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-1"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[0].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[1].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[2].clone()), group_id, 2)),
     ];
     let transports: [Arc<dyn Transport>; 3] = [
-        Arc::new(FilteringTransport::new(raw_transports[0].clone(), PeerId::from("signer-1")).with_max_delay_ms(25)),
-        Arc::new(FilteringTransport::new(raw_transports[1].clone(), PeerId::from("signer-2")).with_max_delay_ms(25)),
-        Arc::new(FilteringTransport::new(raw_transports[2].clone(), PeerId::from("signer-3")).with_max_delay_ms(25)),
+        Arc::new(
+            FilteringTransport::new(raw_transports[0].clone(), PeerId::from(profiles_by_signer[0].clone())).with_max_delay_ms(25),
+        ),
+        Arc::new(
+            FilteringTransport::new(raw_transports[1].clone(), PeerId::from(profiles_by_signer[1].clone())).with_max_delay_ms(25),
+        ),
+        Arc::new(
+            FilteringTransport::new(raw_transports[2].clone(), PeerId::from(profiles_by_signer[2].clone())).with_max_delay_ms(25),
+        ),
     ];
 
     let stores = [Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new()), Arc::new(MemoryStorage::new())];
@@ -652,17 +705,21 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     let mut configs = Vec::new();
     for i in 0..3usize {
         let mut app = build_config(redeem_script_hex.clone());
-        app.service.hd = Some(hd_config_for_signer(&key_data, i, 2));
+        app.service.active_profile = Some(profiles_by_signer[i].clone());
+        app.service.hd = Some(hd_config_for_signer(2));
         configs.push(Arc::new(app));
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager_0, key_audit_log_0) = key_manager_with_signer_mnemonic(&profiles_by_signer[0], mnemonics[0]);
+    let (key_manager_1, key_audit_log_1) = key_manager_with_signer_mnemonic(&profiles_by_signer[1], mnemonics[1]);
+    let (key_manager_2, key_audit_log_2) = key_manager_with_signer_mnemonic(&profiles_by_signer[2], mnemonics[2]);
+    let key_managers = [key_manager_0.clone(), key_manager_1.clone(), key_manager_2.clone()];
+    let key_audit_logs = [key_audit_log_0.clone(), key_audit_log_1.clone(), key_audit_log_2.clone()];
     let flows = [
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_0.clone(),
+            key_audit_log_0.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[0].clone(),
@@ -670,8 +727,8 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_1.clone(),
+            key_audit_log_1.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[1].clone(),
@@ -679,8 +736,8 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             Arc::new(NoopVerifier),
         )?),
         Arc::new(ServiceFlow::new_with_rpc(
-            key_manager.clone(),
-            key_audit_log.clone(),
+            key_manager_2.clone(),
+            key_audit_log_2.clone(),
             rpc.clone(),
             kaspa_query.clone(),
             storages[2].clone(),
@@ -699,7 +756,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             transports[0].clone(),
             storages[0].clone(),
             phase_storages[0].clone(),
-            PeerId::from("signer-1"),
+            PeerId::from(profiles_by_signer[0].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -709,7 +766,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             transports[1].clone(),
             storages[1].clone(),
             phase_storages[1].clone(),
-            PeerId::from("signer-2"),
+            PeerId::from(profiles_by_signer[1].clone()),
             group_id,
         )),
         tokio::spawn(run_coordination_loop(
@@ -719,7 +776,7 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             transports[2].clone(),
             storages[2].clone(),
             phase_storages[2].clone(),
-            PeerId::from("signer-3"),
+            PeerId::from(profiles_by_signer[2].clone()),
             group_id,
         )),
     ];
@@ -732,20 +789,20 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
             config: configs[i].service.clone(),
             policy: configs[i].policy.clone(),
             two_phase: two_phase.clone(),
-            local_peer_id: PeerId::from(format!("signer-{}", i + 1)),
+            local_peer_id: PeerId::from(profiles_by_signer[i].clone()),
             message_verifier: Arc::new(NoopVerifier),
             storage: storages[i].clone(),
             phase_storage: phase_storages[i].clone(),
             transport: transports[i].clone(),
             rpc: rpc.clone(),
-            key_manager: key_manager.clone(),
-            key_audit_log: key_audit_log.clone(),
+            key_manager: key_managers[i].clone(),
+            key_audit_log: key_audit_logs[i].clone(),
         };
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([3u8; 32]),
             external_request_id: Some(format!("req-{}", i + 1)),
-            coordinator_peer_id: format!("signer-{}", i + 1),
+            coordinator_peer_id: profiles_by_signer[i].clone(),
             expires_at_nanos: 0,
             event: signing_event("event-reorder"),
         };
@@ -758,8 +815,12 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
     let event_id_bytes = hex::decode(event_id_hex).expect("event_id_hex");
     let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
-    wait_for_all_complete(&[storages[0].clone(), storages[1].clone(), storages[2].clone()], &event_id, Duration::from_secs(10))
-        .await?;
+    wait_for_all_complete(
+        &[storages[0].clone(), storages[1].clone(), storages[2].clone()],
+        &event_id,
+        Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS),
+    )
+    .await?;
 
     for handle in loops {
         handle.abort();
@@ -769,8 +830,6 @@ async fn chaos_out_of_order_delivery_converges() -> Result<(), ThresholdError> {
 
 #[tokio::test]
 async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdError> {
-    ensure_wallet_secret();
-
     let group_id = GroupId::new([14u8; 32]);
     let hub = Arc::new(MockHub::new());
 
@@ -781,16 +840,25 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     ];
     let key_data = mnemonics.iter().map(|m| prv_key_data_from_mnemonic(m)).collect::<Vec<_>>();
 
-    let pubkeys = key_data
+    let mut indexed_pubkeys = key_data
         .iter()
-        .map(|kd| {
-            igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
+        .enumerate()
+        .map(|(idx, kd)| {
+            let pubkey = igra_core::foundation::hd::derive_keypair_from_key_data(kd, Some("m/45'/111111'/0'/0/0"), None)
                 .expect("derive keypair")
-                .public_key()
+                .public_key();
+            (idx, pubkey)
         })
         .collect::<Vec<_>>();
-    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&pubkeys, 2)?;
+    indexed_pubkeys.sort_by_key(|(_, pk)| pk.serialize());
+    let ordered_pubkeys = indexed_pubkeys.iter().map(|(_, pk)| *pk).collect::<Vec<_>>();
+    let redeem = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
     let redeem_script_hex = hex::encode(redeem.clone());
+
+    let mut profiles_by_signer = vec![String::new(); mnemonics.len()];
+    for (pos, (idx, _)) in indexed_pubkeys.iter().enumerate() {
+        profiles_by_signer[*idx] = format!("signer-{:02}", pos + 1);
+    }
 
     let rpc = Arc::new(UnimplementedRpc::new());
     let spk = pay_to_script_hash_script(&redeem);
@@ -801,9 +869,9 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     });
 
     let raw_transports = [
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-1"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-2"), group_id, 2)),
-        Arc::new(MockTransport::new(hub.clone(), PeerId::from("signer-3"), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[0].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[1].clone()), group_id, 2)),
+        Arc::new(MockTransport::new(hub.clone(), PeerId::from(profiles_by_signer[2].clone()), group_id, 2)),
     ];
     let transports: [Arc<dyn Transport>; 3] = [raw_transports[0].clone(), raw_transports[1].clone(), raw_transports[2].clone()];
 
@@ -823,16 +891,20 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let mut configs = Vec::new();
     for i in 0..3usize {
         let mut app = build_config(redeem_script_hex.clone());
-        app.service.hd = Some(hd_config_for_signer(&key_data, i, 2));
+        app.service.active_profile = Some(profiles_by_signer[i].clone());
+        app.service.hd = Some(hd_config_for_signer(2));
         configs.push(Arc::new(app));
     }
 
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
-    let key_audit_log: Arc<dyn KeyAuditLogger> = Arc::new(NoopAuditLogger);
-    let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+    let (key_manager_0, key_audit_log_0) = key_manager_with_signer_mnemonic(&profiles_by_signer[0], mnemonics[0]);
+    let (key_manager_1, key_audit_log_1) = key_manager_with_signer_mnemonic(&profiles_by_signer[1], mnemonics[1]);
+    let (key_manager_2, key_audit_log_2) = key_manager_with_signer_mnemonic(&profiles_by_signer[2], mnemonics[2]);
+    let key_managers = [key_manager_0.clone(), key_manager_1.clone(), key_manager_2.clone()];
+    let key_audit_logs = [key_audit_log_0.clone(), key_audit_log_1.clone(), key_audit_log_2.clone()];
     let flow1 = Arc::new(ServiceFlow::new_with_rpc(
-        key_manager.clone(),
-        key_audit_log.clone(),
+        key_manager_0.clone(),
+        key_audit_log_0.clone(),
         rpc.clone(),
         kaspa_query.clone(),
         storage1.clone(),
@@ -840,8 +912,8 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         Arc::new(NoopVerifier),
     )?);
     let flow2 = Arc::new(ServiceFlow::new_with_rpc(
-        key_manager.clone(),
-        key_audit_log.clone(),
+        key_manager_1.clone(),
+        key_audit_log_1.clone(),
         rpc.clone(),
         kaspa_query.clone(),
         storage2.clone(),
@@ -849,8 +921,8 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         Arc::new(NoopVerifier),
     )?);
     let flow3 = Arc::new(ServiceFlow::new_with_rpc(
-        key_manager.clone(),
-        key_audit_log.clone(),
+        key_manager_2.clone(),
+        key_audit_log_2.clone(),
         rpc.clone(),
         kaspa_query.clone(),
         storage3.clone(),
@@ -867,7 +939,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         transports[0].clone(),
         storage1.clone(),
         phase1.clone(),
-        PeerId::from("signer-1"),
+        PeerId::from(profiles_by_signer[0].clone()),
         group_id,
     ));
     let loop2 = tokio::spawn(run_coordination_loop(
@@ -877,7 +949,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         transports[1].clone(),
         storage2.clone(),
         phase2.clone(),
-        PeerId::from("signer-2"),
+        PeerId::from(profiles_by_signer[1].clone()),
         group_id,
     ));
     let loop3 = tokio::spawn(run_coordination_loop(
@@ -887,7 +959,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         transports[2].clone(),
         storage3.clone(),
         phase3.clone(),
-        PeerId::from("signer-3"),
+        PeerId::from(profiles_by_signer[2].clone()),
         group_id,
     ));
 
@@ -906,20 +978,20 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
             config: configs[idx].service.clone(),
             policy: configs[idx].policy.clone(),
             two_phase: two_phase.clone(),
-            local_peer_id: PeerId::from(format!("signer-{}", idx + 1)),
+            local_peer_id: PeerId::from(profiles_by_signer[idx].clone()),
             message_verifier: Arc::new(NoopVerifier),
             storage,
             phase_storage,
             transport,
             rpc: rpc.clone(),
-            key_manager: key_manager.clone(),
-            key_audit_log: key_audit_log.clone(),
+            key_manager: key_managers[idx].clone(),
+            key_audit_log: key_audit_logs[idx].clone(),
         };
 
         let params = SigningEventParams {
             session_id_hex: hex::encode([4u8; 32]),
             external_request_id: Some(format!("req-{}", idx + 1)),
-            coordinator_peer_id: format!("signer-{}", idx + 1),
+            coordinator_peer_id: profiles_by_signer[idx].clone(),
             expires_at_nanos: 0,
             event: signing_event("event-restart"),
         };
@@ -932,7 +1004,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let event_id = EventId::new(event_id_bytes.as_slice().try_into().expect("hash32"));
 
     // Crash node 3 after it has had a chance to persist its local signature.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(TEST_NODE_RESTART_DELAY_MS)).await;
     loop3.abort();
     let _ = loop3.await;
     drop(flow3);
@@ -941,7 +1013,7 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     drop(store3);
 
     // Nodes 1 and 2 should complete.
-    wait_for_all_complete(&[storage1.clone(), storage2.clone()], &event_id, Duration::from_secs(10)).await?;
+    wait_for_all_complete(&[storage1.clone(), storage2.clone()], &event_id, Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS)).await?;
 
     // Restart node 3 with the same RocksDB dir.
     let store3_restarted = Arc::new(RocksStorage::open(node3_dir.path())?);
@@ -949,8 +1021,8 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
     let phase3_restarted: Arc<dyn PhaseStorage> = store3_restarted.clone();
     let kaspa_query = Arc::new(KaspaGrpcQueryClient::unimplemented());
     let flow3_restarted = Arc::new(ServiceFlow::new_with_rpc(
-        key_manager.clone(),
-        key_audit_log.clone(),
+        key_managers[2].clone(),
+        key_audit_logs[2].clone(),
         rpc.clone(),
         kaspa_query.clone(),
         storage3_restarted.clone(),
@@ -964,16 +1036,19 @@ async fn chaos_node_restart_persists_and_catches_up() -> Result<(), ThresholdErr
         transports[2].clone(),
         storage3_restarted.clone(),
         phase3_restarted.clone(),
-        PeerId::from("signer-3"),
+        PeerId::from(profiles_by_signer[2].clone()),
         group_id,
     ));
 
     // Trigger a sync round to pull completion/sigs.
     raw_transports[2]
-        .publish_state_sync_request(StateSyncRequest { event_ids: vec![event_id], requester_peer_id: PeerId::from("signer-3") })
+        .publish_state_sync_request(StateSyncRequest {
+            event_ids: vec![event_id],
+            requester_peer_id: PeerId::from(profiles_by_signer[2].clone()),
+        })
         .await?;
 
-    wait_for_complete(&storage3_restarted, &event_id, Duration::from_secs(10)).await?;
+    wait_for_complete(&storage3_restarted, &event_id, Duration::from_secs(TEST_COMPLETION_TIMEOUT_SECS)).await?;
 
     loop1.abort();
     loop2.abort();

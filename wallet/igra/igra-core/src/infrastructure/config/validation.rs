@@ -1,5 +1,7 @@
 use crate::domain::signing::SigningBackendKind;
+use crate::foundation::MAX_RELAY_URL_LENGTH;
 use crate::infrastructure::config::types::AppConfig;
+use crate::infrastructure::config::types::{IrohDiscoveryConfig, IrohRelayConfig};
 use kaspa_addresses::Address;
 
 const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
@@ -27,9 +29,7 @@ impl AppConfig {
         if let Some(hd) = self.service.hd.as_ref() {
             match hd.key_type {
                 crate::infrastructure::config::KeyType::HdMnemonic => {
-                    if hd.encrypted_mnemonics.is_none() {
-                        errors.push("service.hd.encrypted_mnemonics is required when service.hd.key_type=hd_mnemonic".to_string());
-                    }
+                    // Mnemonics are loaded from the SecretStore at runtime, not from config.
                 }
                 crate::infrastructure::config::KeyType::RawPrivateKey => {
                     if self.service.pskt.redeem_script_hex.trim().is_empty() {
@@ -134,12 +134,55 @@ impl AppConfig {
             errors.push(format!("invalid signing.backend '{}'; valid options: threshold, musig2, mpc", self.signing.backend));
         }
 
+        if let Err(err) = validate_iroh_discovery(&self.iroh.discovery) {
+            errors.push(format!("iroh.discovery validation: {}", err));
+        }
+        if let Err(err) = validate_iroh_relay(&self.iroh.relay) {
+            errors.push(format!("iroh.relay validation: {}", err));
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
     }
+}
+
+/// Validate `IrohDiscoveryConfig`.
+pub fn validate_iroh_discovery(config: &IrohDiscoveryConfig) -> Result<(), String> {
+    if config.enable_dns && config.dns_domain.as_ref().map_or(true, |d| d.trim().is_empty()) {
+        return Err("iroh.discovery.dns_domain required when enable_dns=true".to_string());
+    }
+
+    if let Some(domain) = &config.dns_domain {
+        let trimmed = domain.trim();
+        if trimmed.is_empty() {
+            return Err("iroh.discovery.dns_domain cannot be empty".to_string());
+        }
+        if trimmed.contains(' ') || !trimmed.contains('.') {
+            return Err(format!("invalid DNS domain format: {}", trimmed));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate `IrohRelayConfig`.
+pub fn validate_iroh_relay(config: &IrohRelayConfig) -> Result<(), String> {
+    if let Some(url) = &config.custom_url {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return Err("iroh.relay.custom_url cannot be empty".to_string());
+        }
+        if trimmed.len() > MAX_RELAY_URL_LENGTH {
+            return Err(format!("iroh.relay.custom_url too long: {} > {}", trimmed.len(), MAX_RELAY_URL_LENGTH));
+        }
+        if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            return Err(format!("iroh.relay.custom_url must start with http:// or https://: {}", trimmed));
+        }
+    }
+    Ok(())
 }
 
 fn extract_schnorr_multisig_pubkeys(redeem_script: &[u8]) -> Result<(usize, usize, Vec<Vec<u8>>), String> {

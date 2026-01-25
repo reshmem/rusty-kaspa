@@ -3,13 +3,11 @@
 # =============================================================================
 # Converted from: igra-devnet.ini
 # See CONFIG_REFACTORING.md for migration details
-#
-# Environment variable required:
-#   export KASPA_IGRA_WALLET_SECRET=<your-wallet-secret>
 
 [service]
 node_rpc_url = "grpc://kaspad:16110"
 data_dir = "/tmp/igra_devnet/igra"
+use_encrypted_secrets = true
 
 [service.pskt]
 source_addresses = [
@@ -24,11 +22,7 @@ fee_sompi = 0
 change_address = "kaspadev:qzczw26cseqrcrsneqlhlfv4v7a9pvrukvwaw22fst7czc8ef42wyhn89ljng"
 
 [service.hd]
-mnemonics = [
-    "similar spray talent card cradle word have rather invite target version ready unit laugh simple exact hotel blood fault hover country orbit dose accuse",
-    "network put there gesture rally language zebra tank elite current course rigid spike upgrade ring mouse admit gossip rate shoe bachelor process rare rally",
-    "lizard surround smoke begin imitate mercy inmate illness alley airport ramp gap toward focus blouse fee define odor orchard never dilemma mistake buffalo salute"
-]
+key_type = "hd_mnemonic"
 required_sigs = 2
 
 [runtime]
@@ -76,9 +70,9 @@ poll_secs = 10
 [iroh]
 group_id = "8873b213dc9f3425ead4f7bc06b827f931f30f761432b821e4d8c6509c444828"
 verifier_keys = [
-    "signer-1:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
-    "signer-2:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
-    "signer-3:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
+    "signer-01:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+    "signer-02:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+    "signer-03:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
 ]
 
 # =============================================================================
@@ -87,68 +81,59 @@ verifier_keys = [
 # Use --profile <name> to load a specific profile
 # Example: igra-service --profile signer-1
 
-[profiles.signer-1]
+[profiles.signer-01]
 
-[profiles.signer-1.service]
-data_dir = "/tmp/igra_devnet/igra/signer-1"
+[profiles.signer-01.service]
+data_dir = "/tmp/igra_devnet/igra/signer-01"
 
-[profiles.signer-1.hd]
-mnemonics = ["similar spray talent card cradle word have rather invite target version ready unit laugh simple exact hotel blood fault hover country orbit dose accuse"]
-
-[profiles.signer-1.rpc]
+[profiles.signer-01.rpc]
 addr = "0.0.0.0:8088"
 
-[profiles.signer-1.iroh]
-peer_id = "signer-1"
+[profiles.signer-01.iroh]
+peer_id = "signer-01"
 signer_seed_hex = "65a408b407328577681a004b5ac2b7df5f987434028bee297c6bd735ac5f5cb2"
 group_id = "8873b213dc9f3425ead4f7bc06b827f931f30f761432b821e4d8c6509c444828"
 network_id = 0
 verifier_keys = [
-    "signer-1:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
-    "signer-2:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
-    "signer-3:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
+    "signer-01:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+    "signer-02:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+    "signer-03:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
 ]
 
-[profiles.signer-2]
+[profiles.signer-02]
 
-[profiles.signer-2.service]
-data_dir = "/tmp/igra_devnet/igra/signer-2"
+[profiles.signer-02.service]
+data_dir = "/tmp/igra_devnet/igra/signer-02"
 
-[profiles.signer-2.hd]
-mnemonics = ["network put there gesture rally language zebra tank elite current course rigid spike upgrade ring mouse admit gossip rate shoe bachelor process rare rally"]
-
-[profiles.signer-2.rpc]
+[profiles.signer-02.rpc]
 addr = "0.0.0.0:8089"
 
-[profiles.signer-2.iroh]
-peer_id = "signer-2"
+[profiles.signer-02.iroh]
+peer_id = "signer-02"
 signer_seed_hex = "c34061c079b8fba669434f6cf4bb991dfaa778229cd56cc2ca9e324f65c12a59"
 group_id = "8873b213dc9f3425ead4f7bc06b827f931f30f761432b821e4d8c6509c444828"
 network_id = 0
 verifier_keys = [
-    "signer-1:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
-    "signer-2:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
-    "signer-3:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
+    "signer-01:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+    "signer-02:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+    "signer-03:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
 ]
 
-[profiles.signer-3]
+[profiles.signer-03]
 
-[profiles.signer-3.service]
-data_dir = "/tmp/igra_devnet/igra/signer-3"
+[profiles.signer-03.service]
+data_dir = "/tmp/igra_devnet/igra/signer-03"
 
-[profiles.signer-3.hd]
-mnemonics = ["lizard surround smoke begin imitate mercy inmate illness alley airport ramp gap toward focus blouse fee define odor orchard never dilemma mistake buffalo salute"]
-
-[profiles.signer-3.rpc]
+[profiles.signer-03.rpc]
 addr = "0.0.0.0:8090"
 
-[profiles.signer-3.iroh]
-peer_id = "signer-3"
+[profiles.signer-03.iroh]
+peer_id = "signer-03"
 signer_seed_hex = "a951310c4bede986d9fb7e72c083d0ba4a3e816327202922bacfe9cad8e31462"
 group_id = "8873b213dc9f3425ead4f7bc06b827f931f30f761432b821e4d8c6509c444828"
 network_id = 0
 verifier_keys = [
-    "signer-1:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
-    "signer-2:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
-    "signer-3:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
+    "signer-01:02b0272b5886403c0e13c83f7fa59567ba50b07cb31dd7294982fd8160f94d54e2",
+    "signer-02:03c87e7e5e2f1f16178a4e1306a9dd843c98813ee01ae7b15a81e347de6f1bc500",
+    "signer-03:03ccb183a76023af7c955a3855268ea4646d5213aec1cf01a65c9040a598701e54"
 ]

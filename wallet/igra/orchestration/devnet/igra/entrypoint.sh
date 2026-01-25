@@ -1,7 +1,12 @@
 #!/bin/sh
 set -e
 
-/app/kaspa-threshold-service &
+if [ -z "${IGRA_PROFILE:-}" ]; then
+  echo "ERROR: IGRA_PROFILE is required (e.g. signer-01)" >&2
+  exit 1
+fi
+
+/app/kaspa-threshold-service --network devnet --profile "${IGRA_PROFILE}" &
 SERVICE_PID=$!
 
 # Give the RPC server a moment to start

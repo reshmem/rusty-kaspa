@@ -1,5 +1,5 @@
-use igra_core::domain::pskt::multisig as pskt_multisig;
-use igra_core::domain::PartialSigRecord;
+use igra_core::application::pskt_multisig;
+use igra_core::application::PartialSigRecord;
 use igra_core::foundation::{EventId, PeerId, ThresholdError, TransactionId};
 use igra_core::infrastructure::config;
 use igra_core::infrastructure::rpc::GrpcNodeRpc;

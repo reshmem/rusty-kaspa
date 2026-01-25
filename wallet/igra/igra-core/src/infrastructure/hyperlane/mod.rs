@@ -1,3 +1,11 @@
+//! Hyperlane integration primitives.
+//!
+//! This module provides the types and helpers needed to:
+//! - Parse and validate Hyperlane metadata accompanying a message (`ProofMetadata`).
+//! - Verify ISM signatures for supported modes (currently `message_id_multisig` and
+//!   `merkle_root_multisig`).
+//! - Provide stable configuration and hashing (`ValidatorSet::config_hash`) for relayer queries.
+
 use blake3::Hasher;
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneMerkleProof;
 use hyperlane_core::Signable;
@@ -7,6 +15,7 @@ use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::foundation::parse_hex_fixed;
 use crate::foundation::ThresholdError;
 use crate::infrastructure::config::{HyperlaneConfig, HyperlaneDomainConfig, HyperlaneIsmMode};
 
@@ -197,9 +206,10 @@ impl IsmVerifier for ConfiguredIsm {
 }
 
 fn parse_pubkey(hex_str: &str) -> Result<PublicKey, ThresholdError> {
-    let bytes = crate::foundation::decode_hex_prefixed(hex_str)
-        .map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator hex".to_string()))?;
-    PublicKey::from_slice(&bytes).map_err(|_| ThresholdError::ConfigError("invalid hyperlane validator key".to_string()))
+    let bytes = parse_hex_fixed::<33>(hex_str)
+        .map_err(|err| ThresholdError::InvalidPublicKey { input: hex_str.to_string(), reason: err.to_string() })?;
+    PublicKey::from_slice(&bytes)
+        .map_err(|err| ThresholdError::InvalidPublicKey { input: hex_str.to_string(), reason: format!("secp256k1 error: {err}") })
 }
 
 fn recover_validator(secp: &Secp256k1<secp256k1::VerifyOnly>, sig: &Signature, msg: &Message) -> Result<PublicKey, String> {

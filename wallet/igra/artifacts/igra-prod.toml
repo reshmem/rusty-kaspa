@@ -3,9 +3,6 @@
 # =============================================================================
 # Converted from: igra-prod.ini
 # See CONFIG_REFACTORING.md for migration details
-#
-# Environment variable required:
-#   export KASPA_IGRA_WALLET_SECRET=<your-wallet-secret>
 
 [service]
 node_rpc_url = "grpc://127.0.0.1:16110"
@@ -23,7 +20,7 @@ fee_sompi = 0
 change_address = "<kaspanet:...>"
 
 [service.hd]
-mnemonics = []
+key_type = "raw_private_key"
 required_sigs = 2
 
 [runtime]
@@ -69,35 +66,32 @@ poll_secs = 10
 [iroh]
 group_id = "<hex>"
 verifier_keys = [
-    "signer-1:<pubkey>",
-    "signer-2:<pubkey>",
-    "signer-3:<pubkey>"
+    "signer-01:<pubkey>",
+    "signer-02:<pubkey>",
+    "signer-03:<pubkey>"
 ]
 
 # =============================================================================
 # Signer Profiles
 # =============================================================================
 # Use --profile <name> to load a specific profile
-# Example: igra-service --profile signer-1
+# Example: igra-service --profile signer-01
 
-[profiles.signer]
+[profiles.signer-01]
 
-[profiles.signer.service]
-data_dir = "/var/lib/igra/signer"
+[profiles.signer-01.service]
+data_dir = "/var/lib/igra/signer-01"
 
-[profiles.signer.hd]
-mnemonics = ["<24-word-bip39>"]
-
-[profiles.signer.rpc]
+[profiles.signer-01.rpc]
 addr = "0.0.0.0:8088"
 
-[profiles.signer.iroh]
-peer_id = "signer-1"
+[profiles.signer-01.iroh]
+peer_id = "signer-01"
 signer_seed_hex = "<hex>"
 group_id = "<hex>"
 network_id = 0
 verifier_keys = [
-    "signer-1:<pubkey>",
-    "signer-2:<pubkey>",
-    "signer-3:<pubkey>"
+    "signer-01:<pubkey>",
+    "signer-02:<pubkey>",
+    "signer-03:<pubkey>"
 ]

@@ -1,0 +1,46 @@
+[book]
+title = "Igra Threshold Signing Documentation"
+description = "Distributed threshold signature coordination for Kaspa blockchain"
+authors = ["Igra Core Team"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/kaspanet/rusty-kaspa"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/kaspanet/rusty-kaspa/edit/master/wallet/igra/book/src/{path}"
+site-url = "/rusty-kaspa/igra/"
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+
+[output.html.code]
+theme = "ayu"
+
+[output.html.fold]
+enable = true
+level = 2
+
+[output.html.print]
+enable = true
+
+[preprocessor.toc]
+command = "mdbook-toc"
+renderer = ["html"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+

@@ -20,13 +20,11 @@ fn load_from_profile(config_path: &Path, profile: &str) -> igra_core::infrastruc
     let _guard = lock_env();
     let data_dir = tempfile::tempdir().expect("temp data dir");
 
-    env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
     env::set_var("KASPA_DATA_DIR", data_dir.path());
 
     let config = load_app_config_from_profile_path(config_path, profile).expect("load app config");
 
     env::remove_var("KASPA_DATA_DIR");
-    env::remove_var("KASPA_IGRA_WALLET_SECRET");
 
     config
 }
@@ -87,7 +85,6 @@ fn test_config_loading_when_hd_key_type_default_then_hd_mnemonic() {
     let _guard = lock_env();
     let data_dir = tempfile::tempdir().expect("temp data dir");
     env::set_var("KASPA_DATA_DIR", data_dir.path());
-    env::set_var("KASPA_IGRA_WALLET_SECRET", "devnet-test-secret-please-change");
 
     let toml_path = data_dir.path().join("igra-hd.toml");
     std::fs::write(
@@ -98,7 +95,7 @@ fn test_config_loading_when_hd_key_type_default_then_hd_mnemonic() {
         [service.pskt]
         redeem_script_hex = "00"
         [service.hd]
-        mnemonics = ["abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"]
+        key_type = "hd_mnemonic"
         "#,
     )
     .expect("write toml");
@@ -108,18 +105,17 @@ fn test_config_loading_when_hd_key_type_default_then_hd_mnemonic() {
     assert_eq!(hd.key_type, KeyType::HdMnemonic);
 
     env::remove_var("KASPA_DATA_DIR");
-    env::remove_var("KASPA_IGRA_WALLET_SECRET");
 }
 
 #[test]
 fn test_config_loading_when_profiled_toml_then_group_id_matches_iroh_group_id() {
     let root = config_root();
     let signer_config = root.join("artifacts/igra-config.toml");
-    let expected_peers = ["signer-1", "signer-2", "signer-3"];
+    let expected_peers = ["signer-01", "signer-02", "signer-03"];
     let expected_verifiers = [
-        "signer-1:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-        "signer-2:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
-        "signer-3:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+        "signer-01:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "signer-02:29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+        "signer-03:2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
     ];
 
     for (idx, profile) in expected_peers.iter().enumerate() {

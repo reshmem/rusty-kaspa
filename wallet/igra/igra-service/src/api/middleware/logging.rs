@@ -9,6 +9,7 @@ use std::time::Instant;
 
 fn sanitize_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     const REDACT: &[&str] = &["authorization", "x-api-key", "cookie"];
+    const MAX_HEADER_VALUE_LEN: usize = 128;
     headers
         .iter()
         .map(|(name, value)| {
@@ -20,8 +21,8 @@ fn sanitize_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
                     .to_str()
                     .map(|s| {
                         let mut out = s.to_string();
-                        if out.len() > 128 {
-                            out.truncate(128);
+                        if out.len() > MAX_HEADER_VALUE_LEN {
+                            out.truncate(MAX_HEADER_VALUE_LEN);
                             out.push('…');
                         }
                         out

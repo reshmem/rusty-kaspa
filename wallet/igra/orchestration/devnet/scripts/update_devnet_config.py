@@ -213,8 +213,9 @@ def default_template_dict() -> dict:
                 "change_address": "",
             },
             "hd": {
-                "mnemonics": [],
+                "key_type": "hd_mnemonic",
                 "required_sigs": 2,
+                "xpubs": [],
             },
         },
         "runtime": {"test_mode": False, "session_timeout_seconds": 60},
@@ -374,7 +375,8 @@ def rewrite_toml(
         config["service"]["pskt"].pop("change_address", None)
 
     # Update hd section
-    config["service"]["hd"]["mnemonics"] = [s.get("mnemonic", "") for s in data.get("signers", []) if s.get("mnemonic")]
+    config["service"]["hd"].setdefault("key_type", "hd_mnemonic")
+    config["service"]["hd"].setdefault("xpubs", [])
     config["service"]["hd"]["required_sigs"] = 2
 
     # Update group section
@@ -437,7 +439,7 @@ def rewrite_toml(
     verifier_keys = [f"{s['profile']}:{s['iroh_pubkey_hex']}" for s in signers]
     config["iroh"]["verifier_keys"] = verifier_keys
 
-    port_map = {"signer-1": 9101, "signer-2": 9102, "signer-3": 9103}
+    port_map = {"signer-01": 9101, "signer-02": 9102, "signer-03": 9103}
     config["iroh"]["bootstrap"] = list(endpoint_map.values())
     config["iroh"]["bootstrap_addrs"] = [f"{endpoint_map[p]}@127.0.0.1:{port_map[p]}" for p in endpoint_map if p in port_map]
 
@@ -455,9 +457,6 @@ def rewrite_toml(
 
         profile_service = {
             "data_dir": str(igra_data / profile),
-            "hd": {
-                "mnemonics": [signer.get("mnemonic", "")] if signer.get("mnemonic") else [],
-            },
         }
 
         config["profiles"][profile] = {

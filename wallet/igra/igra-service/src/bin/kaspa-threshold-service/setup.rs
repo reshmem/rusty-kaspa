@@ -1,13 +1,13 @@
 use ed25519_dalek::VerifyingKey;
-use igra_core::domain::group_id::verify_group_id;
+use igra_core::application::group_id::verify_group_id;
 use igra_core::foundation::{parse_hex_32bytes, parse_required, GroupId, PeerId, ThresholdError};
-use igra_core::infrastructure::config::AppConfig;
+use igra_core::infrastructure::config::{AppConfig, IrohDiscoveryConfig, IrohRelayConfig};
 use igra_core::infrastructure::keys::{
-    EnvSecretStore, FileAuditLogger, FileSecretStore, KeyAuditLogger, KeyManager, KeyManagerContext, LocalKeyManager, SecretName,
-    SecretStore,
+    FileAuditLogger, FileSecretStore, KeyAuditLogger, KeyManager, KeyManagerContext, LocalKeyManager, SecretName, SecretStore,
 };
 use igra_core::infrastructure::storage::rocks::RocksStorage;
 use igra_core::infrastructure::transport::identity::{Ed25519Signer, StaticEd25519Verifier};
+use igra_core::infrastructure::transport::iroh::discovery;
 use log::{info, warn};
 use rand::RngCore;
 use std::collections::HashMap;
@@ -17,6 +17,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use iroh_base::{EndpointAddr, EndpointId, SecretKey as IrohSecretKey, TransportAddr};
+
+#[cfg(feature = "devnet-env-secrets")]
+use igra_core::infrastructure::keys::EnvSecretStore;
 
 pub fn init_logging(level: &str) -> Result<(), ThresholdError> {
     let log_dir = std::env::var("KASPA_IGRA_LOG_DIR").ok().filter(|s| !s.trim().is_empty());
@@ -49,14 +52,10 @@ pub fn load_app_config_profile(path: &std::path::Path, profile: &str) -> Result<
 }
 
 pub fn validate_startup_config(app_config: &AppConfig) -> bool {
-    let missing_source_addresses = app_config.service.pskt.source_addresses.is_empty();
     let missing_redeem_script = app_config.service.pskt.redeem_script_hex.trim().is_empty();
     let missing_hd = app_config.service.hd.is_none();
-    if missing_source_addresses || (missing_redeem_script && missing_hd) {
-        warn!(
-            "startup config missing required PSKT fields missing_source_addresses={} missing_redeem_script={} missing_hd={}",
-            missing_source_addresses, missing_redeem_script, missing_hd
-        );
+    if missing_redeem_script && missing_hd {
+        warn!("startup config missing required PSKT fields missing_redeem_script={} missing_hd={}", missing_redeem_script, missing_hd);
         return false;
     }
     true
@@ -64,7 +63,7 @@ pub fn validate_startup_config(app_config: &AppConfig) -> bool {
 
 pub fn warn_test_mode(app_config: &AppConfig) {
     let runtime = &app_config.runtime;
-    let recipient = runtime.test_recipient.clone().unwrap_or_default();
+    let recipient = runtime.test_recipient.as_deref().map(str::trim).unwrap_or_default();
     let amount_sompi = runtime.test_amount_sompi.unwrap_or(0);
     if !runtime.test_mode && (recipient.is_empty() || amount_sompi == 0) {
         warn!("service expects signing events to supply recipient+amount; enable runtime.test_mode in the TOML config to use test overrides");
@@ -73,13 +72,15 @@ pub fn warn_test_mode(app_config: &AppConfig) {
 
 pub fn init_storage(data_dir: &str, allow_schema_wipe: bool) -> Result<Arc<RocksStorage>, ThresholdError> {
     info!("initializing storage data_dir={} allow_schema_wipe={}", data_dir, allow_schema_wipe);
-    RocksStorage::open_in_dir_with_options(data_dir, allow_schema_wipe)
-        .map(Arc::new)
-        .map_err(|err| ThresholdError::Message(format!("rocksdb open error: {}", err)))
+    RocksStorage::open_in_dir_with_options(data_dir, allow_schema_wipe).map(Arc::new).map_err(|err| ThresholdError::RocksDBOpenError {
+        details: format!("failed to open RocksDB in data_dir={}", data_dir),
+        source: Some(Box::new(err)),
+    })
 }
 
 pub async fn setup_key_manager(
     service_config: &igra_core::infrastructure::config::ServiceConfig,
+    network_mode: igra_core::infrastructure::network_mode::NetworkMode,
 ) -> Result<(Arc<dyn KeyManager>, Arc<dyn KeyAuditLogger>), ThresholdError> {
     let secret_store: Arc<dyn SecretStore> = if service_config.use_encrypted_secrets {
         let secrets_path = match service_config.secrets_file.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -92,11 +93,20 @@ pub async fn setup_key_manager(
                 format!("secrets file not found: {} (set service.secrets_file or create the file first)", secrets_path.display()),
             ));
         }
-        let passphrase = prompt_secrets_passphrase()?;
+        let passphrase = load_secrets_passphrase(network_mode)?;
         Arc::new(FileSecretStore::open(&secrets_path, &passphrase).await?)
     } else {
-        warn!("using environment-based secrets (devnet/CI only)");
-        Arc::new(EnvSecretStore::new())
+        #[cfg(feature = "devnet-env-secrets")]
+        {
+            warn!("using environment-based secrets (devnet/CI only)");
+            Arc::new(EnvSecretStore::new())
+        }
+        #[cfg(not(feature = "devnet-env-secrets"))]
+        {
+            return Err(ThresholdError::ConfigError(
+                "service.use_encrypted_secrets=false requires building igra-service with --features devnet-env-secrets".to_string(),
+            ));
+        }
     };
 
     let audit_path = match service_config.key_audit_log_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -106,12 +116,11 @@ pub async fn setup_key_manager(
     let audit_log: Arc<dyn KeyAuditLogger> = Arc::new(FileAuditLogger::new(&audit_path)?);
 
     let key_manager: Arc<dyn KeyManager> = Arc::new(LocalKeyManager::new(secret_store, audit_log.clone()));
+
     Ok((key_manager, audit_log))
 }
 
-fn prompt_secrets_passphrase() -> Result<String, ThresholdError> {
-    use std::io::{self, Write};
-
+fn load_secrets_passphrase(network_mode: igra_core::infrastructure::network_mode::NetworkMode) -> Result<String, ThresholdError> {
     if let Ok(pass) = std::env::var("IGRA_SECRETS_PASSPHRASE") {
         let trimmed = pass.trim().to_string();
         if !trimmed.is_empty() {
@@ -119,15 +128,14 @@ fn prompt_secrets_passphrase() -> Result<String, ThresholdError> {
         }
     }
 
-    print!("Enter secrets file passphrase: ");
-    io::stdout().flush().map_err(|e| ThresholdError::secret_store_unavailable("file", format!("Failed to flush stdout: {}", e)))?;
+    if network_mode.is_production() {
+        return Err(ThresholdError::secret_store_unavailable(
+            "file",
+            "mainnet forbids interactive passphrase; set IGRA_SECRETS_PASSPHRASE env var".to_string(),
+        ));
+    }
 
-    let mut passphrase = String::new();
-    io::stdin()
-        .read_line(&mut passphrase)
-        .map_err(|e| ThresholdError::secret_store_unavailable("file", format!("Failed to read passphrase: {}", e)))?;
-
-    Ok(passphrase.trim().to_string())
+    igra_core::infrastructure::keys::prompt_hidden_input("Enter secrets file passphrase: ")
 }
 
 pub struct SignerIdentity {
@@ -147,12 +155,20 @@ pub async fn init_signer_identity(
     let peer_id_config = app_config.iroh.peer_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let seed_config = app_config.iroh.signer_seed_hex.as_deref().map(parse_hex_32bytes).transpose()?;
 
-    let profile_suffix = std::env::var("KASPA_IGRA_PROFILE")
-        .ok()
-        .map(|s| s.trim().replace('-', "_"))
+    let profile = app_config
+        .service
+        .active_profile
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "default".to_string());
-    let secret_name = SecretName::new(format!("igra.iroh.signer_seed_{}", profile_suffix));
+        .ok_or_else(|| ThresholdError::ConfigError("missing service.active_profile".to_string()))?;
+    igra_core::infrastructure::config::validate_signer_profile(profile)?;
+    let suffix = match key_manager.secret_store() {
+        Some(store) if store.backend() == "env" => profile.replace('-', "_"),
+        Some(_) => profile.to_string(),
+        None => return Err(ThresholdError::secret_store_unavailable("none", "KeyManager has no SecretStore")),
+    };
+    let secret_name = SecretName::new(format!("igra.iroh.signer_seed_{}", suffix));
     let seed_from_store: Option<[u8; 32]> =
         match key_ctx.get_secret_with_audit(&secret_name).await {
             Ok(bytes) => Some(bytes.expose_secret().try_into().map_err(|_| {
@@ -241,20 +257,33 @@ pub async fn init_iroh_gossip(
     bind_port: Option<u16>,
     static_addrs: Vec<EndpointAddr>,
     secret_key: IrohSecretKey,
+    discovery_config: &IrohDiscoveryConfig,
+    relay_config: &IrohRelayConfig,
 ) -> Result<(iroh_gossip::net::Gossip, iroh::protocol::Router), ThresholdError> {
-    info!("initializing iroh gossip bind_port={:?} static_addr_count={}", bind_port, static_addrs.len());
-    let mut builder = iroh::Endpoint::empty_builder(iroh::endpoint::RelayMode::Disabled).secret_key(secret_key);
-    let static_provider = iroh::discovery::static_provider::StaticProvider::new();
-    if !static_addrs.is_empty() {
-        for addr in &static_addrs {
-            static_provider.add_endpoint_info(addr.clone());
-        }
-        builder = builder.discovery(static_provider);
+    info!(
+        "initializing iroh gossip bind_port={:?} static_addrs={} pkarr={} dns={} relay={}",
+        bind_port,
+        static_addrs.len(),
+        discovery_config.enable_pkarr,
+        discovery_config.enable_dns,
+        relay_config.enable
+    );
+
+    let relay_mode = discovery::parse_relay_mode(relay_config)?;
+    let mut builder = iroh::Endpoint::empty_builder(relay_mode).secret_key(secret_key);
+    let (updated, providers) = discovery::attach_discovery(builder, static_addrs, discovery_config)?;
+    builder = updated;
+    if providers.is_empty() {
+        warn!("no discovery providers configured - nodes will not auto-discover peers");
     }
     if let Some(port) = bind_port {
         builder = builder.bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
     }
-    let endpoint = builder.bind().await.map_err(|err| ThresholdError::Message(err.to_string()))?;
+    let endpoint = builder
+        .bind()
+        .await
+        .map_err(|err| ThresholdError::TransportError { operation: "iroh_endpoint_bind".to_string(), details: err.to_string() })?;
+    info!("iroh endpoint bound endpoint_id={}", endpoint.id());
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = iroh::protocol::Router::builder(endpoint).accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone()).spawn();
     info!("iroh gossip initialized");
@@ -268,11 +297,16 @@ pub fn parse_bootstrap_addrs(addrs: &[String]) -> Result<Vec<EndpointAddr>, Thre
         let id_str = parts.next().unwrap_or_default().trim();
         let addr_str = parts.next().unwrap_or_default().trim();
         if id_str.is_empty() || addr_str.is_empty() {
-            return Err(ThresholdError::ConfigError("iroh.bootstrap_addrs entries must be EndpointId@host:port".to_string()));
+            return Err(ThresholdError::ConfigError(format!(
+                "iroh.bootstrap_addrs entry must be EndpointId@host:port, got '{}'",
+                entry.trim()
+            )));
         }
-        let id = EndpointId::from_str(id_str).map_err(|err| ThresholdError::Message(format!("invalid EndpointId {id_str}: {err}")))?;
-        let sock: SocketAddr =
-            addr_str.parse().map_err(|err| ThresholdError::Message(format!("invalid socket address {addr_str}: {err}")))?;
+        let id = EndpointId::from_str(id_str)
+            .map_err(|err| ThresholdError::ConfigError(format!("invalid iroh.bootstrap_addrs endpoint_id='{id_str}': {err}")))?;
+        let sock: SocketAddr = addr_str
+            .parse()
+            .map_err(|err| ThresholdError::ConfigError(format!("invalid iroh.bootstrap_addrs socket_addr='{addr_str}': {err}")))?;
         out.push(EndpointAddr::from_parts(id, [TransportAddr::Ip(sock)]));
     }
     Ok(out)
@@ -289,7 +323,7 @@ fn parse_verifier_keys(values: &[String]) -> Result<HashMap<PeerId, VerifyingKey
         let peer_id = parts.next().unwrap_or_default().trim();
         let key_hex = parts.next().unwrap_or_default().trim();
         if peer_id.is_empty() || key_hex.is_empty() {
-            return Err(ThresholdError::Message("expected verifier entry as peer_id:hex_pubkey".to_string()));
+            return Err(ThresholdError::ConfigError("expected verifier entry as peer_id:hex_pubkey".to_string()));
         }
         let array =
             parse_hex_32bytes(key_hex).map_err(|err| ThresholdError::ConfigError(format!("invalid verifier key hex: {}", err)))?;
@@ -307,7 +341,8 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     }
 
     let base_dir = if data_dir.trim().is_empty() {
-        let cwd = std::env::current_dir().map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let cwd = std::env::current_dir()
+            .map_err(|err| ThresholdError::StorageError { operation: "env::current_dir".to_string(), details: err.to_string() })?;
         cwd.join(".igra")
     } else {
         PathBuf::from(data_dir)
@@ -315,22 +350,29 @@ fn load_or_create_iroh_identity(data_dir: &str) -> Result<(PeerId, String), Thre
     let identity_dir = base_dir.join("iroh");
     let identity_path = identity_dir.join("identity.json");
     if identity_path.exists() {
-        let bytes = std::fs::read(&identity_path).map_err(|err| ThresholdError::Message(err.to_string()))?;
+        let bytes = std::fs::read(&identity_path).map_err(|err| ThresholdError::StorageError {
+            operation: "fs::read iroh identity".to_string(),
+            details: err.to_string(),
+        })?;
         let record: IdentityRecord = serde_json::from_slice(&bytes)?;
         if record.peer_id.trim().is_empty() || record.seed_hex.trim().is_empty() {
-            return Err(ThresholdError::Message("identity.json is missing peer_id or seed_hex".to_string()));
+            return Err(ThresholdError::ConfigError("iroh identity.json is missing peer_id or seed_hex".to_string()));
         }
         return Ok((PeerId::from(record.peer_id), record.seed_hex));
     }
 
-    std::fs::create_dir_all(&identity_dir).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    std::fs::create_dir_all(&identity_dir).map_err(|err| ThresholdError::StorageError {
+        operation: "fs::create_dir_all iroh identity".to_string(),
+        details: err.to_string(),
+    })?;
     let mut seed = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut seed);
     let mut peer_id_bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut peer_id_bytes);
     let record = IdentityRecord { peer_id: format!("peer-{}", hex::encode(peer_id_bytes)), seed_hex: hex::encode(seed) };
     let json = serde_json::to_vec_pretty(&record)?;
-    std::fs::write(&identity_path, json).map_err(|err| ThresholdError::Message(err.to_string()))?;
+    std::fs::write(&identity_path, json)
+        .map_err(|err| ThresholdError::StorageError { operation: "fs::write iroh identity".to_string(), details: err.to_string() })?;
     info!("created iroh identity at {}", identity_path.display());
     Ok((PeerId::from(record.peer_id), record.seed_hex))
 }

@@ -5,6 +5,19 @@ use std::path::PathBuf;
 #[command(name = "kaspa-threshold-service")]
 #[command(about = "Kaspa threshold signature service", long_about = None)]
 pub struct Cli {
+    /// Network mode (mainnet, testnet, devnet)
+    ///
+    /// Determines security validation level.
+    #[arg(long, default_value = "mainnet", value_name = "MODE")]
+    #[arg(value_parser = ["mainnet", "testnet", "devnet"])]
+    pub network: String,
+
+    /// Allow remote Kaspa RPC endpoint in mainnet (NOT RECOMMENDED).
+    ///
+    /// Mainnet defaults to local-only RPC for security; this flag is an explicit opt-in.
+    #[arg(long)]
+    pub allow_remote_rpc: bool,
+
     /// Path to configuration file
     #[arg(short, long)]
     pub config: Option<PathBuf>,
@@ -25,6 +38,10 @@ pub struct Cli {
     #[arg(short, long, default_value = "info")]
     pub log_level: String,
 
+    /// Validate configuration + startup security checks and exit.
+    #[arg(long)]
+    pub validate_only: bool,
+
     /// Finalize PSKT from JSON file
     #[arg(long)]
     pub finalize: Option<PathBuf>,
@@ -42,13 +59,6 @@ impl Cli {
     pub fn apply_to_env(&self) {
         if let Some(config_path) = &self.config {
             std::env::set_var(igra_core::infrastructure::config::CONFIG_PATH_ENV, config_path);
-        }
-
-        if let Some(profile) = &self.profile {
-            let trimmed = profile.trim();
-            if !trimmed.is_empty() {
-                std::env::set_var("KASPA_IGRA_PROFILE", trimmed);
-            }
         }
 
         if let Some(data_dir) = &self.data_dir {

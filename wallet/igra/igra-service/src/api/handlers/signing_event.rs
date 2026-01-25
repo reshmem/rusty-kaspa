@@ -67,13 +67,12 @@ mod tests {
     use crate::service::metrics::Metrics;
     use async_trait::async_trait;
     use futures_util::stream;
+    use igra_core::application::validation::NoopVerifier;
     use igra_core::application::EventContext;
-    use igra_core::domain::coordination::TwoPhaseConfig;
-    use igra_core::domain::validation::NoopVerifier;
-    use igra_core::domain::GroupPolicy;
+    use igra_core::application::{GroupPolicy, TwoPhaseConfig};
     use igra_core::foundation::{GroupId, PeerId, ThresholdError};
     use igra_core::infrastructure::config::ServiceConfig;
-    use igra_core::infrastructure::keys::{EnvSecretStore, LocalKeyManager, NoopAuditLogger};
+    use igra_core::infrastructure::keys::{LocalKeyManager, NoopAuditLogger, SecretBytes, SecretName, SecretStore};
     use igra_core::infrastructure::rpc::KaspaGrpcQueryClient;
     use igra_core::infrastructure::rpc::UnimplementedRpc;
     use igra_core::infrastructure::storage::phase::PhaseStorage;
@@ -83,6 +82,26 @@ mod tests {
     use tempfile::TempDir;
 
     struct NoopTransport;
+    struct EmptySecretStore;
+
+    impl SecretStore for EmptySecretStore {
+        fn backend(&self) -> &'static str {
+            "empty"
+        }
+
+        fn get<'a>(
+            &'a self,
+            name: &'a SecretName,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SecretBytes, ThresholdError>> + Send + 'a>> {
+            Box::pin(async move { Err(ThresholdError::secret_not_found(name.as_str(), "empty")) })
+        }
+
+        fn list_secrets<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SecretName>, ThresholdError>> + Send + 'a>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
 
     #[async_trait]
     impl Transport for NoopTransport {
@@ -93,7 +112,7 @@ mod tests {
             Ok(())
         }
 
-        async fn publish_proposal(&self, _proposal: igra_core::domain::coordination::ProposalBroadcast) -> Result<(), ThresholdError> {
+        async fn publish_proposal(&self, _proposal: igra_core::application::ProposalBroadcast) -> Result<(), ThresholdError> {
             Ok(())
         }
 
@@ -116,7 +135,7 @@ mod tests {
         let storage = Arc::new(RocksStorage::open_in_dir(&dir_path).expect("storage"));
         let phase_storage: Arc<dyn PhaseStorage> = storage.clone();
         let key_audit_log = Arc::new(NoopAuditLogger);
-        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EnvSecretStore::new()), key_audit_log.clone()));
+        let key_manager = Arc::new(LocalKeyManager::new(Arc::new(EmptySecretStore), key_audit_log.clone()));
         let ctx = EventContext {
             config: ServiceConfig::default(),
             policy: GroupPolicy::default(),

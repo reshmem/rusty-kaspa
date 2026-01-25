@@ -311,7 +311,7 @@ impl Storage for MemoryStorage {
     }
 
     fn list_event_crdts_for_event(&self, event_id: &EventId) -> Result<Vec<StoredEventCrdt>, ThresholdError> {
-        Ok(self.lock_inner()?.event_crdt.values().filter(|s| &s.event_id == event_id).cloned().collect())
+        Ok(self.lock_inner()?.event_crdt.values().filter(|s| s.event_id.ct_eq(event_id)).cloned().collect())
     }
 
     fn crdt_storage_stats(&self) -> Result<CrdtStorageStats, ThresholdError> {
@@ -529,7 +529,7 @@ impl PhaseStorage for MemoryStorage {
 
         let key = (proposal.event_id, proposal.round, proposal.proposer_peer_id.clone());
         if let Some(existing) = inner.proposals.get(&key) {
-            if existing.tx_template_hash != proposal.tx_template_hash {
+            if !existing.tx_template_hash.ct_eq(&proposal.tx_template_hash) {
                 // Crash-fault model behavior: detect and record equivocation, but do not attempt to punish
                 // or “resolve” it at this layer. We keep the first stored proposal and reject conflicting
                 // votes from the same peer for the same (event_id, round).
@@ -578,7 +578,10 @@ impl PhaseStorage for MemoryStorage {
         let state = inner.phase.entry(*event_id).or_insert_with(|| EventPhaseState::new(EventPhase::Proposing, now_ns));
 
         if state.phase == EventPhase::Committed || state.phase == EventPhase::Completed {
-            if state.canonical_hash != Some(canonical_hash) {
+            let Some(existing_hash) = state.canonical_hash else {
+                return Ok(false);
+            };
+            if !existing_hash.ct_eq(&canonical_hash) {
                 return Ok(false);
             }
             state.round = round;

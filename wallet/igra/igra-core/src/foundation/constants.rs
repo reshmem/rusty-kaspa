@@ -155,14 +155,56 @@ pub const DEFAULT_SIG_OP_COUNT: u8 = 2;
 /// Default session timeout (seconds).
 pub const DEFAULT_SESSION_TIMEOUT_SECS: u64 = 60;
 
+// === Hyperlane Protocol Limits ===
+
+/// Maximum size of a Hyperlane message body (1 MiB).
+pub const MAX_HYPERLANE_BODY_SIZE_BYTES: usize = 1024 * 1024;
+
+/// Maximum number of Hyperlane validators supported in config.
+pub const MAX_HYPERLANE_VALIDATORS: usize = 256;
+
+// === Configuration Limits ===
+
+/// Maximum size of the main config file (10 MiB).
+pub const MAX_CONFIG_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Maximum number of profiles supported in config.
+pub const MAX_PROFILES: usize = 100;
+
+// === Protocol Timeouts ===
+
+/// Maximum allowed proposal timeout (seconds).
+pub const MAX_PROPOSAL_TIMEOUT_SECS: u64 = 600;
+
+/// Maximum transaction submit attempts.
+pub const MAX_SUBMIT_TX_ATTEMPTS: u32 = 4;
+
+// === Storage Limits ===
+
+/// RocksDB lock acquisition timeout (seconds).
+pub const STORAGE_LOCK_TIMEOUT_SECS: u64 = 2;
+
+/// Minimum required disk space (bytes).
+pub const MIN_DISK_SPACE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+
+/// Minimum open file limit.
+pub const MIN_OPEN_FILE_LIMIT: u64 = 4096;
+
 /// Default session expiry (seconds).
 pub const DEFAULT_SESSION_EXPIRY_SECS: u64 = 600;
 
 /// Default CRDT GC interval (seconds).
 pub const DEFAULT_CRDT_GC_INTERVAL_SECS: u64 = 600;
 
+/// Seconds per hour.
+const SECONDS_PER_HOUR: u64 = 3600;
+
+/// Hours per day.
+const HOURS_PER_DAY: u64 = 24;
+
 /// Default CRDT completed-state retention TTL (seconds).
-pub const DEFAULT_CRDT_GC_TTL_SECS: u64 = 24 * 60 * 60;
+/// Events older than this are eligible for garbage collection.
+pub const DEFAULT_CRDT_GC_TTL_SECS: u64 = HOURS_PER_DAY * SECONDS_PER_HOUR;
 
 /// Hyperlane domainId for Kaspa mainnet (`"KASM"` as big-endian ASCII).
 ///
@@ -177,6 +219,25 @@ pub const HYPERLANE_DOMAIN_ID_KASPA_TESTNET: u32 = 0x4B41_5354;
 /// Note: our local devnet currently uses the legacy value `7` for compatibility with existing
 /// scripts and configs. Use this constant for any future migration to an explicit namespace.
 pub const HYPERLANE_DOMAIN_ID_KASPA_DEVNET: u32 = 0x4B41_5344;
+
+// === Iroh Discovery Constants ===
+
+/// Maximum time to wait for DHT bootstrap (milliseconds).
+pub const DHT_BOOTSTRAP_TIMEOUT_MS: u64 = 10_000;
+
+/// Pkarr record republish interval (seconds).
+///
+/// Records expire after ~3600s; republish at 50 minutes.
+pub const PKARR_REPUBLISH_INTERVAL_SECS: u64 = 3_000;
+
+/// Maximum custom relay URL length.
+pub const MAX_RELAY_URL_LENGTH: usize = 256;
+
+/// Default relay URL (Iroh's public relay).
+pub const DEFAULT_RELAY_URL: &str = "https://relay.iroh.computer";
+
+/// DNS discovery query timeout (milliseconds).
+pub const DNS_DISCOVERY_TIMEOUT_MS: u64 = 5_000;
 
 #[cfg(test)]
 pub mod test {

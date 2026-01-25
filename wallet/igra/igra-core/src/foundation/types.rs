@@ -61,6 +61,11 @@ macro_rules! define_id_type {
             pub fn as_hash(&self) -> &Hash32 {
                 &self.0
             }
+
+            pub fn ct_eq(&self, other: &Self) -> bool {
+                use subtle::ConstantTimeEq;
+                bool::from(self.0.as_ref().ct_eq(other.0.as_ref()))
+            }
         }
 
         impl fmt::Display for $name {
@@ -180,6 +185,54 @@ impl From<kaspa_consensus_core::tx::TransactionId> for TransactionId {
     }
 }
 
+/// Typed keys for event `source_data` metadata maps.
+///
+/// This is primarily used by integration edges (e.g. Hyperlane) to avoid stringly-typed keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MetadataKey {
+    HyperlaneMode,
+    HyperlaneMailboxDomain,
+    HyperlaneMerkleTreeHookAddress,
+    HyperlaneRoot,
+    HyperlaneIndex,
+    HyperlaneMessageId,
+    HyperlaneQuorum,
+    HyperlaneMsgVersion,
+    HyperlaneMsgNonce,
+    HyperlaneMsgOrigin,
+    HyperlaneMsgSender,
+    HyperlaneMsgDestination,
+    HyperlaneMsgRecipient,
+    HyperlaneMsgBodyHex,
+}
+
+impl MetadataKey {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::HyperlaneMode => "hyperlane.mode",
+            Self::HyperlaneMailboxDomain => "hyperlane.mailbox_domain",
+            Self::HyperlaneMerkleTreeHookAddress => "hyperlane.merkle_tree_hook_address",
+            Self::HyperlaneRoot => "hyperlane.root",
+            Self::HyperlaneIndex => "hyperlane.index",
+            Self::HyperlaneMessageId => "hyperlane.message_id",
+            Self::HyperlaneQuorum => "hyperlane.quorum",
+            Self::HyperlaneMsgVersion => "hyperlane.msg.version",
+            Self::HyperlaneMsgNonce => "hyperlane.msg.nonce",
+            Self::HyperlaneMsgOrigin => "hyperlane.msg.origin",
+            Self::HyperlaneMsgSender => "hyperlane.msg.sender",
+            Self::HyperlaneMsgDestination => "hyperlane.msg.destination",
+            Self::HyperlaneMsgRecipient => "hyperlane.msg.recipient",
+            Self::HyperlaneMsgBodyHex => "hyperlane.msg.body_hex",
+        }
+    }
+}
+
+impl fmt::Display for MetadataKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +265,11 @@ mod tests {
         let id = EventId::new([0xCD; 32]);
         let bytes = bincode::serialize(&id).expect("serialize bincode");
         assert_eq!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn metadata_key_is_stable() {
+        assert_eq!(MetadataKey::HyperlaneMsgOrigin.as_str(), "hyperlane.msg.origin");
+        assert_eq!(MetadataKey::HyperlaneMsgOrigin.to_string(), "hyperlane.msg.origin");
     }
 }

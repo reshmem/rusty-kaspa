@@ -1,9 +1,11 @@
 use crate::api::middleware::auth::authorize_rpc;
 use crate::api::state::RpcState;
+use crate::api::util::serde_helpers::{serialize_bytes_with_0x_prefix, serialize_with_0x_prefix};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use igra_core::foundation::{ExternalId, Hash32, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -22,8 +24,10 @@ pub struct FinalizedBlockResponse {
 
 #[derive(Debug, Serialize)]
 pub struct DeliveryRecord {
-    pub message_id: String,
-    pub tx_id: String,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub message_id: ExternalId,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub tx_id: TransactionId,
     pub daa_score: u64,
     pub timestamp_nanos: u64,
 }
@@ -41,14 +45,18 @@ pub struct SequenceTipResponse {
 
 #[derive(Debug, Serialize)]
 pub struct MessageRecord {
-    pub message_id: String,
-    pub sender: String,
-    pub recipient: String,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub message_id: ExternalId,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub sender: Hash32,
+    #[serde(serialize_with = "serialize_bytes_with_0x_prefix")]
+    pub recipient: Hash32,
     pub origin: u32,
     pub destination: u32,
     pub body: String,
     pub nonce: u32,
-    pub tx_id: String,
+    #[serde(serialize_with = "serialize_with_0x_prefix")]
+    pub tx_id: TransactionId,
     pub daa_score: u64,
     pub log_index: u32,
 }
@@ -68,7 +76,7 @@ pub async fn get_finalized_block(State(state): State<Arc<RpcState>>, headers: He
         Err(err) => return (StatusCode::SERVICE_UNAVAILABLE, err.to_string()).into_response(),
     };
     let finalized = virtual_daa.saturating_sub(HYPERLANE_FINALITY_DEPTH_DAA);
-    Json(FinalizedBlockResponse { finalized_block: u32::try_from(finalized).unwrap_or(u32::MAX) }).into_response()
+    Json(FinalizedBlockResponse { finalized_block: finalized.min(u64::from(u32::MAX)) as u32 }).into_response()
 }
 
 pub async fn get_deliveries(State(state): State<Arc<RpcState>>, headers: HeaderMap, Query(params): Query<RangeParams>) -> Response {
@@ -80,8 +88,8 @@ pub async fn get_deliveries(State(state): State<Arc<RpcState>>, headers: HeaderM
             let deliveries = deliveries
                 .into_iter()
                 .map(|d| DeliveryRecord {
-                    message_id: format!("0x{}", hex::encode(d.message_id)),
-                    tx_id: format!("0x{}", hex::encode(d.tx_id)),
+                    message_id: d.message_id,
+                    tx_id: d.tx_id,
                     daa_score: d.daa_score,
                     timestamp_nanos: d.timestamp_nanos,
                 })
@@ -101,7 +109,7 @@ pub async fn get_sequence_tip(State(state): State<Arc<RpcState>>, headers: Heade
         Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     };
     let tip = match state.kaspa_query.get_virtual_daa_score().await {
-        Ok(score) => u32::try_from(score).unwrap_or(u32::MAX),
+        Ok(score) => score.min(u64::from(u32::MAX)) as u32,
         Err(err) => return (StatusCode::SERVICE_UNAVAILABLE, err.to_string()).into_response(),
     };
     Json(SequenceTipResponse { sequence: if count > 0 { Some(count) } else { None }, tip }).into_response()
@@ -116,14 +124,14 @@ pub async fn get_messages(State(state): State<Arc<RpcState>>, headers: HeaderMap
             let messages = messages
                 .into_iter()
                 .map(|m| MessageRecord {
-                    message_id: format!("0x{}", hex::encode(m.message_id)),
-                    sender: format!("0x{}", hex::encode(m.sender)),
-                    recipient: format!("0x{}", hex::encode(m.recipient)),
+                    message_id: m.message_id,
+                    sender: m.sender,
+                    recipient: m.recipient,
                     origin: m.origin,
                     destination: m.destination,
                     body: m.body_hex,
                     nonce: m.nonce,
-                    tx_id: format!("0x{}", hex::encode(m.tx_id)),
+                    tx_id: m.tx_id,
                     daa_score: m.daa_score,
                     log_index: m.log_index,
                 })

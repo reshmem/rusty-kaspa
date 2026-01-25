@@ -13,8 +13,9 @@ fee_sompi = 0
 # change_address is optional; when omitted, defaults to `source_addresses[0]` (the multisig address).
 
 [service.hd]
-mnemonics = [] # Filled by generator
+key_type = "hd_mnemonic"
 required_sigs = 2
+# xpubs / derivation_path are optional here because devnet fills `service.pskt.redeem_script_hex`
 
 [runtime]
 test_mode = false

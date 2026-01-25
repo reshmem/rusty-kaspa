@@ -1,4 +1,4 @@
-use crate::domain::pskt::multisig::{build_pskt, MultisigInput, MultisigOutput};
+use crate::domain::pskt::multisig::{build_pskt_owned, MultisigInput, MultisigOutput};
 use crate::domain::pskt::params::{PsktParams, UtxoInput};
 use crate::domain::pskt::results::{PsktBuildResult, UtxoSelectionResult};
 use crate::domain::pskt::validation::validate_params;
@@ -185,7 +185,7 @@ pub fn build_pskt_from_utxos(
         has_change_output,
     };
 
-    let build = build_pskt(&inputs, &outputs)?;
+    let build = build_pskt_owned(inputs, outputs)?;
     Ok((selection, build))
 }
 

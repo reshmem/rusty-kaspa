@@ -22,7 +22,7 @@ pub async fn run_json_rpc_server(addr: SocketAddr, state: Arc<RpcState>) -> Resu
     info!("HTTP server ready and accepting connections addr={}", addr);
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.map_err(|err| {
         error!("HTTP server terminated unexpectedly addr={} error={}", addr, err);
-        ThresholdError::Message(err.to_string())
+        ThresholdError::NetworkError(format!("http server terminated addr={addr} error={err}"))
     })
 }
 
