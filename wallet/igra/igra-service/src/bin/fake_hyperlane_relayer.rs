@@ -202,13 +202,28 @@ fn normalize_hex(value: &str) -> String {
     value.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase()
 }
 
-fn derive_uncompressed_pubkey_hex(validator: &HyperlaneValidator) -> Result<String, String> {
+fn derive_pubkey_bytes(validator: &HyperlaneValidator) -> Result<([u8; 33], [u8; 65]), String> {
     let key_bytes = hex::decode(normalize_hex(&validator.private_key_hex))
         .map_err(|err| format!("invalid private key hex for {}: {}", validator.name, err))?;
     let secret = SecretKey::from_slice(&key_bytes).map_err(|err| format!("invalid private key for {}: {}", validator.name, err))?;
     let secp = Secp256k1::new();
     let pk = secp256k1::PublicKey::from_secret_key(&secp, &secret);
-    Ok(format!("{:#x}", hx(&pk.serialize_uncompressed())))
+    Ok((pk.serialize(), pk.serialize_uncompressed()))
+}
+
+fn pubkey_hex_matches_expected(
+    expected_hex: &str,
+    derived_compressed: &[u8; 33],
+    derived_uncompressed: &[u8; 65],
+) -> Result<bool, String> {
+    let expected_bytes = hex::decode(normalize_hex(expected_hex)).map_err(|err| format!("invalid public_key_hex: {}", err))?;
+    Ok(match expected_bytes.len() {
+        33 => expected_bytes.as_slice() == derived_compressed,
+        65 => expected_bytes.as_slice() == derived_uncompressed,
+        other => {
+            return Err(format!("invalid public_key_hex length: expected 33 (compressed) or 65 (uncompressed), got {} bytes", other));
+        }
+    })
 }
 
 fn derive_evm_address_h256_hex(validator: &HyperlaneValidator) -> Result<String, String> {
@@ -391,11 +406,19 @@ async fn main() -> Result<(), String> {
 
     let strict_keys = env::var("HYPERLANE_STRICT_KEYS").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
     for validator in &keys.validators {
-        let derived = derive_uncompressed_pubkey_hex(validator)?;
+        let (derived_compressed, derived_uncompressed) = derive_pubkey_bytes(validator)?;
         if let Some(expected) = validator.public_key_hex.as_deref() {
-            if normalize_hex(expected) != normalize_hex(&derived) {
-                let msg =
-                    format!("validator pubkey mismatch name={} expected={} derived={}", validator.name, expected.trim(), derived);
+            let matches = pubkey_hex_matches_expected(expected, &derived_compressed, &derived_uncompressed).unwrap_or(false);
+            if !matches {
+                let derived_compressed_hex = format!("{:#x}", hx(&derived_compressed));
+                let derived_uncompressed_hex = format!("{:#x}", hx(&derived_uncompressed));
+                let msg = format!(
+                    "validator pubkey mismatch name={} expected={} derived_compressed={} derived_uncompressed={}",
+                    validator.name,
+                    expected.trim(),
+                    derived_compressed_hex,
+                    derived_uncompressed_hex
+                );
                 if strict_keys {
                     return Err(msg);
                 }
@@ -542,14 +565,12 @@ async fn main() -> Result<(), String> {
                 threshold
             ));
         }
-        for (idx, validator) in keys.validators.iter().take(threshold).enumerate() {
+        let expected_set = vat.validators.iter().map(|v| normalize_hex(v)).collect::<std::collections::BTreeSet<_>>();
+        for validator in keys.validators.iter().take(threshold) {
             let derived = derive_evm_address_h256_hex(validator)?;
-            let expected = vat.validators.get(idx).cloned().unwrap_or_default();
-            if normalize_hex(&expected) != normalize_hex(&derived) {
-                let msg = format!(
-                    "destination validator mismatch index={} destination_validator={} local_derived_validator={}",
-                    idx, expected, derived
-                );
+            if !expected_set.contains(&normalize_hex(&derived)) {
+                let msg =
+                    format!("destination validator mismatch local_validator={} local_derived_validator={}", validator.name, derived);
                 if strict_keys {
                     return Err(msg);
                 }

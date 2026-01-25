@@ -76,6 +76,9 @@ IGRA_REPO / IGRA_REF     Clone source for --clone mode (default: https://github.
 Security notes:
   - Logs in ${LOG_DIR:-<root>/logs} may contain sensitive material (mnemonics/keys). Logs directory is restricted to 700 permissions.
   - Only clone from trusted sources; non-GitHub URLs will prompt for confirmation.
+  - Port conflicts: this script uses fixed ports (kaspad 16110; signers 8088-8090). On start/stop it will try to terminate
+    leftover devnet processes listening on these ports (when they look like kaspad/kaspa-threshold-service). If the port is held by
+    an unexpected process, the script will refuse to start to avoid killing unrelated apps.
 EOF
 }
 
@@ -789,9 +792,98 @@ validate_json() {
 
 PIDS=()
 
+port_listeners() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  (lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true) | awk 'NR>1 {print $1" "$2}' | sort -u
+}
+
+kill_pid_gracefully() {
+  local pid="$1"
+  local label="$2"
+  if [[ -z "${pid}" ]]; then
+    return 0
+  fi
+  if ! kill -0 "${pid}" >/dev/null 2>&1; then
+    return 0
+  fi
+  log_warn "Stopping ${label} pid=${pid}..."
+  kill "${pid}" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    if ! kill -0 "${pid}" >/dev/null 2>&1; then
+      log_success "Stopped ${label} pid=${pid}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  log_warn "${label} did not stop gracefully; force killing pid=${pid}"
+  kill -9 "${pid}" >/dev/null 2>&1 || true
+  sleep 0.2
+  if kill -0 "${pid}" >/dev/null 2>&1; then
+    log_error "Failed to kill ${label} pid=${pid}"
+    return 1
+  fi
+  log_success "Force killed ${label} pid=${pid}"
+  return 0
+}
+
+ensure_port_free_for_cmd_prefixes() {
+  local port="$1"
+  shift
+  local -a allowed_prefixes=("$@")
+
+  local listeners
+  listeners="$(port_listeners "${port}")"
+  if [[ -z "${listeners}" ]]; then
+    return 0
+  fi
+
+  while read -r cmd pid; do
+    [[ -z "${cmd}" || -z "${pid}" ]] && continue
+    local allowed=false
+    local prefix
+    for prefix in "${allowed_prefixes[@]}"; do
+      if [[ "${cmd}" == "${prefix}"* ]]; then
+        allowed=true
+        break
+      fi
+    done
+    if [[ "${allowed}" != "true" ]]; then
+      log_error "Port ${port} is in use by an unexpected process cmd=${cmd} pid=${pid}"
+      log_error "Stop it manually or choose a different port/root directory."
+      return 1
+    fi
+    kill_pid_gracefully "${pid}" "port-${port}(${cmd})" || return 1
+  done <<< "${listeners}"
+
+  return 0
+}
+
+port_listener_pid() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true
+}
+
 start_process() {
   local name="$1"
   shift
+  local pid_file="${PIDS_DIR}/${name}.pid"
+
+  if [[ -f "${pid_file}" ]]; then
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+      log_info "${name} already running (pid ${pid}); skipping start"
+      return 0
+    fi
+    rm -f "${pid_file}"
+  fi
+
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] Would start ${name}: $*"
     log_info "[DRY-RUN]   Log: ${LOG_DIR}/${name}.log"
@@ -802,7 +894,7 @@ start_process() {
   "$@" >"${LOG_DIR}/${name}.log" 2>&1 &
   local pid=$!
   PIDS+=("${pid}")
-  echo "${pid}" > "${PIDS_DIR}/${name}.pid"
+  echo "${pid}" > "${pid_file}"
   log_info "pid=${pid} log=${LOG_DIR}/${name}.log"
 }
 
@@ -860,6 +952,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 start_kaspad() {
+  # Avoid silently talking to an old kaspad on the same port.
+  ensure_port_free_for_cmd_prefixes "16110" "kaspad" || exit 1
   # Clear stale RocksDB lock files if present.
   if find "${KASPAD_APPDIR}/kaspa-devnet" -name LOCK -type f -print -quit >/dev/null 2>&1; then
     log_warn "Removing stale kaspad lock files under ${KASPAD_APPDIR}/kaspa-devnet"
@@ -913,6 +1007,10 @@ start_igra() {
   local profile_data_dir="${IGRA_DATA}/${profile}"
 
   ensure_secrets_passphrase_for_runtime
+
+  # If a prior kaspa-threshold-service is still listening, a new instance will fail to bind
+  # and the health check may accidentally hit the old process. Kill known-devnet listeners.
+  ensure_port_free_for_cmd_prefixes "${rpc_port}" "kaspa-thr" "kaspa-threshold" "kaspa-threshold-service" || exit 1
 
   start_process "igra-${profile}" \
     env \
@@ -1081,6 +1179,13 @@ wait_for_igra() {
       pid=$(cat "${PIDS_DIR}/igra-${profile}.pid")
       if ! kill -0 "${pid}" 2>/dev/null; then
         log_error "igra-${profile} process died during startup"
+        return 1
+      fi
+      local listener_pid
+      listener_pid="$(port_listener_pid "${rpc_port}")"
+      if [[ -n "${listener_pid}" && "${listener_pid}" != "${pid}" ]]; then
+        log_error "igra-${profile} pid=${pid} is alive but port ${rpc_port} is owned by pid=${listener_pid} (stale process?)"
+        log_error "Run 'stop' or kill the process listening on ${rpc_port} and retry."
         return 1
       fi
     fi
@@ -1281,11 +1386,24 @@ stop_targets() {
   local target
   for target in "${TARGETS[@]}"; do
     case "${target}" in
-      kaspad) stop_process "kaspad" ;;
+      kaspad)
+        stop_process "kaspad"
+        # Best-effort cleanup in case pid files drifted.
+        ensure_port_free_for_cmd_prefixes "16110" "kaspad" || log_warn "Port 16110 still in use after stop"
+        ;;
       kaspaminer) stop_process "kaspaminer" ;;
-      signer-01) stop_igra "signer-01" ;;
-      signer-02) stop_igra "signer-02" ;;
-      signer-03) stop_igra "signer-03" ;;
+      signer-01)
+        stop_igra "signer-01"
+        ensure_port_free_for_cmd_prefixes "8088" "kaspa-thr" "kaspa-threshold" "kaspa-threshold-service" || log_warn "Port 8088 still in use after stop"
+        ;;
+      signer-02)
+        stop_igra "signer-02"
+        ensure_port_free_for_cmd_prefixes "8089" "kaspa-thr" "kaspa-threshold" "kaspa-threshold-service" || log_warn "Port 8089 still in use after stop"
+        ;;
+      signer-03)
+        stop_igra "signer-03"
+        ensure_port_free_for_cmd_prefixes "8090" "kaspa-thr" "kaspa-threshold" "kaspa-threshold-service" || log_warn "Port 8090 still in use after stop"
+        ;;
     esac
   done
 }
