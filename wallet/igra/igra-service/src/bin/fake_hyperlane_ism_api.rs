@@ -1,3 +1,4 @@
+use alloy::primitives::keccak256;
 use blake3::Hash;
 use hyperlane_core::accumulator::merkle::Proof as HyperlaneProof;
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signable, H256};
@@ -80,8 +81,8 @@ struct HyperlaneValidator {
 
 const DEFAULT_ORIGIN_DOMAIN: u32 = 5;
 const DEFAULT_DESTINATION_DOMAIN: u32 = 7;
-const DEFAULT_RECIPIENT_PAYLOAD: &str = "000000000000000000000000000000000000000000000000000000000000dead"; // burn-like payload
 const DEFAULT_DESTINATION_ADDRESS: &str = "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq9n8nemljasdzxsqjr4x2dc6wc0225vqpw";
+const HYPERLANE_RECIPIENT_TAG_V1: &str = "igra:v1:";
 
 const UNORDERED_EVENTS_MIN: u16 = 1;
 const UNORDERED_EVENTS_MAX: u16 = 1024;
@@ -98,6 +99,16 @@ fn hash_to_hex(hash: Hash) -> String {
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
     env::var(name).ok().and_then(|value| value.trim().parse::<u64>().ok()).unwrap_or(default)
+}
+
+fn compute_recipient_payload_from_destination_address(destination_address: &str) -> [u8; 32] {
+    let mut preimage = Vec::with_capacity(HYPERLANE_RECIPIENT_TAG_V1.len() + destination_address.len());
+    preimage.extend_from_slice(HYPERLANE_RECIPIENT_TAG_V1.as_bytes());
+    preimage.extend_from_slice(destination_address.as_bytes());
+    let digest = keccak256(preimage);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_slice());
+    out
 }
 
 fn parse_cli_unordered_events() -> Result<Option<u16>, String> {
@@ -262,9 +273,18 @@ async fn main() -> Result<(), String> {
         return Err("HYPERLANE_DESTINATION must be set".to_string());
     }
     Address::try_from(destination_address.as_str()).map_err(|_| "invalid HYPERLANE_DESTINATION address".to_string())?;
-    let recipient_payload = env::var("HYPERLANE_RECIPIENT_PAYLOAD").unwrap_or_else(|_| DEFAULT_RECIPIENT_PAYLOAD.to_string());
-    let recipient_bytes: [u8; 32] =
-        igra_core::foundation::parse_hex_32bytes(&recipient_payload).map_err(|err| format!("invalid recipient payload: {err}"))?;
+    let recipient_bytes: [u8; 32] = match env::var("HYPERLANE_RECIPIENT_PAYLOAD") {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                compute_recipient_payload_from_destination_address(&destination_address)
+            } else {
+                igra_core::foundation::parse_hex_32bytes(trimmed).map_err(|err| format!("invalid recipient payload: {err}"))?
+            }
+        }
+        Err(env::VarError::NotPresent) => compute_recipient_payload_from_destination_address(&destination_address),
+        Err(err) => return Err(format!("invalid HYPERLANE_RECIPIENT_PAYLOAD env var: {err}")),
+    };
     let domain = env::var("HYPERLANE_DOMAIN").unwrap_or_else(|_| DEFAULT_ORIGIN_DOMAIN.to_string()); // origin domain
     let destination_domain =
         env::var("HYPERLANE_DESTINATION_DOMAIN").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(DEFAULT_DESTINATION_DOMAIN);

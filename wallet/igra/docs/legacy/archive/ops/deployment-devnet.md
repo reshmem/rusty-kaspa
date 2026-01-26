@@ -99,7 +99,7 @@ Hyperlane `Mailbox.dispatch` requires a `bytes32 recipientAddress`, but our actu
 For devnet we will set:
 
 ```
-recipientAddress := keccak256("igra:kaspa-miner-recipient:v1:" || kaspa_mining_address_utf8)
+recipientAddress := keccak256("igra:v1:" || kaspa_mining_address_utf8)
 ```
 
 Rationale:

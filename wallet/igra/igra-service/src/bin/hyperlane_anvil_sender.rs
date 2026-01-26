@@ -21,7 +21,7 @@ sol! {
 const DEFAULT_EVM_RPC_URL: &str = "http://127.0.0.1:8545";
 const DEFAULT_DESTINATION_DOMAIN: u32 = 7;
 const DEFAULT_AMOUNT_SOMPI: u64 = 20_000_000;
-const DEFAULT_RECIPIENT_TAG: &str = "igra:kaspa-miner-recipient:v1:";
+const DEFAULT_RECIPIENT_TAG: &str = "igra:v1:";
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "hyperlane_anvil_sender")]

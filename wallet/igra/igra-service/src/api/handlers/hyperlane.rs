@@ -11,6 +11,7 @@
 use super::hyperlane_wire::RpcHyperlaneMessage;
 use super::types::{json_err, json_ok, RpcErrorCode};
 use crate::api::state::RpcState;
+use alloy::primitives::keccak256;
 use blake3::Hasher;
 use hyperlane_core::accumulator::{merkle::Proof as HyperlaneProof, TREE_DEPTH};
 use hyperlane_core::{Checkpoint, CheckpointWithMessageId, HyperlaneMessage, Signature, H256, U256};
@@ -27,6 +28,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 const DEFAULT_PROCESS_GAS_USED: &str = "100000";
+const HYPERLANE_RECIPIENT_TAG_V1: &str = "igra:v1:";
 
 #[derive(Debug, Deserialize)]
 struct ValidatorsAndThresholdParams {
@@ -215,6 +217,26 @@ fn extract_signing_payload(message: &HyperlaneMessage) -> Result<SigningPayload,
         details: format!("invalid recipient address: {}", err),
         source: None,
     })?;
+
+    // Enforce that Hyperlane `recipientAddress` (bytes32) matches our canonical tag-hash derivation
+    // from the Kaspa address string carried in the message body.
+    let mut preimage = Vec::with_capacity(HYPERLANE_RECIPIENT_TAG_V1.len() + destination_address.len());
+    preimage.extend_from_slice(HYPERLANE_RECIPIENT_TAG_V1.as_bytes());
+    preimage.extend_from_slice(destination_address.as_bytes());
+    let digest = keccak256(preimage);
+    let mut expected = [0u8; 32];
+    expected.copy_from_slice(digest.as_slice());
+    let expected = H256::from(expected);
+    if expected != message.recipient {
+        return Err(ThresholdError::HyperlaneMetadataParseError {
+            details: format!(
+                "hyperlane recipientAddress mismatch expected={} got={}",
+                format_h256(expected),
+                format_h256(message.recipient)
+            ),
+            source: None,
+        });
+    }
 
     Ok(SigningPayload { destination_address, amount_sompi })
 }

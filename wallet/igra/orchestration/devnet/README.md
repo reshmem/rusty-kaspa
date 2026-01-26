@@ -84,6 +84,12 @@ Mining rewards are paid to `KASPA_MINING_ADDRESS`, which is derived from the Rot
 
 Hyperlane’s local E2E harness is available under `orchestration/testnet/hyperlane/` and is not part of devnet.
 
+## Local EVM + Hyperlane E2E (Anvil)
+
+For a full end-to-end local setup (Anvil origin chain + real Hyperlane agents delivering into the Igra HTTP adapter), see:
+
+- `orchestration/devnet/LOCAL_EVM_HYPERLANE_E2E.md`
+
 ## Fake Hyperlane (Devnet)
 
 The devnet compose config runs a companion binary (`fake-hyperlane`) alongside `kaspa-threshold-service`. It submits a signed Hyperlane event to the local JSON-RPC every 10 seconds by default. Configure via environment variables in `orchestration/devnet/docker-compose.yml`:

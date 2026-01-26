@@ -68,6 +68,9 @@ Notes:
   - Uses Anvil domain id 31337 and Kaspa domain id 7.
   - Uses local checkpoint syncers (file://) and requires `allowLocalCheckpointSyncers=true` in relayer config.
   - Hyperlane fork: https://github.com/reshmem/hyperlane-monorepo.git (branch: devel)
+  - Port conflicts: uses fixed ports (Anvil 8545; validator metrics 9910-9911; relayer metrics 9920-9922). On start/stop it will try
+    to terminate leftover agents on those ports (when they look like anvil/validator/relayer). If the port is held by an unexpected
+    process, the script will refuse to start to avoid killing unrelated apps.
 EOF
 }
 
@@ -91,6 +94,83 @@ require_cmd() {
     fi
     exit 1
   fi
+}
+
+port_listeners() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  (lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true) | awk 'NR>1 {print $1" "$2}' | sort -u
+}
+
+kill_pid_gracefully() {
+  local pid="$1"
+  local label="$2"
+  if [[ -z "${pid}" ]]; then
+    return 0
+  fi
+  if ! kill -0 "${pid}" >/dev/null 2>&1; then
+    return 0
+  fi
+  log_warn "Stopping ${label} pid=${pid}..."
+  kill "${pid}" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    if ! kill -0 "${pid}" >/dev/null 2>&1; then
+      log_success "Stopped ${label} pid=${pid}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  log_warn "${label} did not stop gracefully; force killing pid=${pid}"
+  kill -9 "${pid}" >/dev/null 2>&1 || true
+  sleep 0.2
+  if kill -0 "${pid}" >/dev/null 2>&1; then
+    log_error "Failed to kill ${label} pid=${pid}"
+    return 1
+  fi
+  log_success "Force killed ${label} pid=${pid}"
+  return 0
+}
+
+ensure_port_free_for_cmd_prefixes() {
+  local port="$1"
+  shift
+  local -a allowed_prefixes=("$@")
+
+  local listeners
+  listeners="$(port_listeners "${port}")"
+  if [[ -z "${listeners}" ]]; then
+    return 0
+  fi
+
+  while read -r cmd pid; do
+    [[ -z "${cmd}" || -z "${pid}" ]] && continue
+    local allowed=false
+    local prefix
+    for prefix in "${allowed_prefixes[@]}"; do
+      if [[ "${cmd}" == "${prefix}"* ]]; then
+        allowed=true
+        break
+      fi
+    done
+    if [[ "${allowed}" != "true" ]]; then
+      log_error "Port ${port} is in use by an unexpected process cmd=${cmd} pid=${pid}"
+      log_error "Stop it manually or choose a different --root."
+      return 1
+    fi
+    kill_pid_gracefully "${pid}" "port-${port}(${cmd})" || return 1
+  done <<< "${listeners}"
+
+  return 0
+}
+
+port_listener_pid() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true
 }
 
 run() {
@@ -381,13 +461,25 @@ stop_igra_devnet() {
 
 start_anvil() {
   mkdir -p "${HYP_ANVIL_STATE}"
+  # Avoid silently talking to an old Anvil instance (or failing to bind and then using a stale process).
+  ensure_port_free_for_cmd_prefixes "8545" "anvil" || exit 1
   start_process "anvil" anvil -p 8545 --chain-id "${ANVIL_CHAIN_ID}" --state "${HYP_ANVIL_STATE}" --gas-price 1
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     return 0
   fi
+  local anvil_pid
+  anvil_pid="$(cat "${HYP_PIDS_DIR}/anvil.pid" 2>/dev/null || true)"
   log_info "Waiting for Anvil JSON-RPC at ${ANVIL_RPC_URL}"
   for _ in $(seq 1 30); do
+    if [[ -n "${anvil_pid}" ]] && kill -0 "${anvil_pid}" >/dev/null 2>&1; then
+      local listener_pid
+      listener_pid="$(port_listener_pid 8545)"
+      if [[ -n "${listener_pid}" && "${listener_pid}" != "${anvil_pid}" ]]; then
+        log_error "anvil pid=${anvil_pid} is alive but port 8545 is owned by pid=${listener_pid} (stale process?)"
+        exit 1
+      fi
+    fi
     if curl -s -f -X POST "${ANVIL_RPC_URL}" -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' >/dev/null 2>&1; then
       log_success "Anvil is ready"
@@ -678,6 +770,8 @@ start_hyperlane_agents() {
   for idx in 0 1; do
     local vpriv
     vpriv="$(read_json_field "${keys_json}" "data['validators'][${idx}]['private_key_hex']")"
+    local metrics_port="$((9910 + idx))"
+    ensure_port_free_for_cmd_prefixes "${metrics_port}" "validator" || exit 1
     write_validator_config "${idx}" "${vpriv}" "${mailbox}" "${igp}" "${va}" "${mth}"
     local workdir="${HYP_ROOT}/validator-$((idx + 1))"
     start_process "validator-$((idx + 1))" bash -lc "cd \"${workdir}\" && \"${validator_bin}\""
@@ -685,6 +779,8 @@ start_hyperlane_agents() {
 
   local relayer_rpc_urls=("http://127.0.0.1:8088" "http://127.0.0.1:8089" "http://127.0.0.1:8090")
   for idx in 0 1 2; do
+    local metrics_port="$((9920 + idx))"
+    ensure_port_free_for_cmd_prefixes "${metrics_port}" "relayer" || exit 1
     write_relayer_config "${idx}" "${relayer_rpc_urls[${idx}]}" "${mailbox}" "${igp}" "${va}" "${mth}"
     local workdir="${HYP_ROOT}/relayer-$((idx + 1))"
     start_process "relayer-$((idx + 1))" bash -lc "cd \"${workdir}\" && \"${relayer_bin}\""
@@ -744,6 +840,13 @@ stop_all() {
   stop_process "validator-2"
   stop_process "validator-1"
   stop_process "anvil"
+  # Best-effort cleanup in case pid files drifted (avoid port conflicts on next start).
+  ensure_port_free_for_cmd_prefixes "8545" "anvil" || log_warn "Port 8545 still in use after stop"
+  ensure_port_free_for_cmd_prefixes "9910" "validator" || log_warn "Port 9910 still in use after stop"
+  ensure_port_free_for_cmd_prefixes "9911" "validator" || log_warn "Port 9911 still in use after stop"
+  ensure_port_free_for_cmd_prefixes "9920" "relayer" || log_warn "Port 9920 still in use after stop"
+  ensure_port_free_for_cmd_prefixes "9921" "relayer" || log_warn "Port 9921 still in use after stop"
+  ensure_port_free_for_cmd_prefixes "9922" "relayer" || log_warn "Port 9922 still in use after stop"
   stop_igra_devnet
 }
 

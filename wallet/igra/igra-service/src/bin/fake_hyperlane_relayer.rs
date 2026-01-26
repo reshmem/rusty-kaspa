@@ -110,7 +110,6 @@ const DEFAULT_DESTINATION_ADDRESS: &str = "kaspadev:qp5mxzzk5gush9k2zv0pjhj3cmpq
 
 const DEFAULT_MERKLE_TREE_HOOK: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_SENDER: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-const DEFAULT_RECIPIENT: &str = "000000000000000000000000000000000000000000000000000000000000dead";
 
 const UNORDERED_EVENTS_MIN: u16 = 1;
 const UNORDERED_EVENTS_MAX: u16 = 1024;
@@ -182,6 +181,18 @@ fn build_hyperlane_message(
     body.extend_from_slice(&amount_sompi.to_le_bytes());
     body.extend_from_slice(destination_address.as_bytes());
     HyperlaneMessage { version, nonce, origin, sender, destination, recipient, body }
+}
+
+const HYPERLANE_RECIPIENT_TAG_V1: &str = "igra:v1:";
+
+fn compute_recipient_from_destination_address(destination_address: &str) -> H256 {
+    let mut preimage = Vec::with_capacity(HYPERLANE_RECIPIENT_TAG_V1.len() + destination_address.len());
+    preimage.extend_from_slice(HYPERLANE_RECIPIENT_TAG_V1.as_bytes());
+    preimage.extend_from_slice(destination_address.as_bytes());
+    let digest = alloy::primitives::keccak256(preimage);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_slice());
+    H256::from(out)
 }
 
 fn signature_to_bytes(sig: &Signature) -> [u8; 65] {
@@ -388,10 +399,21 @@ async fn main() -> Result<(), String> {
     let sender_hex = parse_env_string("HYPERLANE_SENDER", DEFAULT_SENDER);
     let sender =
         H256::from(igra_core::foundation::parse_hex_32bytes(&sender_hex).map_err(|err| format!("invalid HYPERLANE_SENDER: {err}"))?);
-    let recipient_hex = parse_env_string("HYPERLANE_RECIPIENT", DEFAULT_RECIPIENT);
-    let recipient = H256::from(
-        igra_core::foundation::parse_hex_32bytes(&recipient_hex).map_err(|err| format!("invalid HYPERLANE_RECIPIENT: {err}"))?,
-    );
+    let recipient = match env::var("HYPERLANE_RECIPIENT") {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                compute_recipient_from_destination_address(&destination_address)
+            } else {
+                H256::from(
+                    igra_core::foundation::parse_hex_32bytes(trimmed)
+                        .map_err(|err| format!("invalid HYPERLANE_RECIPIENT: {err}"))?,
+                )
+            }
+        }
+        Err(env::VarError::NotPresent) => compute_recipient_from_destination_address(&destination_address),
+        Err(err) => return Err(format!("invalid HYPERLANE_RECIPIENT env var: {err}")),
+    };
     let merkle_tree_hook_hex = parse_env_string("HYPERLANE_MERKLE_TREE_HOOK", DEFAULT_MERKLE_TREE_HOOK);
     let merkle_tree_hook_address = H256::from(
         igra_core::foundation::parse_hex_32bytes(&merkle_tree_hook_hex)
