@@ -5,8 +5,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use igra_core::foundation::GroupId;
-use igra_core::infrastructure::hyperlane::{decode_proof_metadata_hex, IsmVerifier};
+use igra_core::foundation::{decode_hex_prefixed, GroupId};
+use igra_core::infrastructure::hyperlane::IsmVerifier;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -89,18 +89,19 @@ pub async fn estimate_costs(
         return (StatusCode::SERVICE_UNAVAILABLE, "hyperlane not configured").into_response();
     };
 
-    let message: hyperlane_core::HyperlaneMessage = req.message.into();
-    let Some(set) = ism.validators_and_threshold(message.origin, message.id()) else {
+    // NOTE(security): this endpoint is for estimating relayer costs only.
+    // We intentionally do *not* verify Hyperlane metadata here:
+    // - In this Kaspa devnet implementation, the estimate is constant anyway.
+    // - Authenticity is enforced in `hyperlane.mailbox_process` (and only there).
+    // This keeps relayer preflight (cost estimation) from being blocked by
+    // signature/quorum issues that will be surfaced again at process-time.
+    let EstimateCostsRequest { message, metadata } = req;
+    if let Err(err) = decode_hex_prefixed(&metadata) {
+        return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
+    }
+    let message: hyperlane_core::HyperlaneMessage = message.into();
+    if ism.validators_and_threshold(message.origin, message.id()).is_none() {
         return (StatusCode::BAD_REQUEST, "unknown origin domain").into_response();
-    };
-
-    let metadata = match decode_proof_metadata_hex(set.mode.clone(), &message, &req.metadata) {
-        Ok(metadata) => metadata,
-        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    };
-
-    if let Err(err) = ism.verify_proof(&message, &metadata, set.mode) {
-        return (StatusCode::BAD_REQUEST, err).into_response();
     }
 
     Json(EstimateCostsResponse { gas_limit: "100000".to_string(), gas_price: "1".to_string(), l2_gas_limit: None }).into_response()

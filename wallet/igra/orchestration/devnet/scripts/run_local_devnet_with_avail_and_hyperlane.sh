@@ -68,6 +68,9 @@ Notes:
   - Uses Anvil domain id 31337 and Kaspa domain id 7.
   - Uses local checkpoint syncers (file://) and requires `allowLocalCheckpointSyncers=true` in relayer config.
   - Hyperlane fork: https://github.com/reshmem/hyperlane-monorepo.git (branch: devel)
+  - Hyperlane CLI mode (for core deploy):
+    - Default is `npm` (uses the published `@hyperlane-xyz/cli` package).
+    - Set `HYPERLANE_CLI_MODE=repo` to build/run the CLI from the cloned monorepo.
   - Port conflicts: uses fixed ports (Anvil 8545; validator metrics 9910-9911; relayer metrics 9920-9922). On start/stop it will try
     to terminate leftover agents on those ports (when they look like anvil/validator/relayer). If the port is held by an unexpected
     process, the script will refuse to start to avoid killing unrelated apps.
@@ -94,6 +97,40 @@ require_cmd() {
     fi
     exit 1
   fi
+}
+
+pnpm_dirs() {
+  echo "${HYP_ROOT}/pnpm-home|${HYP_ROOT}/pnpm-store|${HYP_ROOT}/npm-cache|${HYP_ROOT}/xdg-cache"
+}
+
+prepare_cargo_dirs() {
+  # Force Cargo to use a directory under `--root` to avoid user-global config pointing at
+  # unavailable locations (e.g. `/Volumes/...`), and to keep devnet reproducible.
+  run mkdir -p "${HYP_ROOT}/cargo-home"
+}
+
+prepare_pnpm_dirs() {
+  local bundle
+  bundle="$(pnpm_dirs)"
+  local pnpm_home store_dir npm_cache xdg_cache
+  IFS='|' read -r pnpm_home store_dir npm_cache xdg_cache <<<"${bundle}"
+  run mkdir -p "${pnpm_home}" "${store_dir}" "${npm_cache}" "${xdg_cache}"
+}
+
+run_pnpm() {
+  # Force pnpm to use directories under `--root` to avoid user-global config pointing at
+  # unavailable locations (e.g. `/Volumes/...`).
+  local bundle
+  bundle="$(pnpm_dirs)"
+  local pnpm_home store_dir npm_cache xdg_cache
+  IFS='|' read -r pnpm_home store_dir npm_cache xdg_cache <<<"${bundle}"
+  run env \
+    PNPM_HOME="${pnpm_home}" \
+    PNPM_STORE_DIR="${store_dir}" \
+    NPM_CONFIG_STORE_DIR="${store_dir}" \
+    NPM_CONFIG_CACHE="${npm_cache}" \
+    XDG_CACHE_HOME="${xdg_cache}" \
+    pnpm "$@"
 }
 
 port_listeners() {
@@ -310,9 +347,14 @@ HYP_TARGET_DIR="${RUN_ROOT}/target-hyperlane"
 ANVIL_RPC_URL="http://127.0.0.1:8545"
 ANVIL_CHAIN_ID="31337"
 ANVIL_DOMAIN_ID="31337"
+# Hyperlane Rust agents require the chain "name" to match the known domain id.
+# Domain id 31337 is `test4` in `hyperlane-core`.
+ANVIL_DOMAIN_NAME="test4"
 KASPA_DOMAIN_ID="7"
-HYPERLANE_REF="devel"
-HYPERLANE_REPO_URL="https://github.com/reshmem/hyperlane-monorepo.git"
+HYPERLANE_REF="${HYPERLANE_REF:-devel}"
+HYPERLANE_REPO_URL="${HYPERLANE_REPO_URL:-https://github.com/reshmem/hyperlane-monorepo.git}"
+HYPERLANE_CLI_MODE="${HYPERLANE_CLI_MODE:-npm}"          # npm|repo
+HYPERLANE_CLI_VERSION="${HYPERLANE_CLI_VERSION:-21.1.0}" # used when HYPERLANE_CLI_MODE=npm
 
 if [[ -n "${SECRETS_PASSPHRASE_ARG}" && -z "${SECRETS_PASSPHRASE_ARG//[[:space:]]/}" ]]; then
   log_error "--secrets-passphrase must not be empty"
@@ -372,74 +414,169 @@ ensure_hyperlane_repo() {
   mkdir -p "${HYP_SOURCES}"
   if [[ -d "${HYP_REPO}/.git" ]]; then
     log_info "Updating Hyperlane repo at ${HYP_REPO}"
+    local dirty=""
+    dirty="$(git -C "${HYP_REPO}" status --porcelain 2>/dev/null || true)"
+    if [[ -n "${dirty}" ]]; then
+      log_warn "Hyperlane checkout is dirty; discarding local changes to keep devnet reproducible repo=${HYP_REPO}"
+      if [[ "${DRY_RUN}" != "true" ]]; then
+        run git -C "${HYP_REPO}" reset --hard
+        # Do not use `-x`: some Hyperlane crates generate Rust bindings into ignored
+        # `src/contracts/*` at build time. Deleting ignored files can break incremental
+        # builds if Cargo doesn't re-run build scripts.
+        run git -C "${HYP_REPO}" clean -fd
+      fi
+    fi
     run git -C "${HYP_REPO}" fetch --all --prune
     run git -C "${HYP_REPO}" checkout "${HYPERLANE_REF}"
-    run git -C "${HYP_REPO}" pull --ff-only || true
+    if git -C "${HYP_REPO}" show-ref --verify --quiet "refs/remotes/origin/${HYPERLANE_REF}"; then
+      run git -C "${HYP_REPO}" reset --hard "origin/${HYPERLANE_REF}"
+    else
+      run git -C "${HYP_REPO}" pull --ff-only || true
+    fi
   else
     log_info "Cloning Hyperlane repo into ${HYP_REPO}"
     run git clone --branch "${HYPERLANE_REF}" --depth 1 "${HYPERLANE_REPO_URL}" "${HYP_REPO}"
   fi
 }
 
-ensure_relayer_kaspa_feature() {
+verify_hyperlane_kaspa_support() {
   local cargo_toml="${HYP_REPO}/rust/main/agents/relayer/Cargo.toml"
   if [[ ! -f "${cargo_toml}" ]]; then
     log_error "Missing relayer Cargo.toml at ${cargo_toml}"
     exit 1
   fi
-  if grep -E '^[[:space:]]*kaspa[[:space:]]*=' "${cargo_toml}" >/dev/null 2>&1; then
+  if ! grep -E '^[[:space:]]*kaspa[[:space:]]*=' "${cargo_toml}" >/dev/null 2>&1; then
+    log_error "Hyperlane relayer missing 'kaspa' feature in ${cargo_toml}; use a fork/branch that includes it or set HYPERLANE_REPO_URL/HYPERLANE_REF"
+    exit 1
+  fi
+
+  local factory_rs="${HYP_REPO}/rust/main/lander/src/adapter/chains/factory.rs"
+  if [[ ! -f "${factory_rs}" ]]; then
+    log_error "Missing lander chain adapter factory at ${factory_rs}"
+    exit 1
+  fi
+  if ! grep -F "unsupported chain connection protocol" "${factory_rs}" >/dev/null 2>&1; then
+    log_error "Hyperlane lander chain adapter factory is not exhaustive (Kaspa-enabled builds require a catch-all match arm); use a fork/branch that includes the fix"
+    exit 1
+  fi
+
+  local chains_rs="${HYP_REPO}/rust/main/hyperlane-base/src/settings/chains.rs"
+  if [[ ! -f "${chains_rs}" ]]; then
+    log_error "Missing Hyperlane chain settings at ${chains_rs}"
+    exit 1
+  fi
+  if grep -F "Kaspa does not support application operation verifier" "${chains_rs}" >/dev/null 2>&1; then
+    log_error "Hyperlane kaspa destination is not supported by this fork (application operation verifier rejects kaspa); use a fork/branch that includes the AllowAllApplicationOperationVerifier patch"
+    exit 1
+  fi
+}
+
+ensure_hyperlane_generated_bindings() {
+  # Hyperlane generates some Rust bindings into ignored `src/contracts/*` folders via build scripts.
+  # If those files are missing but Cargo reuses a cached build-script result, compilation fails
+  # with `E0583: file not found for module contracts`.
+  #
+  # To keep this aligned with upstream (no patching of Hyperlane code), we force a clean rebuild
+  # of the Hyperlane target dir when the generated sources are missing.
+
+  local -a required=(
+    "${HYP_REPO}/rust/main/ethers-prometheus/src/contracts/mod.rs"
+    "${HYP_REPO}/rust/main/ethers-prometheus/src/contracts/erc_20.rs"
+    "${HYP_REPO}/rust/main/chains/hyperlane-fuel/src/contracts/mod.rs"
+    "${HYP_REPO}/rust/main/chains/hyperlane-fuel/src/contracts/mailbox.rs"
+    "${HYP_REPO}/rust/main/chains/hyperlane-starknet/src/contracts/mod.rs"
+    "${HYP_REPO}/rust/main/chains/hyperlane-starknet/src/contracts/aggregation_ism.rs"
+  )
+
+  local missing=0
+  local first_missing=""
+  for p in "${required[@]}"; do
+    if [[ ! -f "${p}" ]]; then
+      missing=1
+      first_missing="${p}"
+      break
+    fi
+  done
+
+  if [[ "${missing}" != "1" ]]; then
     return 0
   fi
-  log_warn "Hyperlane relayer missing kaspa feature; patching local checkout (root-scoped) to enable hyperlane-base/kaspa"
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "[DRY-RUN] Would patch ${cargo_toml}"
+
+  log_warn "Missing generated Hyperlane bindings; forcing clean rebuild first_missing=${first_missing}"
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    rm -rf "${HYP_TARGET_DIR}"
+  fi
+}
+
+ensure_hyperlane_cli_built() {
+  local cli_js="${HYP_REPO}/typescript/cli/dist/cli.js"
+  if [[ -f "${cli_js}" ]]; then
     return 0
   fi
-  CARGO_TOML="${cargo_toml}" python3 - <<'PY'
-from __future__ import annotations
-from pathlib import Path
 
-path = Path(__import__("os").environ["CARGO_TOML"])
-text = path.read_text(encoding="utf-8").splitlines(True)
+  # In the Hyperlane monorepo, `pnpm install` does not build TypeScript outputs.
+  # Workspace packages typically export `./dist/*` (types + JS). If we only run `tsc` in the CLI
+  # package, its dependencies may still be unbuilt, and TypeScript module resolution fails.
+  #
+  # Use the repo's Turbo pipeline to build the CLI + all of its dependent packages.
+  local node_ver
+  node_ver="$(node -v 2>/dev/null || true)"
+  if [[ "${node_ver}" != v20* ]]; then
+    log_warn "Hyperlane recommends Node v20 (.nvmrc); current node=${node_ver} (if build fails, run: nvm use 20)"
+  fi
 
-out: list[str] = []
-in_features = False
-inserted = False
-for line in text:
-    if line.strip() == "[features]":
-        in_features = True
-        out.append(line)
-        continue
-    if in_features and line.startswith("[") and line.strip().startswith("[") and line.strip().endswith("]") and line.strip() != "[features]":
-        if not inserted:
-            out.append('kaspa = ["hyperlane-base/kaspa"]\n')
-            inserted = True
-        in_features = False
-        out.append(line)
-        continue
-    out.append(line)
+  log_info "Building Hyperlane CLI + deps via turbo (typescript/cli/dist)"
+  # Use `pnpm exec` to run the local `turbo` binary; `pnpm turbo ...` can be interpreted as a
+  # recursive command depending on pnpm version/config.
+  if run_pnpm -C "${HYP_REPO}" exec turbo run build --filter=@hyperlane-xyz/cli; then
+    :
+  else
+    log_warn "turbo build failed; falling back to pnpm recursive build for @hyperlane-xyz/cli and deps"
+    # The `...` suffix includes transitive dependencies in the build.
+    run_pnpm -C "${HYP_REPO}" -r --filter @hyperlane-xyz/cli... run build
+  fi
+  if [[ "${DRY_RUN}" != "true" && ! -f "${cli_js}" ]]; then
+    log_error "Hyperlane CLI build did not produce ${cli_js}"
+    exit 1
+  fi
+}
 
-if in_features and not inserted:
-    out.append('kaspa = ["hyperlane-base/kaspa"]\n')
-    inserted = True
-
-if not inserted:
-    raise SystemExit("failed to insert kaspa feature")
-
-path.write_text("".join(out), encoding="utf-8")
-PY
+run_hyperlane_cli() {
+  # Executes the Hyperlane CLI in one of two modes:
+  # - npm: use the published @hyperlane-xyz/cli (fast, avoids building the monorepo TS workspace)
+  # - repo: build and run the CLI from the cloned Hyperlane monorepo
+  case "${HYPERLANE_CLI_MODE}" in
+    npm)
+      prepare_pnpm_dirs
+      run_pnpm dlx --package "@hyperlane-xyz/cli@${HYPERLANE_CLI_VERSION}" hyperlane "$@"
+      ;;
+    repo)
+      prepare_pnpm_dirs
+      ensure_hyperlane_cli_built
+      run_pnpm -C "${HYP_REPO}" --filter @hyperlane-xyz/cli run hyperlane "$@"
+      ;;
+    *)
+      log_error "Unknown HYPERLANE_CLI_MODE=${HYPERLANE_CLI_MODE} (expected: npm|repo)"
+      exit 1
+      ;;
+  esac
 }
 
 build_hyperlane() {
   ensure_hyperlane_repo
-  ensure_relayer_kaspa_feature
+  verify_hyperlane_kaspa_support
+  ensure_hyperlane_generated_bindings
+  prepare_cargo_dirs
 
-  log_info "Installing Hyperlane JS deps (pnpm install)"
-  run pnpm -C "${HYP_REPO}" install
+  if [[ "${HYPERLANE_CLI_MODE}" == "repo" ]]; then
+    prepare_pnpm_dirs
+    log_info "Installing Hyperlane JS deps (pnpm install)"
+    run_pnpm -C "${HYP_REPO}" install
+  fi
 
   log_info "Building Hyperlane Rust agents (validator + relayer)"
-  run bash -lc "cd \"${HYP_REPO}/rust/main\" && CARGO_TARGET_DIR=\"${HYP_TARGET_DIR}\" cargo build --release -p validator"
-  run bash -lc "cd \"${HYP_REPO}/rust/main\" && CARGO_TARGET_DIR=\"${HYP_TARGET_DIR}\" cargo build --release -p relayer --features kaspa"
+  run bash -lc "cd \"${HYP_REPO}/rust/main\" && CARGO_HOME=\"${HYP_ROOT}/cargo-home\" CARGO_TARGET_DIR=\"${HYP_TARGET_DIR}\" RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release -p validator"
+  run bash -lc "cd \"${HYP_REPO}/rust/main\" && CARGO_HOME=\"${HYP_ROOT}/cargo-home\" CARGO_TARGET_DIR=\"${HYP_TARGET_DIR}\" RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release -p relayer --features kaspa"
 }
 
 start_igra_devnet_default() {
@@ -532,16 +669,18 @@ defaultIsm:
   validators:
     - "0x${evm_addr}"
 defaultHook:
-  type: protocolFee
-  maxProtocolFee: "1000000000000000000"
-  protocolFee: "200000000000000"
-  beneficiary: "0x${evm_addr}"
-  owner: "0x${evm_addr}"
+  # The MerkleTreeHook is required to produce checkpoints; validators and relayers
+  # depend on it to prove and deliver messages.
+  type: "merkleTreeHook"
 requiredHook:
   type: protocolFee
   maxProtocolFee: "1000000000000000000"
-  protocolFee: "200000000000000"
+  # Keep protocol fee at 0 in local devnet so `hyperlane_anvil_sender` can dispatch
+  # without attaching ETH (and without calling IGP).
+  protocolFee: "0"
   beneficiary: "0x${evm_addr}"
+  owner: "0x${evm_addr}"
+proxyAdmin:
   owner: "0x${evm_addr}"
 EOF
   fi
@@ -551,7 +690,7 @@ EOF
   run rm -f "${HYP_REGISTRY}/chains/anvil1/addresses.yaml" || true
 
   log_info "Deploying Hyperlane core contracts to Anvil (this may take a bit)..."
-  run pnpm -C "${HYP_REPO}" --filter @hyperlane-xyz/cli run hyperlane core deploy \
+  run_hyperlane_cli core deploy \
     --registry "${HYP_REGISTRY}" \
     --config "${core_cfg}" \
     --chain anvil1 \
@@ -610,9 +749,15 @@ read_core_addresses() {
   local mth
   mth="$(read_yaml_key "${addresses_yaml}" "merkleTreeHook")"
 
-  if [[ -z "${mailbox}" || -z "${igp}" || -z "${va}" || -z "${mth}" ]]; then
-    log_error "addresses.yaml missing required keys (mailbox/interchainGasPaymaster/validatorAnnounce/merkleTreeHook)"
+  if [[ -z "${mailbox}" || -z "${va}" || -z "${mth}" ]]; then
+    log_error "addresses.yaml missing required keys (mailbox/validatorAnnounce/merkleTreeHook)"
     exit 1
+  fi
+
+  if [[ -z "${igp}" ]]; then
+    # IGP is not always deployed as part of `core deploy` (depends on hook config).
+    # The Hyperlane agent schemas accept it as the zero-address when unused.
+    igp="0x0000000000000000000000000000000000000000"
   fi
 
   echo "${mailbox}|${igp}|${va}|${mth}"
@@ -643,31 +788,43 @@ write_validator_config() {
 import json
 from pathlib import Path
 
+cfg_dir = Path(r"""${cfg_dir}""")
+db = r"""${db}"""
+checkpoints = r"""${checkpoints}"""
+anvil_rpc_url = r"""${ANVIL_RPC_URL}"""
+mailbox = r"""${mailbox}"""
+interchain_gas_paymaster = r"""${igp}"""
+validator_announce = r"""${va}"""
+merkle_tree_hook = r"""${mth}"""
+
 cfg = {
   "metricsPort": ${metrics_port},
   "log": { "level": "info", "format": "pretty" },
-  "originChainName": "anvil1",
-  "db": ${db!r},
+  "originChainName": r"""${ANVIL_DOMAIN_NAME}""",
+  "db": db,
   "validator": { "type": "hexKey", "key": "0x${vpriv_hex}" },
-  "checkpointSyncer": { "type": "localStorage", "path": ${checkpoints!r} },
+  "checkpointSyncer": { "type": "localStorage", "path": checkpoints },
   "chains": {
-    "anvil1": {
-      "name": "anvil1",
+    r"""${ANVIL_DOMAIN_NAME}""": {
+      "name": r"""${ANVIL_DOMAIN_NAME}""",
       "chainId": ${ANVIL_CHAIN_ID},
       "domainId": ${ANVIL_DOMAIN_ID},
       "protocol": "ethereum",
-      "rpcUrls": [{"http": ${ANVIL_RPC_URL!r}}],
-      "mailbox": ${mailbox!r},
-      "interchainGasPaymaster": ${igp!r},
-      "validatorAnnounce": ${va!r},
-      "merkleTreeHook": ${mth!r},
+      # Avoid the default `lander` submitter to keep local devnet config minimal
+      # (no EVM signer required for read-only validator operation).
+      "submitter": "Classic",
+      "rpcUrls": [{"http": anvil_rpc_url}],
+      "mailbox": mailbox,
+      "interchainGasPaymaster": interchain_gas_paymaster,
+      "validatorAnnounce": validator_announce,
+      "merkleTreeHook": merkle_tree_hook,
       "blocks": { "estimateBlockTime": 1, "reorgPeriod": 1 },
       "index": { "from": 0, "chunk": 1999, "mode": "block" },
     }
   }
 }
 
-out = Path(${cfg_dir!r}) / "agent.json"
+out = cfg_dir / "agent.json"
 out.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 print(f"Wrote {out}")
 PY
@@ -687,6 +844,12 @@ write_relayer_config() {
   local metrics_port="$((9920 + idx))"
 
   local keyset_json="${RUN_ROOT}/config/devnet-keys.json"
+  local evm_priv
+  evm_priv="$(read_json_field "${keyset_json}" "data['evm']['private_key_hex']")"
+  if [[ -z "${evm_priv}" ]]; then
+    log_error "Missing evm.private_key_hex in ${keyset_json}"
+    exit 1
+  fi
   local group_id
   group_id="$(read_json_field "${keyset_json}" "data['group_id']")"
   if [[ -z "${group_id}" ]]; then
@@ -706,23 +869,40 @@ write_relayer_config() {
 import json
 from pathlib import Path
 
+cfg_dir = Path(r"""${cfg_dir}""")
+db = r"""${db}"""
+anvil_rpc_url = r"""${ANVIL_RPC_URL}"""
+mailbox = r"""${mailbox}"""
+interchain_gas_paymaster = r"""${igp}"""
+validator_announce = r"""${va}"""
+merkle_tree_hook = r"""${mth}"""
+kaspa_rpc_url = r"""${rpc_url}"""
+kaspa_group_h256 = r"""${group_h256}"""
+evm_priv = r"""${evm_priv}"""
+
 cfg = {
   "metricsPort": ${metrics_port},
   "log": { "level": "info", "format": "pretty" },
-  "relayChains": "anvil1,kaspa",
-  "db": ${db!r},
+  "relayChains": r"""${ANVIL_DOMAIN_NAME}"""+",kaspa",
+  "db": db,
   "allowLocalCheckpointSyncers": True,
   "chains": {
-    "anvil1": {
-      "name": "anvil1",
+    r"""${ANVIL_DOMAIN_NAME}""": {
+      "name": r"""${ANVIL_DOMAIN_NAME}""",
       "chainId": ${ANVIL_CHAIN_ID},
       "domainId": ${ANVIL_DOMAIN_ID},
       "protocol": "ethereum",
-      "rpcUrls": [{"http": ${ANVIL_RPC_URL!r}}],
-      "mailbox": ${mailbox!r},
-      "interchainGasPaymaster": ${igp!r},
-      "validatorAnnounce": ${va!r},
-      "merkleTreeHook": ${mth!r},
+      # Avoid the default `lander` submitter to keep local devnet config minimal
+      # (no EVM signer required; we only relay EVM->Kaspa in this setup).
+      "submitter": "Classic",
+      # The relayer still initializes EVM as a destination chain when it is present
+      # in `relayChains`. Provide an Anvil signer to satisfy destination construction.
+      "signer": { "type": "hexKey", "key": "0x" + evm_priv },
+      "rpcUrls": [{"http": anvil_rpc_url}],
+      "mailbox": mailbox,
+      "interchainGasPaymaster": interchain_gas_paymaster,
+      "validatorAnnounce": validator_announce,
+      "merkleTreeHook": merkle_tree_hook,
       "blocks": { "estimateBlockTime": 1, "reorgPeriod": 1 },
       "index": { "from": 0, "chunk": 1999, "mode": "block" },
     },
@@ -730,18 +910,18 @@ cfg = {
       "name": "kaspa",
       "domainId": ${KASPA_DOMAIN_ID},
       "protocol": "kaspa",
-      "rpcUrls": [{"http": ${rpc_url!r}}],
-      "mailbox": ${group_h256!r},
-      "interchainGasPaymaster": ${group_h256!r},
-      "validatorAnnounce": ${group_h256!r},
-      "merkleTreeHook": ${group_h256!r},
+      "rpcUrls": [{"http": kaspa_rpc_url}],
+      "mailbox": kaspa_group_h256,
+      "interchainGasPaymaster": kaspa_group_h256,
+      "validatorAnnounce": kaspa_group_h256,
+      "merkleTreeHook": kaspa_group_h256,
       "blocks": { "estimateBlockTime": 1, "reorgPeriod": 1 },
       "index": { "from": 0, "chunk": 1999, "mode": "sequence" },
     }
   }
 }
 
-out = Path(${cfg_dir!r}) / "agent.json"
+out = cfg_dir / "agent.json"
 out.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 print(f"Wrote {out}")
 PY
