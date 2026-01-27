@@ -225,7 +225,8 @@ def default_template_dict() -> dict:
         },
         "runtime": {"test_mode": False, "session_timeout_seconds": 60},
         "signing": {"backend": "threshold"},
-        "rpc": {"addr": "0.0.0.0:8088", "enabled": True},
+        "rpc": {"addr": "0.0.0.0:8088", "enabled": True, "rate_limit_rps": 1000000},
+        "two_phase": {"proposal_timeout_ms": 3600000},
         "policy": {
             "allowed_destinations": [],
             "min_amount_sompi": 1000000,
@@ -304,7 +305,7 @@ def write_toml_config(toml_out: pathlib.Path, config: dict) -> None:
         "# See CONFIG_REFACTORING.md for migration details",
         "",
     ]
-    for section in ["service", "runtime", "signing", "rpc", "policy", "group", "hyperlane", "layerzero", "iroh"]:
+    for section in ["service", "runtime", "signing", "rpc", "two_phase", "policy", "group", "hyperlane", "layerzero", "iroh"]:
         if section in config and isinstance(config[section], dict):
             dump_tables(lines, section, config[section])
             # Arrays-of-tables (currently only used for hyperlane.domains).
@@ -355,6 +356,7 @@ def rewrite_toml(
     config.setdefault("runtime", {})
     config.setdefault("signing", {})
     config.setdefault("rpc", {})
+    config.setdefault("two_phase", {})
     config.setdefault("policy", {})
     config.setdefault("layerzero", {})
     config.setdefault("group", {})
@@ -364,6 +366,10 @@ def rewrite_toml(
 
     # Update service section
     config["service"]["data_dir"] = str(igra_data)
+
+    # Devnet defaults (safe even when the template is missing these keys).
+    config["rpc"].setdefault("rate_limit_rps", 1000000)
+    config["two_phase"].setdefault("proposal_timeout_ms", 3600000)
 
     # Update pskt section
     multisig_address = data.get("multisig_address") or ""

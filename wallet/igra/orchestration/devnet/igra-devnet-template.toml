@@ -94,6 +94,17 @@ backend = "threshold"
 addr = "0.0.0.0:8088"
 enabled = true
 
+# RPC rate limiting (per-IP, fixed 1s window).
+# - If omitted: defaults to 30 rps (and a small burst).
+# - Devnet: set very high to avoid 429s from local relayers/test tooling.
+rate_limit_rps = 1000000
+
+[two_phase]
+# Proposal phase timeout (milliseconds).
+# - If omitted: defaults to 5 seconds.
+# - Devnet: set high to tolerate slow/faulty local runs without constantly timing out.
+proposal_timeout_ms = 3600000
+
 [policy]
 # Outgoing transfer policy. In devnet we allow everything by default.
 allowed_destinations = []

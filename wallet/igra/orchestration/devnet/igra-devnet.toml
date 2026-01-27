@@ -37,6 +37,10 @@ backend = "threshold"
 [rpc]
 addr = "0.0.0.0:8088"
 enabled = true
+rate_limit_rps = 1000000
+
+[two_phase]
+proposal_timeout_ms = 3600000
 
 [policy]
 allowed_destinations = []

@@ -1268,6 +1268,79 @@ generate_keys() {
 }
 
 ensure_configs() {
+  # Devnet ergonomics: keep the RPC unthrottled (avoid 429s from local relayers/test tooling)
+  # and keep the two-phase proposal window long (avoid frequent timeouts under load).
+  #
+  # We patch the config file in-place so existing devnet roots don't require a full `generate-keys`
+  # cycle just to pick up these defaults.
+  ensure_devnet_overrides() {
+    local config_path="$1"
+    local desired_rate_limit_rps="${2:-1000000}"
+    local desired_proposal_timeout_ms="${3:-3600000}"
+
+    if [[ ! -f "${config_path}" ]]; then
+      return 0
+    fi
+
+    python3 - "${config_path}" "${desired_rate_limit_rps}" "${desired_proposal_timeout_ms}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+rate_limit_rps = int(sys.argv[2])
+proposal_timeout_ms = int(sys.argv[3])
+
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines()
+
+def is_table_header(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("[") and stripped.endswith("]") and not stripped.startswith("[[")
+
+def find_table(table):
+    header = f"[{table}]"
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == header:
+            start = i
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if is_table_header(lines[j]):
+            end = j
+            break
+    return start, end
+
+def upsert_key(table: str, key: str, value: int) -> None:
+    start, end = find_table(table)
+    if start is None:
+        # Add table at end.
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append(f"[{table}]")
+        lines.append(f"{key} = {value}")
+        return
+
+    prefix = f"{key} ="
+    for i in range(start + 1, end):
+        if lines[i].lstrip().startswith(prefix):
+            lines[i] = f"{key} = {value}"
+            return
+
+    # Insert at end of the table (before the next header).
+    lines.insert(end, f"{key} = {value}")
+
+upsert_key("rpc", "rate_limit_rps", rate_limit_rps)
+upsert_key("two_phase", "proposal_timeout_ms", proposal_timeout_ms)
+
+out = "\n".join(lines).rstrip() + "\n"
+if out != text:
+    path.write_text(out, encoding="utf-8")
+PY
+  }
+
   local required_files=("${IGRA_CONFIG}" "${HYPERLANE_KEYS}" "${KEYSET_JSON}")
   for file in "${required_files[@]}"; do
     if [[ ! -f "${file}" ]]; then
@@ -1276,6 +1349,9 @@ ensure_configs() {
       exit 1
     fi
   done
+
+  ensure_devnet_overrides "${IGRA_CONFIG}" "1000000" "3600000"
+
   if ! grep -q "^threshold[[:space:]]*=" "${IGRA_CONFIG}" 2>/dev/null; then
     log_error "IGRA config missing hyperlane.threshold; regenerate configs with 'generate-keys'."
     exit 1
