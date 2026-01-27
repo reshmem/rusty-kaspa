@@ -406,8 +406,7 @@ async fn main() -> Result<(), String> {
                 compute_recipient_from_destination_address(&destination_address)
             } else {
                 H256::from(
-                    igra_core::foundation::parse_hex_32bytes(trimmed)
-                        .map_err(|err| format!("invalid HYPERLANE_RECIPIENT: {err}"))?,
+                    igra_core::foundation::parse_hex_32bytes(trimmed).map_err(|err| format!("invalid HYPERLANE_RECIPIENT: {err}"))?,
                 )
             }
         }
