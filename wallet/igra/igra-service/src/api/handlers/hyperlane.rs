@@ -369,7 +369,7 @@ pub async fn handle_validators_and_threshold(
             return json_err(id, RpcErrorCode::UnknownDomain, "unknown destination domain");
         }
     };
-    info!(
+    debug!(
         "resolved validators and threshold domain={} threshold={} validator_count={} mode={}",
         domain,
         set.threshold,
