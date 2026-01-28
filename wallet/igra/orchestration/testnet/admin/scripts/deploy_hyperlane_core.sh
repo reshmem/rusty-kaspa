@@ -106,21 +106,79 @@ tmp_dir="${igra_root}/orchestration/testnet/admin/.tmp"
 mkdir -p "${tmp_dir}"
 mkdir -p "${registry_dir}"
 
+chain_dir="${registry_dir}/chains/${chain_name}"
+mkdir -p "${chain_dir}"
+
+# Hyperlane CLI requires chain metadata to exist in the registry before it can deploy core contracts.
+# This is the same pattern used in our devnet scripts (they copy anvil1 metadata.yaml into the registry).
+meta="${chain_dir}/metadata.yaml"
+cat > "${meta}" <<YAML
+# Minimal chain metadata for Hyperlane CLI
+name: ${chain_name}
+displayName: ${chain_name}
+protocol: ethereum
+chainId: ${chain_id}
+domainId: ${domain_id}
+rpcUrls:
+  - http: "${IGRA_EVM_RPC_URL}"
+nativeToken:
+  name: Ether
+  symbol: ETH
+  decimals: 18
+YAML
+
+owner_addr=""
+if command -v cast >/dev/null 2>&1; then
+  owner_addr="$(cast wallet address --private-key "0x${deployer_key}" 2>/dev/null | tr -d '\r')"
+fi
+if [[ -z "${owner_addr}" ]]; then
+  # Fallback: derive owner address via node+ethers (installed by install_hyperlane_cli.sh).
+  node_modules="${igra_root}/orchestration/testnet/admin/.tools/hyperlane-cli/node_modules"
+  if [[ ! -d "${node_modules}" ]]; then
+    echo "missing node_modules for ethers fallback at: ${node_modules}" >&2
+    echo "run: orchestration/testnet/admin/scripts/install_hyperlane_cli.sh" >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "missing required command: node (needed to derive owner address)" >&2
+    exit 1
+  fi
+  owner_addr="$(NODE_PATH="${node_modules}" node -e 'const { Wallet } = require("ethers"); console.log(new Wallet(process.env.K).address);' \
+    K="0x${deployer_key}" 2>/dev/null | tr -d '\r')"
+fi
+if [[ -z "${owner_addr}" ]]; then
+  echo "failed to derive deployer EVM address from HYP_EVM_DEPLOYER_KEY_HEX" >&2
+  exit 1
+fi
+
+# Core deployment config (contracts + hooks). Chain metadata comes from the registry metadata.yaml above.
 cfg="${tmp_dir}/core-config.yaml"
 cat > "${cfg}" <<YAML
-chains:
-  ${chain_name}:
-    name: ${chain_name}
-    protocol: ethereum
-    chainId: ${chain_id}
-    domainId: ${domain_id}
-    rpcUrls:
-      - http: "${IGRA_EVM_RPC_URL}"
+owner: "${owner_addr}"
+defaultIsm:
+  type: "testIsm"
+  threshold: 1
+  validators:
+    - "${owner_addr}"
+defaultHook:
+  # MerkleTreeHook is required to produce checkpoints for validators/relayers.
+  type: "merkleTreeHook"
+requiredHook:
+  type: protocolFee
+  maxProtocolFee: "1000000000000000000"
+  # Keep protocol fee at 0 for testnet-v1 local testing.
+  # If you change this to >0, dispatchers must attach ETH or use an IGP flow.
+  protocolFee: "0"
+  beneficiary: "${owner_addr}"
+  owner: "${owner_addr}"
+proxyAdmin:
+  owner: "${owner_addr}"
 YAML
 
 echo "Deploying Hyperlane core contracts..."
 echo "  chain=${chain_name} chainId=${chain_id} domainId=${domain_id}"
 echo "  registry_dir=${registry_dir}"
+echo "  owner=${owner_addr}"
 
 "${hyperlane_bin}" core deploy \
   --registry "${registry_dir}" \
