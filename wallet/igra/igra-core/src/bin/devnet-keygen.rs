@@ -31,15 +31,70 @@ enum OutputFormat {
     Both,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum KaspaNetwork {
+    Devnet,
+    Testnet,
+    Mainnet,
+}
+
+impl KaspaNetwork {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "devnet" => Some(Self::Devnet),
+            "testnet" => Some(Self::Testnet),
+            "mainnet" => Some(Self::Mainnet),
+            _ => None,
+        }
+    }
+
+    fn prefix(self) -> Prefix {
+        match self {
+            Self::Devnet => Prefix::Devnet,
+            Self::Testnet => Prefix::Testnet,
+            Self::Mainnet => Prefix::Mainnet,
+        }
+    }
+
+    fn default_wallet_name(self) -> &'static str {
+        match self {
+            Self::Devnet => "devnet",
+            Self::Testnet => "testnet",
+            Self::Mainnet => "mainnet",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HyperlaneValidatorNameFormat {
+    Legacy,
+    TwoDigit,
+}
+
+impl HyperlaneValidatorNameFormat {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Some(Self::Legacy),
+            "two-digit" => Some(Self::TwoDigit),
+            _ => None,
+        }
+    }
+}
+
 struct Args {
     format: OutputFormat,
     output: PathBuf,
     output_dir: Option<PathBuf>,
     passphrase: Option<String>,
     num_signers: usize,
+    threshold_m: usize,
+    kaspa_network: KaspaNetwork,
+    network_id: u8,
     signer_profile: Option<String>,
     payment_secret: Option<String>,
     overwrite: bool,
+    hyperlane_validator_count: usize,
+    hyperlane_validator_name_format: HyperlaneValidatorNameFormat,
 }
 
 impl Default for Args {
@@ -50,9 +105,14 @@ impl Default for Args {
             output_dir: None,
             passphrase: None,
             num_signers: 3,
+            threshold_m: 2,
+            kaspa_network: KaspaNetwork::Devnet,
+            network_id: 0,
             signer_profile: None,
             payment_secret: None,
             overwrite: false,
+            hyperlane_validator_count: 2,
+            hyperlane_validator_name_format: HyperlaneValidatorNameFormat::Legacy,
         }
     }
 }
@@ -72,7 +132,7 @@ impl OutputFormat {
 
 fn print_usage() {
     eprintln!(
-        "Usage: devnet-keygen [--format json|env|file|file-per-signer|both] [--output PATH] [--output-dir DIR] [--passphrase PASS] [--num-signers N] [--signer-profile signer-XX] [--payment-secret VALUE] [--overwrite]\n\
+        "Usage: devnet-keygen [--format json|env|file|file-per-signer|both] [--output PATH] [--output-dir DIR] [--passphrase PASS] [--num-signers N] [--threshold-m M] [--kaspa-network devnet|testnet|mainnet] [--network-id ID] [--hyperlane-validator-count N] [--hyperlane-validator-name-format legacy|two-digit] [--signer-profile signer-XX] [--payment-secret VALUE] [--overwrite]\n\
 \n\
 Defaults (no args): prints keyset JSON to stdout.\n\
 Notes:\n\
@@ -114,6 +174,37 @@ fn parse_args() -> Result<Args, ThresholdError> {
                 args.num_signers = value
                     .parse::<usize>()
                     .map_err(|e| ThresholdError::Message(format!("invalid --num-signers value: {} ({})", value, e)))?;
+            }
+            "--threshold-m" => {
+                let value = it.next().ok_or_else(|| ThresholdError::Message("--threshold-m requires a value".to_string()))?;
+                args.threshold_m = value
+                    .parse::<usize>()
+                    .map_err(|e| ThresholdError::Message(format!("invalid --threshold-m value: {} ({})", value, e)))?;
+            }
+            "--kaspa-network" => {
+                let value = it.next().ok_or_else(|| ThresholdError::Message("--kaspa-network requires a value".to_string()))?;
+                args.kaspa_network = KaspaNetwork::parse(&value)
+                    .ok_or_else(|| ThresholdError::Message(format!("invalid --kaspa-network value: {}", value)))?;
+            }
+            "--network-id" => {
+                let value = it.next().ok_or_else(|| ThresholdError::Message("--network-id requires a value".to_string()))?;
+                args.network_id = value
+                    .parse::<u8>()
+                    .map_err(|e| ThresholdError::Message(format!("invalid --network-id value: {} ({})", value, e)))?;
+            }
+            "--hyperlane-validator-count" => {
+                let value =
+                    it.next().ok_or_else(|| ThresholdError::Message("--hyperlane-validator-count requires a value".to_string()))?;
+                args.hyperlane_validator_count = value
+                    .parse::<usize>()
+                    .map_err(|e| ThresholdError::Message(format!("invalid --hyperlane-validator-count value: {} ({})", value, e)))?;
+            }
+            "--hyperlane-validator-name-format" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| ThresholdError::Message("--hyperlane-validator-name-format requires a value".to_string()))?;
+                args.hyperlane_validator_name_format = HyperlaneValidatorNameFormat::parse(&value)
+                    .ok_or_else(|| ThresholdError::Message(format!("invalid --hyperlane-validator-name-format value: {}", value)))?;
             }
             "--signer-profile" => {
                 let value = it.next().ok_or_else(|| ThresholdError::Message("--signer-profile requires a value".to_string()))?;
@@ -218,6 +309,7 @@ fn derive_pubkey_and_address(
     is_multisig: bool,
     account_index: u64,
     cosigner_index: Option<u32>,
+    prefix: Prefix,
 ) -> Result<(PublicKey, String), ThresholdError> {
     let xprv = kaspa_bip32::ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed(""))
         .map_err(|e| ThresholdError::Message(format!("xprv: {e}")))?;
@@ -225,7 +317,7 @@ fn derive_pubkey_and_address(
     let wallet = WalletDerivationManager::from_master_xprv(&xprv_str, is_multisig, account_index, cosigner_index)
         .map_err(|e| ThresholdError::Message(format!("wallet derive: {e}")))?;
     let pk = wallet.derive_receive_pubkey(0).map_err(|e| ThresholdError::Message(format!("pubkey derive: {e}")))?;
-    let address = PubkeyDerivationManager::create_address(&pk, Prefix::Devnet, false)
+    let address = PubkeyDerivationManager::create_address(&pk, prefix, false)
         .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
     Ok((pk, address.to_string()))
 }
@@ -246,15 +338,27 @@ fn derive_wallet_private_key_hex(mnemonic: &Mnemonic) -> Result<String, Threshol
 async fn main() -> Result<(), ThresholdError> {
     let args = parse_args()?;
 
-    let password = "devnet".to_string();
-    let name = "devnet".to_string();
+    if args.num_signers > 1 && (args.threshold_m == 0 || args.threshold_m > args.num_signers) {
+        return Err(ThresholdError::ConfigError(format!(
+            "threshold-m must be 1..=num-signers; got m={} n={}",
+            args.threshold_m, args.num_signers
+        )));
+    }
+
+    if args.hyperlane_validator_count == 0 {
+        return Err(ThresholdError::ConfigError("hyperlane-validator-count must be >= 1".to_string()));
+    }
+
+    let password = args.kaspa_network.default_wallet_name().to_string();
+    let name = args.kaspa_network.default_wallet_name().to_string();
+    let kaspa_prefix = args.kaspa_network.prefix();
 
     let payment_secret = args.payment_secret.clone().filter(|s| !s.trim().is_empty()).map(Secret::from);
 
     if args.num_signers == 1 {
         let profile = args.signer_profile.clone().unwrap_or_else(|| "signer-01".to_string());
         igra_core::infrastructure::config::validate_signer_profile(&profile)?;
-        let signer = generate_single_signer(profile, payment_secret.as_ref())?;
+        let signer = generate_single_signer(profile, payment_secret.as_ref(), kaspa_prefix)?;
 
         match args.format {
             OutputFormat::Json => {
@@ -289,7 +393,7 @@ async fn main() -> Result<(), ThresholdError> {
 
     // Wallet (funding/mining)
     let wallet_mnemonic = mnemonic_phrase()?;
-    let (_, mining_address) = derive_pubkey_and_address(&wallet_mnemonic, false, 0, None)?;
+    let (_, mining_address) = derive_pubkey_and_address(&wallet_mnemonic, false, 0, None, kaspa_prefix)?;
     let wallet_private_key_hex = derive_wallet_private_key_hex(&wallet_mnemonic)?;
     let wallet = WalletOut {
         mnemonic: wallet_mnemonic.phrase().to_string(),
@@ -331,7 +435,7 @@ async fn main() -> Result<(), ThresholdError> {
         signers.push(signer);
     }
 
-    // Derive Schnorr multisig key material for 2-of-3 using signer mnemonics.
+    // Derive Schnorr multisig key material for m-of-n using signer mnemonics.
     //
     // IMPORTANT: We must keep the following consistent:
     // - derived signer pubkeys (per-mnemonic)
@@ -367,7 +471,7 @@ async fn main() -> Result<(), ThresholdError> {
     // Fill derived signer pubkeys/addresses for debugging / tooling.
     for (idx, pubkey) in pubkeys.iter().enumerate() {
         signers[idx].pubkey_hex = pubkey_hex(pubkey);
-        let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
+        let address = PubkeyDerivationManager::create_address(pubkey, kaspa_prefix, false)
             .map_err(|e| ThresholdError::Message(format!("address derive: {e}")))?;
         signers[idx].address = address.to_string();
     }
@@ -376,11 +480,11 @@ async fn main() -> Result<(), ThresholdError> {
     let mut signers = ordered_indices.into_iter().map(|idx| signers[idx].clone()).collect::<Vec<_>>();
     signers.sort_by(|a, b| a.profile.cmp(&b.profile));
 
-    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, 2)?;
+    let redeem_script = igra_core::foundation::redeem_script_from_pubkeys(&ordered_pubkeys, args.threshold_m)?;
     let redeem_script_hex = hex::encode(redeem_script);
 
     // Derive multisig address for SCHNORR multisig (ecdsa=false) so it matches `redeem_script_hex`.
-    let multisig_address = create_multisig_address(2, ordered_pubkeys.clone(), Prefix::Devnet, false)
+    let multisig_address = create_multisig_address(args.threshold_m, ordered_pubkeys.clone(), kaspa_prefix, false)
         .map_err(|err| ThresholdError::Message(format!("multisig address: {err}")))?
         .to_string();
     let change_address = multisig_address.clone();
@@ -395,14 +499,18 @@ async fn main() -> Result<(), ThresholdError> {
         })
         .collect();
 
-    // Hyperlane validators (2)
+    // Hyperlane validators
     let secp = Secp256k1::new();
     let mut hyperlane_keys = Vec::new();
-    for idx in 0..2 {
+    for idx in 0..args.hyperlane_validator_count {
         let secret = SecretKey::new(&mut OsRng);
         let public = PublicKey::from_secret_key(&secp, &secret);
+        let name = match args.hyperlane_validator_name_format {
+            HyperlaneValidatorNameFormat::Legacy => format!("validator-{}", idx + 1),
+            HyperlaneValidatorNameFormat::TwoDigit => format!("validator-{:02}", idx + 1),
+        };
         hyperlane_keys.push(HyperlaneKeyOut {
-            name: format!("validator-{}", idx + 1),
+            name,
             private_key_hex: hex::encode(secret.secret_bytes()),
             public_key_hex: pubkey_hex(&public),
         });
@@ -455,8 +563,8 @@ async fn main() -> Result<(), ThresholdError> {
             let member_pubkeys_bytes: Vec<Vec<u8>> =
                 member_pubkeys.iter().map(|hex_pk| hex::decode(hex_pk).map_err(ThresholdError::from)).collect::<Result<_, _>>()?;
             let group_cfg = GroupConfig {
-                network_id: 0,
-                threshold_m: 2,
+                network_id: args.network_id,
+                threshold_m: args.threshold_m as u16,
                 threshold_n: args.num_signers as u16,
                 member_pubkeys: member_pubkeys_bytes,
                 fee_rate_sompi_per_gram: 0,
@@ -505,7 +613,7 @@ struct SingleSignerOutput {
     signer: SignerOut,
 }
 
-fn generate_single_signer(profile: String, payment_secret: Option<&Secret>) -> Result<SignerOut, ThresholdError> {
+fn generate_single_signer(profile: String, payment_secret: Option<&Secret>, prefix: Prefix) -> Result<SignerOut, ThresholdError> {
     let mnemonic = mnemonic_phrase()?;
     let phrase = mnemonic.phrase().to_string();
 
@@ -530,7 +638,7 @@ fn generate_single_signer(profile: String, payment_secret: Option<&Secret>) -> R
         payment_secret,
     })?;
     let pubkey = pubkeys.first().ok_or_else(|| ThresholdError::Message("failed to derive pubkey".to_string()))?;
-    let address = PubkeyDerivationManager::create_address(pubkey, Prefix::Devnet, false)
+    let address = PubkeyDerivationManager::create_address(pubkey, prefix, false)
         .map_err(|e| ThresholdError::Message(format!("address: {e}")))?;
 
     Ok(SignerOut {

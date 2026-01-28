@@ -1,0 +1,266 @@
+# Igra testnet-v1 signer config template.
+#
+# This template is used by `orchestration/testnet/scripts/generate_testnet_v1_bundles.py`.
+# Do not place any secrets in this file.
+#
+# Full reference: `docs/configuration-reference.md`
+
+[service]
+# Which Kaspa network rules to apply (address prefix, safety rules, etc).
+# - "testnet" uses `kaspatest:` address prefix and allows mnemonic-based keys.
+# - Mainnet forbids mnemonics (validated at startup).
+# Example: network = "testnet"
+network = "testnet"
+
+# REQUIRED for production-aligned operation (no KASPA_IGRA_PROFILE env):
+# Which `[profiles.<name>]` section is active for this process instance.
+# - This must match `signer-XX` (01-99) format.
+# - Used to select the correct secrets keys inside `secrets.bin` (mnemonic, iroh seed, etc).
+# Example: active_profile = "signer-01"
+active_profile = "__SIGNER_PROFILE__"
+
+# Base data directory for this signer (must contain `secrets.bin`).
+# - This is the root for RocksDB storage and other runtime files.
+# - Secrets default to `${data_dir}/secrets.bin` unless `service.secrets_file` overrides it.
+# Example: data_dir = "/var/lib/igra/signer-01"
+data_dir = "__DATA_DIR__"
+
+# Kaspa node RPC endpoint for the local kaspad instance.
+# - Igra uses this to query UTXOs, submit transactions, and watch chain progress.
+# - For testnet-v1 each operator runs `kaspad --testnet` locally.
+# Example: node_rpc_url = "grpc://127.0.0.1:16110"
+node_rpc_url = "grpc://127.0.0.1:16110"
+
+# Testnet uses production-aligned encrypted secrets.
+# - When true: `kaspa-threshold-service` reads from an encrypted secrets file (one per signer).
+# - Passphrase is provided via `IGRA_SECRETS_PASSPHRASE` (testnet/devnet may allow interactive prompt; mainnet does not).
+# Example: use_encrypted_secrets = true
+use_encrypted_secrets = true
+
+[service.pskt]
+# Canonical redeem script (hex) defining the m-of-n Schnorr multisig.
+# - This is the canonical *source of truth* for PSKT construction and signer alignment.
+# - Cross-checked against `[group].member_pubkeys` at startup.
+# Example: redeem_script_hex = "20<64-hex-xonly-pubkey>20<...>53ae"
+redeem_script_hex = "__REDEEM_SCRIPT_HEX__"
+
+# Optional explicit source address list.
+# If empty, derived from redeem_script_hex + service.network and validated at startup.
+# - Preferred: leave empty and let the service derive the single correct P2SH address from the redeem script.
+# - If provided: Igra validates it matches the derived multisig address exactly (prevents “scan wrong UTXO set” bugs).
+# Example: source_addresses = ["kaspatest:qz..."]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+source_addresses = []
+
+# Upper bound for CHECKMULTISIG sigops.
+# - Used for mass/standardness estimation.
+# - Recommended: set to `threshold_n` (n-of-n upper bound for CHECKMULTISIG).
+# Example: sig_op_count = 5
+sig_op_count = __SIG_OP_COUNT__
+
+# Fee mode for PSKT. Keep production default unless explicitly changed.
+# - Controls who pays Kaspa transaction fees (e.g. recipient vs group).
+# Example: fee_payment_mode = "recipient_pays"
+fee_payment_mode = "recipient_pays"
+
+# Optional explicit fee override (sompi).
+# - When 0: use the normal fee estimation flow.
+# Example: fee_sompi = 0
+fee_sompi = 0
+
+[service.hd]
+# Testnet allows mnemonics (mainnet forbids).
+# - "hd_mnemonic": derive the signer’s secp256k1 key from a mnemonic in the secrets store.
+# - "raw_private_key": derive directly from a 32-byte private key in the secrets store.
+# Example: key_type = "hd_mnemonic"
+key_type = "hd_mnemonic"
+
+# How many signatures (m) are required for m-of-n signing policy.
+# - This should match `[group].threshold_m`.
+# - If `service.pskt.redeem_script_hex` is set, this is effectively redundant, but is kept for consistency checks/tooling.
+# Example: required_sigs = 3
+required_sigs = __THRESHOLD_M__
+
+# Optional extra participant xpubs (public-only keys).
+# - When non-empty, can be used to derive group redeem script without having all mnemonics.
+# - For testnet-v1 we keep it empty and rely on the explicit redeem script + group pubkeys.
+# Example: xpubs = ["kpub..."]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+xpubs = []
+
+[runtime]
+# When true, enables dev/test-only overrides (dangerous in production).
+# Example: test_mode = false
+test_mode = false
+
+# Session timeout (seconds).
+# - Used by the signing session machinery (proposal/commit lifetimes).
+# Example: session_timeout_seconds = 60
+session_timeout_seconds = 60
+
+[signing]
+# Which signing backend to use.
+# - "threshold" is the Iroh gossip + threshold signature protocol.
+# Example: backend = "threshold"
+backend = "threshold"
+
+[rpc]
+# Bind address for the local JSON-RPC server.
+# - We bind to localhost to avoid exposing signer RPC publicly by default.
+# - Hyperlane relayer on the same machine connects to this RPC.
+# Example: addr = "127.0.0.1:8088"
+addr = "127.0.0.1:8088"
+
+# Enables the JSON-RPC server.
+# Example: enabled = true
+enabled = true
+
+# Avoid local tool failures due to 429s.
+# - This is a per-IP fixed-window limiter.
+# - Testnet-v1 uses a very high value to avoid breaking relayers/automation.
+# Example: rate_limit_rps = 1000000
+rate_limit_rps = 1000000
+
+[two_phase]
+# Avoid constant timeouts during early testnet operation.
+# - Proposal phase timeout (milliseconds).
+# - Set to 1 hour to tolerate slow operators while debugging.
+# Example: proposal_timeout_ms = 3600000
+proposal_timeout_ms = 3600000
+
+[policy]
+# Recipient allowlist. Empty means “no allowlist restriction” (still subject to min/max volume rules below).
+# Example: allowed_destinations = ["kaspatest:qz..."]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+allowed_destinations = []
+
+# Minimum outgoing amount (sompi). Below this, proposals are rejected.
+# Example: min_amount_sompi = 1000000
+min_amount_sompi = 1000000
+
+# Maximum per-tx outgoing amount (sompi). Above this, proposals are rejected.
+# Example: max_amount_sompi = 100000000000
+max_amount_sompi = 100000000000
+
+# Maximum daily volume (sompi). Above this, proposals are rejected.
+# Example: max_daily_volume_sompi = 500000000000
+max_daily_volume_sompi = 500000000000
+
+# Whether a human “reason” field is required on proposals.
+# Example: require_reason = false
+require_reason = false
+
+[group]
+# Threshold policy parameters (m-of-n).
+# - Used to compute/verify `iroh.group_id`.
+# Example: threshold_m = 3
+threshold_m = __THRESHOLD_M__
+# Example: threshold_n = 5
+threshold_n = __THRESHOLD_N__
+
+# Canonical pubkey set for the group (x-only pubkeys for the Schnorr redeem script).
+# - Must match the keys embedded in `service.pskt.redeem_script_hex` exactly (validated at startup).
+# Example: member_pubkeys = ["0x<64-hex>", "0x<64-hex>", "0x<64-hex>"]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+member_pubkeys = __MEMBER_PUBKEYS_ARRAY__
+
+# Fee rate used for group_id derivation and policy context.
+# - Leave at 0 for testnet-v1 unless you have a specific target fee policy.
+# Example: fee_rate_sompi_per_gram = 0
+fee_rate_sompi_per_gram = 0
+
+# Kaspa finality threshold (blue score delta).
+# - 0 means “use compiled/default behavior”.
+# Example: finality_blue_score_threshold = 0
+finality_blue_score_threshold = 0
+
+# Dust threshold for outputs (sompi).
+# Example: dust_threshold_sompi = 0
+dust_threshold_sompi = 0
+
+# Minimum allowed recipient amount (sompi).
+# Example: min_recipient_amount_sompi = 0
+min_recipient_amount_sompi = 0
+
+# Session timeout (seconds) encoded into group_id derivation context.
+# Example: session_timeout_seconds = 60
+session_timeout_seconds = 60
+
+[hyperlane]
+# How often the Hyperlane watcher polls for new deliveries/events (seconds).
+# Example: poll_secs = 10
+poll_secs = 10
+
+# Validator sets are selected by Hyperlane *origin domainId*.
+[[hyperlane.domains]]
+# Hyperlane origin domainId (u32) whose messages we accept/verify.
+# - In testnet-v1 this is the Igra EVM origin domain `0x97B4` (decimal 38836).
+# Example: domain = 38836
+domain = __HYPERLANE_ORIGIN_DOMAIN_ID__
+
+# Hyperlane validator public keys (secp256k1 ECDSA compressed pubkeys, hex).
+# - Igra verifies proofs by checking signatures against this exact set.
+# Example: validators = ["02<66-hex>", "03<66-hex>"]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+validators = __HYPERLANE_VALIDATORS_ARRAY__
+
+# Required signature quorum for this origin domain (m).
+# Example: threshold = 3
+threshold = __HYPERLANE_THRESHOLD__
+
+# Which ISM verification mode we enforce:
+# - "message_id_multisig" uses MessageIdMultisig proof verification.
+# Example: mode = "message_id_multisig"
+mode = "message_id_multisig"
+
+[iroh]
+# Transport namespace identifier used by Iroh gossip.
+# - This must match the computed group_id context and isolates gossip traffic across networks.
+# Example: group_id = "0x<64-hex>" (or without 0x)
+group_id = "__GROUP_ID_HEX__"
+
+# Iroh network id (transport namespace) used in the gossip topic hash.
+# - For testnet-v1 this is `4` (isolates from devnet/mainnet gossip).
+# Example: network_id = 4
+network_id = __IROH_NETWORK_ID__
+
+# Verifier keys: "peer_id:ed25519_pubkey_hex"
+# - Allowlist for who may send signed protocol messages over gossip.
+# - Must contain all signers’ verifying keys.
+# Example: verifier_keys = ["peer-1234abcd...:06a0...8a81"]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+verifier_keys = __IROH_VERIFIER_KEYS_ARRAY__
+
+# For testnet-v1 we rely primarily on pkarr + relay. Static seeds are optional.
+# - `bootstrap`: endpoint ids (informational/compat; currently used by some tools)
+# Example: bootstrap = ["<endpoint_id>"]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+bootstrap = []
+
+# - `bootstrap_addrs`: explicit seed addresses in the form `<endpoint_id>@host:port`.
+#   Useful as a safety net if pkarr discovery is unhealthy.
+# Example: bootstrap_addrs = ["<endpoint_id>@stage-roman.igralabs.com:11205"]
+# Array delimiter: items are separated by commas, e.g. ["a", "b"].
+bootstrap_addrs = []
+
+[iroh.discovery]
+# Enable pkarr DHT discovery (recommended for testnet; works well for laptops/NAT).
+# Example: enable_pkarr = true
+enable_pkarr = true
+
+# Enable DNS discovery (requires operating a DNS zone with iroh discovery TXT records).
+# Example: enable_dns = false
+enable_dns = false
+
+# DNS discovery base domain (used only when enable_dns=true).
+# Example: dns_domain = "discovery.igralabs.com"
+dns_domain = ""
+
+[iroh.relay]
+# Enable relay support (important for NAT traversal and mixed laptop/server deployments).
+# Example: enable = true
+enable = true
+
+# Optional custom relay URL. If empty, uses Iroh defaults.
+# Example: custom_url = "https://relay.example.com"
+custom_url = ""

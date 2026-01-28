@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowWriteValidatorPrefix",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:AbortMultipartUpload"],
+      "Resource": ["arn:aws:s3:::igra-hyperlane-checkpoints-testnet/checkpoints/97b4/validator-01/*"]
+    },
+    {
+      "Sid": "AllowListValidatorPrefixOnly",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::igra-hyperlane-checkpoints-testnet"],
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["checkpoints/97b4/validator-01/*"]
+        }
+      }
+    }
+  ]
+}
+

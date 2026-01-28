@@ -1,0 +1,8 @@
+# Generated bundles contain per-signer secrets and must never be committed.
+/bundles/
+
+# Local scratch
+/.tmp/
+
+# Admin local tools (npm installs, etc.)
+/admin/.tools/
