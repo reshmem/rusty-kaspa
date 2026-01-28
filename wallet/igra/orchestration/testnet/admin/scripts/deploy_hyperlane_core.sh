@@ -113,14 +113,19 @@ mkdir -p "${chain_dir}"
 # This is the same pattern used in our devnet scripts (they copy anvil1 metadata.yaml into the registry).
 meta="${chain_dir}/metadata.yaml"
 cat > "${meta}" <<YAML
-# Minimal chain metadata for Hyperlane CLI
-name: ${chain_name}
-displayName: ${chain_name}
-protocol: ethereum
+# Configs for describing chain metadata for use in Hyperlane deployments or apps
+---
 chainId: ${chain_id}
 domainId: ${domain_id}
+name: ${chain_name}
+protocol: ethereum
 rpcUrls:
   - http: "${IGRA_EVM_RPC_URL}"
+blockExplorers:
+  - name: Local Explorer
+    url: https://example.invalid/explorer
+    apiUrl: https://example.invalid/api
+    family: etherscan
 nativeToken:
   name: Ether
   symbol: ETH
