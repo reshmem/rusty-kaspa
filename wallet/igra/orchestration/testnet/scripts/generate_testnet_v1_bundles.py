@@ -54,6 +54,7 @@ def run_keygen(
     cmd = [
         "cargo",
         "run",
+        "--locked",
         "-p",
         "igra-core",
         "--bin",

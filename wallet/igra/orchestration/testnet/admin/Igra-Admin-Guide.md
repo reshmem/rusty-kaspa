@@ -57,7 +57,7 @@ Required access:
 
 Environment variables used by scripts:
 - `IGRA_EVM_RPC_URL` — origin EVM JSON-RPC URL
-- `HYP_EVM_DEPLOYER_KEY_HEX` — origin deployer private key (hex, no `0x`)
+- `HYP_EVM_DEPLOYER_KEY_HEX` — origin deployer private key (hex; with or without `0x`)
 - `AWS_REGION`
 - `HYP_REGISTRY_S3_BUCKET` — e.g. `igra-hyperlane-registry-testnet`
 

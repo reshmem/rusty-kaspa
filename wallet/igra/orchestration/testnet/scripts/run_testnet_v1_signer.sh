@@ -24,7 +24,7 @@ Environment:
   HYP_CHECKPOINT_SYNCER     Optional: local|s3 (default: s3)
   HYP_CHECKPOINTS_S3_BUCKET Required if HYP_CHECKPOINT_SYNCER=s3: S3 bucket name for checkpoints
   HYP_CHECKPOINTS_S3_REGION Required if HYP_CHECKPOINT_SYNCER=s3: AWS region for checkpoints bucket
-  HYP_EVM_SIGNER_KEY_HEX    REQUIRED: funded EVM private key (hex, no 0x) for relayer construction
+  HYP_EVM_SIGNER_KEY_HEX    REQUIRED: funded EVM private key (hex; with or without 0x) for relayer construction
 
 Notes:
   - This script does not run an Igra EVM node (unimplemented in testnet-v1).
@@ -216,6 +216,12 @@ case "${cmd}" in
     # NOTE: for now, the relayer requires an EVM signer key even when only relaying EVM->Kaspa.
     # Provide it via env to keep it out of the bundle by default.
     require_env HYP_EVM_SIGNER_KEY_HEX
+    evm_priv_hex="${HYP_EVM_SIGNER_KEY_HEX#0x}"
+    if [[ ! "${evm_priv_hex}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "invalid HYP_EVM_SIGNER_KEY_HEX: expected 32-byte hex (64 chars), got: $(printf '%q' "${HYP_EVM_SIGNER_KEY_HEX}")" >&2
+      echo "hint: set HYP_EVM_SIGNER_KEY_HEX to a funded EVM private key (with or without 0x)" >&2
+      exit 1
+    fi
 
     # Generate agent.json files via python (avoids fragile here-doc templating).
     python3 - <<PY
@@ -250,7 +256,7 @@ group_id_hex = (bundle / "group_id.hex").read_text(encoding="utf-8").strip()
 group_h256 = "0x" + group_id_hex
 
 vpriv = r"""${vkey_hex}"""
-evm_priv = r"""${HYP_EVM_SIGNER_KEY_HEX}"""
+evm_priv = r"""${evm_priv_hex}"""
 hyp_checkpoint_syncer = r"""${hyp_checkpoint_syncer}"""
 validator_name = r"""${validator_name}"""
 signer_index = int(r"""${signer_index}""")

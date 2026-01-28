@@ -6,3 +6,7 @@
 
 # Admin local tools (npm installs, etc.)
 /admin/.tools/
+
+# Python bytecode/cache
+__pycache__/
+*.pyc
