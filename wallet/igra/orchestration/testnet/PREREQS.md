@@ -42,7 +42,7 @@ Foundry (recommended):
 ### Ubuntu (apt)
 
 Install:
-- `sudo apt-get update && sudo apt-get install -y git nodejs npm awscli python3 jq`
+- `sudo apt-get update && sudo apt-get install -y git nodejs npm python3 jq`
 
 Foundry (recommended):
 - Install using Foundry’s official installer (curl-based).
@@ -50,6 +50,8 @@ Foundry (recommended):
 Important:
 - Many Ubuntu repos ship an older Node.js. If Hyperlane CLI install fails due to Node version,
   use `nvm` (recommended) or a NodeSource package to install a modern Node LTS.
+- Some Ubuntu images don’t have `awscli` in apt repos; use AWS CLI v2 installer instead:
+  - `curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install`
 
 ---
 
@@ -79,7 +81,7 @@ Foundry (optional but recommended):
 ### Ubuntu (apt)
 
 Install:
-- `sudo apt-get update && sudo apt-get install -y awscli jq`
+- `sudo apt-get update && sudo apt-get install -y jq`
 
 Foundry (optional but recommended):
 - Install using Foundry’s official installer (curl-based).
@@ -103,3 +105,20 @@ Build helpers (from this repo):
 - `orchestration/testnet/scripts/build_kaspa_node.sh`
 - `orchestration/testnet/scripts/build_hyperlane_agents.sh`
 
+---
+
+## 4) Copy-paste install (recommended “full” setup)
+
+These one-liners install a **superset** of tools (covers admin + signer + local builds).
+
+### macOS (Homebrew)
+
+```bash
+/bin/bash -lc 'command -v brew >/dev/null || { echo "Homebrew is required. Install it from https://brew.sh and re-run." >&2; exit 1; }; brew update && brew install git node awscli python@3 jq foundry pkg-config && (xcode-select -p >/dev/null 2>&1 || xcode-select --install || true) && (command -v rustup >/dev/null 2>&1 || curl https://sh.rustup.rs -sSf | sh -s -- -y) && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
+```
+
+### Ubuntu (apt)
+
+```bash
+bash -lc 'set -euo pipefail; sudo apt-get update && sudo apt-get install -y git curl ca-certificates jq python3 python3-venv build-essential pkg-config unzip && (command -v aws >/dev/null 2>&1 || { tmp="$(mktemp -d)"; curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${tmp}/awscliv2.zip"; (cd "${tmp}" && unzip -q awscliv2.zip && sudo ./aws/install); rm -rf "${tmp}"; }) && curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs && curl -L https://foundry.paradigm.xyz | bash && "$HOME/.foundry/bin/foundryup" && curl https://sh.rustup.rs -sSf | sh -s -- -y && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
+```
