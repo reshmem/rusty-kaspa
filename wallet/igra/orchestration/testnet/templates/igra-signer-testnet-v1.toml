@@ -109,7 +109,8 @@ backend = "threshold"
 # - We bind to localhost to avoid exposing signer RPC publicly by default.
 # - Hyperlane relayer on the same machine connects to this RPC.
 # Example: addr = "127.0.0.1:8088"
-addr = "127.0.0.1:8088"
+# Example (multi-signer same host): addr = "127.0.0.1:8090"
+addr = "__RPC_ADDR__"
 
 # Enables the JSON-RPC server.
 # Example: enabled = true

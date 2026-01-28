@@ -46,4 +46,9 @@ See:
 - Build kaspa node (`kaspad`): `orchestration/testnet/scripts/build_kaspa_node.sh --help`
 - Build Hyperlane agents (reshmem fork): `orchestration/testnet/scripts/build_hyperlane_agents.sh --help`
 - Update generated bundle `.env` with detected binaries: `orchestration/testnet/scripts/update_bundle_env_example.py --help`
-- Update generated bundle `.env` with detected binaries: `orchestration/testnet/scripts/update_bundle_env_example.py --help`
+
+## Option A (single machine, no S3)
+
+For local-only testing (everything on one machine), explicitly set:
+- `HYP_CHECKPOINT_SYNCER=local` (bundles default to `s3`)
+- `HYP_REGISTRY_DIR` pointing to a local registry directory (admin can use the output of `deploy_hyperlane_core.sh`)

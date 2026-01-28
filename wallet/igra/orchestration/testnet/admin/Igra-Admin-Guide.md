@@ -18,6 +18,11 @@ Prerequisites checklist:
 Hyperlane **registry** is a directory of YAML files (metadata + deployed contract addresses) that validators/relayers use to know which contracts exist on each chain.
 For testnet-v1 we publish this registry to S3 so every operator can sync it locally.
 
+**Option A (single machine, no S3):**
+- Skip all S3/IAM steps (registry + checkpoints).
+- Use the local registry directory produced by `deploy_hyperlane_core.sh`.
+- Explicitly set `HYP_CHECKPOINT_SYNCER=local` (bundles default to `s3`).
+
 ---
 
 ## 0.1 Secrets model (v1 vs future)

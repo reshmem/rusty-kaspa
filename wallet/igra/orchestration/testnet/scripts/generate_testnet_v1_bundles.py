@@ -192,6 +192,7 @@ def render_igra_config(
     template_text: str,
     signer_profile: str,
     data_dir: pathlib.Path,
+    rpc_addr: str,
     group_id_hex: str,
     redeem_script_hex: str,
     threshold_m: int,
@@ -206,6 +207,7 @@ def render_igra_config(
     out = template_text
     out = out.replace("__SIGNER_PROFILE__", signer_profile)
     out = out.replace("__DATA_DIR__", str(data_dir))
+    out = out.replace("__RPC_ADDR__", rpc_addr)
     out = out.replace("__GROUP_ID_HEX__", group_id_hex)
     out = out.replace("__REDEEM_SCRIPT_HEX__", redeem_script_hex)
     out = out.replace("__THRESHOLD_M__", str(threshold_m))
@@ -349,10 +351,12 @@ def main() -> int:
         }
         (bundle_dir / "to-admin.json").write_text(json.dumps(to_admin, indent=2) + "\n", encoding="utf-8")
 
+        rpc_addr = f"127.0.0.1:{8088 + idx}"
         config_text = render_igra_config(
             template_text=template_text,
             signer_profile=profile,
             data_dir=data_dir,
+            rpc_addr=rpc_addr,
             group_id_hex=keygen_out.group_id,
             redeem_script_hex=keygen_out.redeem_script_hex,
             threshold_m=args.threshold_m,
@@ -388,6 +392,7 @@ def main() -> int:
                     "  - config/igra-config.toml",
                     "  - data/secrets.bin",
                     "  - hyperlane/validator-private-key.hex",
+                    "  - hyperlane/relayer-private-key.hex",
                     "  - group_id.hex",
                     "  - .env",
                     "  - to-admin.json",

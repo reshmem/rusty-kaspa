@@ -4,12 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  run_testnet_v1_signer.sh --bundle <path> start
+  run_testnet_v1_signer.sh --bundle <path> [--checkpoint-syncer local|s3] start
   run_testnet_v1_signer.sh --bundle <path> stop
   run_testnet_v1_signer.sh --bundle <path> status
 
 Required:
   --bundle PATH   Path to per-signer bundle directory (e.g. orchestration/testnet/bundles/.../signer-01)
+  --checkpoint-syncer local|s3  Optional override for HYP_CHECKPOINT_SYNCER
 
 Environment:
   IGRA_BIN                 Path to `kaspa-threshold-service` binary (default: ./target/release/kaspa-threshold-service)
@@ -17,9 +18,12 @@ Environment:
   HYP_VALIDATOR_BIN        Path to Hyperlane `validator` binary (default: validator in PATH)
   HYP_RELAYER_BIN          Path to Hyperlane `relayer` binary (default: relayer in PATH)
   IGRA_EVM_RPC_URL         REQUIRED: origin EVM JSON-RPC URL (shared testnet node)
-  HYP_REGISTRY_DIR         REQUIRED: local Hyperlane registry dir containing chains/<origin>/addresses.yaml
-  HYP_CHECKPOINTS_S3_BUCKET REQUIRED: S3 bucket name for checkpoints
-  HYP_CHECKPOINTS_S3_REGION REQUIRED: AWS region for checkpoints bucket
+  HYP_REGISTRY_DIR         Optional: local Hyperlane registry dir containing chains/<origin>/addresses.yaml
+  HYP_REGISTRY_S3_BUCKET   Required if HYP_REGISTRY_DIR is unset: S3 bucket containing the registry
+  HYP_REGISTRY_S3_PREFIX   Optional: S3 prefix (default: empty)
+  HYP_CHECKPOINT_SYNCER     Optional: local|s3 (default: s3)
+  HYP_CHECKPOINTS_S3_BUCKET Required if HYP_CHECKPOINT_SYNCER=s3: S3 bucket name for checkpoints
+  HYP_CHECKPOINTS_S3_REGION Required if HYP_CHECKPOINT_SYNCER=s3: AWS region for checkpoints bucket
   HYP_EVM_SIGNER_KEY_HEX    REQUIRED: funded EVM private key (hex, no 0x) for relayer construction
 
 Notes:
@@ -31,9 +35,11 @@ EOF
 }
 
 BUNDLE=""
+CHECKPOINT_SYNCER_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bundle) BUNDLE="$2"; shift 2;;
+    --checkpoint-syncer) CHECKPOINT_SYNCER_OVERRIDE="$2"; shift 2;;
     --help|-h) usage; exit 0;;
     *) break;;
   esac
@@ -75,6 +81,23 @@ read_yaml_key() {
   echo "${line}" | tr -d '"' | tr -d "'"
 }
 
+read_rpc_addr() {
+  local file="$1"
+  # Extract `[rpc] addr = "127.0.0.1:8088"` from TOML without requiring a TOML parser.
+  awk '
+    /^\[rpc\]$/ {in=1; next}
+    /^\[/ {in=0}
+    in && /^[[:space:]]*addr[[:space:]]*=/ {
+      line=$0
+      sub(/.*=/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "${file}"
+}
+
 start_process() {
   local name="$1"; shift
   local pid_file="${pids_dir}/${name}.pid"
@@ -114,17 +137,56 @@ case "${cmd}" in
   start)
     require_env IGRA_SECRETS_PASSPHRASE
     require_env IGRA_EVM_RPC_URL
-    require_env HYP_REGISTRY_DIR
-    require_env HYP_CHECKPOINTS_S3_BUCKET
-    require_env HYP_CHECKPOINTS_S3_REGION
+    hyp_checkpoint_syncer="${CHECKPOINT_SYNCER_OVERRIDE:-${HYP_CHECKPOINT_SYNCER:-s3}}"
+    if [[ "${hyp_checkpoint_syncer}" != "local" && "${hyp_checkpoint_syncer}" != "s3" ]]; then
+      echo "invalid HYP_CHECKPOINT_SYNCER (expected local|s3): ${hyp_checkpoint_syncer}" >&2
+      exit 1
+    fi
+    if [[ "${hyp_checkpoint_syncer}" == "s3" ]]; then
+      require_env HYP_CHECKPOINTS_S3_BUCKET
+      require_env HYP_CHECKPOINTS_S3_REGION
+    fi
 
     if [[ ! -x "${igra_bin}" ]]; then
       echo "missing igra binary: ${igra_bin}" >&2
       exit 1
     fi
 
+    bundle_name="$(basename "${bundle_dir}")"
+    if [[ "${bundle_name}" =~ ^signer-([0-9]{2})$ ]]; then
+      signer_num="${BASH_REMATCH[1]}"
+      signer_index=$((10#${signer_num} - 1))
+    else
+      echo "unexpected bundle dir name (expected signer-XX): ${bundle_name}" >&2
+      exit 1
+    fi
+    validator_name="${bundle_name/signer/validator}"
+
+    rpc_addr="$(read_rpc_addr "${config_dir}/igra-config.toml")"
+    if [[ -z "${rpc_addr}" ]]; then
+      echo "failed to parse [rpc].addr from: ${config_dir}/igra-config.toml" >&2
+      exit 1
+    fi
+    kaspa_rpc_url="http://${rpc_addr}"
+
     origin_chain="igra-testnet-4"
-    origin_addresses="${HYP_REGISTRY_DIR}/chains/${origin_chain}/addresses.yaml"
+    hyp_registry_dir="${HYP_REGISTRY_DIR:-}"
+    if [[ -z "${hyp_registry_dir}" ]]; then
+      require_env HYP_REGISTRY_S3_BUCKET
+      if ! command -v aws >/dev/null 2>&1; then
+        echo "missing required command for S3 registry sync: aws" >&2
+        exit 1
+      fi
+      hyp_registry_dir="${hyperlane_dir}/registry"
+      mkdir -p "${hyp_registry_dir}"
+      src="s3://${HYP_REGISTRY_S3_BUCKET}"
+      if [[ -n "${HYP_REGISTRY_S3_PREFIX:-}" ]]; then
+        src="${src%/}/${HYP_REGISTRY_S3_PREFIX#/}"
+      fi
+      echo "Syncing Hyperlane registry: ${src} -> ${hyp_registry_dir}"
+      aws s3 sync --only-show-errors "${src}/" "${hyp_registry_dir}/"
+    fi
+    origin_addresses="${hyp_registry_dir}/chains/${origin_chain}/addresses.yaml"
     if [[ ! -f "${origin_addresses}" ]]; then
       echo "missing registry addresses.yaml: ${origin_addresses}" >&2
       exit 1
@@ -170,6 +232,7 @@ cfg_v.parent.mkdir(parents=True, exist_ok=True)
 cfg_r.parent.mkdir(parents=True, exist_ok=True)
 (validator_dir / "validator-db").mkdir(parents=True, exist_ok=True)
 (relayer_dir / "relayer-db").mkdir(parents=True, exist_ok=True)
+(validator_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
 origin_chain = "igra-testnet-4"
 origin_chain_id = 38836
@@ -182,25 +245,39 @@ igp = r"""${igp}"""
 va = r"""${va}"""
 mth = r"""${mth}"""
 evm_rpc = r"""${IGRA_EVM_RPC_URL}"""
-kaspa_rpc = "http://127.0.0.1:8088"
+kaspa_rpc = r"""${kaspa_rpc_url}"""
 group_id_hex = (bundle / "group_id.hex").read_text(encoding="utf-8").strip()
 group_h256 = "0x" + group_id_hex
 
 vpriv = r"""${vkey_hex}"""
 evm_priv = r"""${HYP_EVM_SIGNER_KEY_HEX}"""
+hyp_checkpoint_syncer = r"""${hyp_checkpoint_syncer}"""
+validator_name = r"""${validator_name}"""
+signer_index = int(r"""${signer_index}""")
+
+validator_checkpoint_syncer = None
+if hyp_checkpoint_syncer == "local":
+  validator_checkpoint_syncer = {
+    "type": "localStorage",
+    "path": str(validator_dir / "checkpoints"),
+  }
+elif hyp_checkpoint_syncer == "s3":
+  validator_checkpoint_syncer = {
+    "type": "s3",
+    "bucket": r"""${HYP_CHECKPOINTS_S3_BUCKET:-}""",
+    "region": r"""${HYP_CHECKPOINTS_S3_REGION:-}""",
+    "folder": f"checkpoints/97b4/{validator_name}",
+  }
+else:
+  raise SystemExit(f"unexpected hyp_checkpoint_syncer: {hyp_checkpoint_syncer}")
 
 validator_cfg = {
-  "metricsPort": 9910,
+  "metricsPort": 9910 + signer_index,
   "log": { "level": "info", "format": "pretty" },
   "originChainName": origin_chain,
   "db": str(validator_dir / "validator-db"),
   "validator": { "type": "hexKey", "key": "0x" + vpriv },
-  "checkpointSyncer": {
-    "type": "s3",
-    "bucket": r"""${HYP_CHECKPOINTS_S3_BUCKET}""",
-    "region": r"""${HYP_CHECKPOINTS_S3_REGION}""",
-    "folder": f"checkpoints/97b4/{bundle.name.replace('signer', 'validator')}",
-  },
+  "checkpointSyncer": validator_checkpoint_syncer,
   "chains": {
     origin_chain: {
       "name": origin_chain,
@@ -220,8 +297,9 @@ validator_cfg = {
 }
 
 relayer_cfg = {
-  "metricsPort": 9920,
+  "metricsPort": 9920 + signer_index,
   "log": { "level": "info", "format": "pretty" },
+  "allowLocalCheckpointSyncers": hyp_checkpoint_syncer == "local",
   "relayChains": f"{origin_chain},{dest_chain}",
   "db": str(relayer_dir / "relayer-db"),
   "chains": {

@@ -21,6 +21,7 @@ Writes:
       AWS_REGION
       HYP_CHECKPOINTS_S3_BUCKET
       HYP_CHECKPOINTS_S3_REGION
+      HYP_CHECKPOINT_SYNCER=s3
 
 WARNING:
   - This creates AWS IAM users and access keys.
@@ -179,10 +180,10 @@ PY
   set_env_kv "${env_file}" "AWS_REGION" "${region}"
   set_env_kv "${env_file}" "HYP_CHECKPOINTS_S3_BUCKET" "${bucket}"
   set_env_kv "${env_file}" "HYP_CHECKPOINTS_S3_REGION" "${region}"
+  set_env_kv "${env_file}" "HYP_CHECKPOINT_SYNCER" "s3"
   chmod 600 "${env_file}" || true
 
   echo "Updated ${env_file}"
 done
 
 echo "Done"
-
