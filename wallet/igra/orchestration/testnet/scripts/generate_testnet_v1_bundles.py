@@ -330,7 +330,7 @@ def main() -> int:
                 "note": "Admin should provision one IAM writer per validator, scoped to this prefix.",
             },
             "hyperlane": {
-                "origin_chain_name": "igra-testnet-4",
+                "origin_chain_name": "igratestnet4",
                 "origin_domain_id": f"0x{args.hyperlane_origin_domain_id:08x}",
                 "validator": {
                     "name": keygen_out.hyperlane_keys[idx]["name"],

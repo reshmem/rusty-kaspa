@@ -169,7 +169,7 @@ case "${cmd}" in
     fi
     kaspa_rpc_url="http://${rpc_addr}"
 
-    origin_chain="igra-testnet-4"
+    origin_chain="igratestnet4"
     hyp_registry_dir="${HYP_REGISTRY_DIR:-}"
     if [[ -z "${hyp_registry_dir}" ]]; then
       require_env HYP_REGISTRY_S3_BUCKET
@@ -240,7 +240,7 @@ cfg_r.parent.mkdir(parents=True, exist_ok=True)
 (relayer_dir / "relayer-db").mkdir(parents=True, exist_ok=True)
 (validator_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-origin_chain = "igra-testnet-4"
+origin_chain = "igratestnet4"
 origin_chain_id = 38836
 origin_domain_id = 38836
 dest_chain = "kaspa-testnet"

@@ -16,7 +16,7 @@ Optional env:
   HYPERLANE_CLI_BIN           Path to `hyperlane` binary (otherwise uses local install under admin/.tools)
 
 Defaults:
-  chain-name = igra-testnet-4
+  chain-name = igratestnet4
   chain-id   = 38836
   domain-id  = 38836
   registry-dir = orchestration/testnet/admin/.tmp/registry
@@ -25,7 +25,9 @@ EOF
 
 igra_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 registry_dir="${igra_root}/orchestration/testnet/admin/.tmp/registry"
-chain_name="igra-testnet-4"
+# NOTE: Hyperlane CLI's registry path matcher only allows [a-z0-9]+ chain names.
+# So we use `igratestnet4` (no hyphens) as the canonical origin chain name.
+chain_name="igratestnet4"
 chain_id="38836"
 domain_id="38836"
 

@@ -1,7 +1,7 @@
 # Igra Admin Guide (testnet-v1)
 
 This guide describes what the **Igra admin/deployer** does to:
-- deploy Hyperlane core contracts on the origin EVM chain (`igra-testnet-4`)
+- deploy Hyperlane core contracts on the origin EVM chain (`igratestnet4` in Hyperlane registry; display name “igra-testnet-4”)
 - publish the Hyperlane **registry** to S3 (canonical shared source of contract addresses)
 - prepare the artifacts that signer operators need
 
@@ -51,7 +51,9 @@ Required tools:
 - `aws` CLI
 
 Required access:
-- An origin EVM JSON-RPC endpoint for `igra-testnet-4` (shared IGRA EVM testnet node)
+ - An origin EVM JSON-RPC endpoint for `igra-testnet-4` (shared IGRA EVM testnet node)
+   - Hyperlane chain name in registry/configs: `igratestnet4` (no hyphens; Hyperlane registry only matches `[a-z0-9]+`)
+  - Note: Hyperlane CLI registry only supports [a-z0-9]+ chain names, so we use `igratestnet4` as the canonical chain name in registry/configs.
 - An EVM deployer private key funded with enough ETH on that origin chain
 - AWS credentials with permission to write the registry bucket
 
@@ -95,13 +97,13 @@ This writes:
 
 ---
 
-## 4) Deploy Hyperlane core contracts to origin EVM (igra-testnet-4)
+## 4) Deploy Hyperlane core contracts to origin EVM (igratestnet4)
 
 This step:
-- deploys Hyperlane core contracts to the origin EVM chain
-- writes/updates the local registry directory:
-  - `chains/igra-testnet-4/metadata.yaml`
-  - `chains/igra-testnet-4/addresses.yaml`
+  - deploys Hyperlane core contracts to the origin EVM chain
+  - writes/updates the local registry directory:
+  - `chains/igratestnet4/metadata.yaml`
+  - `chains/igratestnet4/addresses.yaml`
 
 Run:
 - `orchestration/testnet/admin/scripts/deploy_hyperlane_core.sh --help`
@@ -116,7 +118,7 @@ Important:
 
 ## 4.1 Funding plan (origin EVM) — what to fund, who owns what, when
 
-On the origin EVM chain (`igra-testnet-4`) there are three categories of EVM accounts involved:
+On the origin EVM chain (“igra-testnet-4”, Hyperlane chain name `igratestnet4`) there are three categories of EVM accounts involved:
 
 1) **Admin deployer account** (1 account)
 - Owned by: Igra admin/deployer (you).
@@ -157,7 +159,7 @@ Testnet-v1 is not cost-sensitive; prefer overfunding to avoid operational stalls
 
 After deploy + publish:
 - Look in the registry:
-  - `chains/igra-testnet-4/addresses.yaml` → `validatorAnnounce: 0x...`
+  - `chains/igratestnet4/addresses.yaml` → `validatorAnnounce: 0x...`
 
 Operators can also use that address to confirm their announce tx landed.
 
