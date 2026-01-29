@@ -26,6 +26,11 @@ workspace_root="$(cd "${igra_root}/../.." && pwd)"
 cd "${workspace_root}"
 
 echo "Building Igra binaries (release, locked)..."
+# Force a stable target directory under the workspace root to avoid surprises from
+# a user-global `CARGO_TARGET_DIR` (some environments point it at protected volumes).
+CARGO_TARGET_DIR="${workspace_root}/target"
+export CARGO_TARGET_DIR
+
 RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-service --bin kaspa-threshold-service
 RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-core --bin devnet-keygen
 

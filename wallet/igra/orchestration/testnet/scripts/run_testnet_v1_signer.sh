@@ -86,9 +86,9 @@ read_rpc_addr() {
   local file="$1"
   # Extract `[rpc] addr = "127.0.0.1:8088"` from TOML without requiring a TOML parser.
   awk '
-    /^\[rpc\]$/ {in=1; next}
-    /^\[/ {in=0}
-    in && /^[[:space:]]*addr[[:space:]]*=/ {
+    /^\[rpc\]$/ {in_rpc=1; next}
+    /^\[/ {in_rpc=0}
+    in_rpc && /^[[:space:]]*addr[[:space:]]*=/ {
       line=$0
       sub(/.*=/, "", line)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
@@ -147,6 +147,8 @@ case "${cmd}" in
       require_env HYP_CHECKPOINTS_S3_BUCKET
       require_env HYP_CHECKPOINTS_S3_REGION
     fi
+    # Ensure Hyperlane agents see the same checkpoint syncer choice as the generated agent.json.
+    export HYP_CHECKPOINT_SYNCER="${hyp_checkpoint_syncer}"
 
     if [[ ! -x "${igra_bin}" ]]; then
       echo "missing igra binary: ${igra_bin}" >&2
@@ -244,7 +246,7 @@ cfg_r.parent.mkdir(parents=True, exist_ok=True)
 origin_chain = "igratestnet4"
 origin_chain_id = 38836
 origin_domain_id = 38836
-dest_chain = "kaspa-testnet"
+dest_chain = "kaspatestnet"
 dest_domain_id = int("0x4B415354", 16)  # KAST
 
 mailbox = r"""${mailbox}"""
@@ -330,6 +332,7 @@ relayer_cfg = {
       "domainId": dest_domain_id,
       "protocol": "kaspa",
       "rpcUrls": [{"http": kaspa_rpc}],
+      "networkPrefix": "kaspatest",
       "mailbox": group_h256,
       "interchainGasPaymaster": group_h256,
       "validatorAnnounce": group_h256,

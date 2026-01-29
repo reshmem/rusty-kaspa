@@ -59,8 +59,8 @@ def main() -> int:
 
     bundles_dir = pathlib.Path(args.bundles_dir).resolve()
     if not bundles_dir.exists():
-        print(f"bundles dir does not exist: {bundles_dir}", file=sys.stderr)
-        return 1
+        print(f"bundles dir does not exist (skipping): {bundles_dir}", file=sys.stderr)
+        return 0
 
     updates = detect_paths(repo_root)
     if not updates:

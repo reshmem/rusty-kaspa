@@ -187,12 +187,12 @@ Notes:
 
 Hyperlane registry entries are keyed by chain name. We should use stable names:
 
-- Origin chain name: `igra-testnet-4`
+- Origin chain name: `igratestnet4` (no hyphens; Hyperlane tooling normalizes keys)
   - `domainId: 0x97B4`
   - `chainId: 38836` (recommended)
   - `protocol: ethereum`
 
-- Destination chain name: `kaspa-testnet`
+- Destination chain name: `kaspatestnet` (no hyphens; Hyperlane tooling normalizes keys)
   - `domainId: 0x4B415354` (`KAST`)
   - `protocol: kaspa`
 

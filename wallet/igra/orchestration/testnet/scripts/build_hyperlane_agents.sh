@@ -8,7 +8,7 @@ Usage:
 
 Builds Hyperlane Rust agents needed by testnet-v1:
   - validator
-  - relayer
+  - relayer (built with `--features kaspa`)
 
 Defaults:
   - Repo URL: https://github.com/reshmem/hyperlane-monorepo.git
@@ -82,7 +82,17 @@ echo "Building Hyperlane agents..."
 echo "  repo_dir=${repo_dir}"
 echo "  target_dir=${target_dir}"
 
-CARGO_TARGET_DIR="${target_dir}" RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release -p validator -p relayer
+CARGO_TARGET_DIR="${target_dir}" RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release -p validator
+# testnet-v1 relaying requires Kaspa support (feature-gated in hyperlane-base).
+CARGO_TARGET_DIR="${target_dir}" RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release -p relayer --features kaspa
+
+cat > "${target_dir}/igra-build-info.json" <<JSON
+{
+  "relayer_features": ["kaspa"],
+  "ref": "$(printf '%s' "${ref}")",
+  "built_at_unix": $(date +%s)
+}
+JSON
 
 echo "Built:"
 echo "  ${target_dir}/release/validator"

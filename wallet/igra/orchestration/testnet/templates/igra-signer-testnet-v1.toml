@@ -255,7 +255,8 @@ enable_dns = false
 
 # DNS discovery base domain (used only when enable_dns=true).
 # Example: dns_domain = "discovery.igralabs.com"
-dns_domain = ""
+# NOTE: omit this field entirely unless enable_dns=true (empty string is invalid).
+# dns_domain = "discovery.igralabs.com"
 
 [iroh.relay]
 # Enable relay support (important for NAT traversal and mixed laptop/server deployments).
@@ -264,4 +265,15 @@ enable = true
 
 # Optional custom relay URL. If empty, uses Iroh defaults.
 # Example: custom_url = "https://relay.example.com"
-custom_url = ""
+# NOTE: omit this field to use Iroh defaults (empty string is invalid).
+# custom_url = "https://relay.example.com"
+
+# =============================================================================
+# Profile shim (required by config loader)
+# =============================================================================
+# `kaspa-threshold-service` loads config via a profile overlay mechanism, so the config file
+# must contain a matching `[profiles.<name>]` entry for `service.active_profile` even if the
+# profile table is otherwise empty (single-profile-per-file use case).
+#
+# This is intentionally minimal for testnet-v1 bundles.
+[profiles.__SIGNER_PROFILE__]

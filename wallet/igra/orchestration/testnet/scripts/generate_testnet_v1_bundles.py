@@ -52,16 +52,10 @@ def run_keygen(
     output_dir: pathlib.Path,
     passphrase: str | None,
 ) -> KeygenOutput:
-    cmd = [
-        "cargo",
-        "run",
-        "--locked",
-        "-p",
-        "igra-core",
-        "--bin",
-        "devnet-keygen",
-        "--release",
-        "--",
+    # Prefer a prebuilt binary when available to avoid expensive `cargo run` rebuilds.
+    # This is especially important for admin/operator bootstrap flows.
+    keygen_bin = (WORKSPACE_ROOT / "target/release/devnet-keygen").resolve()
+    args = [
         "--format",
         "file-per-signer",
         "--output-dir",
@@ -79,6 +73,21 @@ def run_keygen(
         "--hyperlane-validator-name-format",
         "two-digit",
     ]
+    if keygen_bin.exists() and os.access(keygen_bin, os.X_OK):
+        cmd = [str(keygen_bin), *args]
+    else:
+        cmd = [
+            "cargo",
+            "run",
+            "--locked",
+            "-p",
+            "igra-core",
+            "--bin",
+            "devnet-keygen",
+            "--release",
+            "--",
+            *args,
+        ]
     if passphrase:
         cmd += ["--passphrase", passphrase]
 
@@ -168,6 +177,11 @@ def shutil_which(cmd: str) -> str | None:
     from shutil import which
 
     return which(cmd)
+
+def shell_single_quote(value: str) -> str:
+    # Minimal safe quoting for `.env` files sourced by bash/zsh.
+    # Example: abc'def -> 'abc'\''def'
+    return "'" + value.replace("'", "'\\''") + "'"
 
 
 def generate_evm_privkey_hex() -> str:
@@ -378,6 +392,7 @@ def main() -> int:
             .replace("__HYP_VALIDATOR_BIN__", suggested_hyp_validator if pathlib.Path(suggested_hyp_validator).exists() else "validator")
             .replace("__HYP_RELAYER_BIN__", suggested_hyp_relayer if pathlib.Path(suggested_hyp_relayer).exists() else "relayer")
         )
+        env_text = env_text.replace("IGRA_SECRETS_PASSPHRASE=", f"IGRA_SECRETS_PASSPHRASE={shell_single_quote(passphrase)}")
         env_text = env_text.replace("HYP_EVM_SIGNER_KEY_HEX=", f"HYP_EVM_SIGNER_KEY_HEX={relayer_priv_hex}")
         env_path = bundle_dir / ".env"
         if env_path.exists():
