@@ -13,7 +13,7 @@ Required:
   --checkpoint-syncer local|s3  Optional override for HYP_CHECKPOINT_SYNCER
 
 Environment:
-  IGRA_BIN                 Path to `kaspa-threshold-service` binary (default: ./target/release/kaspa-threshold-service)
+  IGRA_BIN                 Path to `kaspa-threshold-service` binary (default: <workspace>/target/release/kaspa-threshold-service)
   IGRA_SECRETS_PASSPHRASE   REQUIRED: passphrase for data/secrets.bin (non-interactive start)
   HYP_VALIDATOR_BIN        Path to Hyperlane `validator` binary (default: validator in PATH)
   HYP_RELAYER_BIN          Path to Hyperlane `relayer` binary (default: relayer in PATH)
@@ -51,6 +51,7 @@ if [[ -z "${BUNDLE}" ]]; then echo "missing --bundle"; exit 1; fi
 
 bundle_dir="$(cd "${BUNDLE}" && pwd)"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+workspace_root="$(cd "${repo_root}/../.." && pwd)"
 config_dir="${bundle_dir}/config"
 data_dir="${bundle_dir}/data"
 hyperlane_dir="${bundle_dir}/hyperlane"
@@ -61,7 +62,7 @@ mkdir -p "${logs_dir}" "${pids_dir}"
 
 hyp_validator_bin="${HYP_VALIDATOR_BIN:-validator}"
 hyp_relayer_bin="${HYP_RELAYER_BIN:-relayer}"
-igra_bin="${IGRA_BIN:-${repo_root}/target/release/kaspa-threshold-service}"
+igra_bin="${IGRA_BIN:-${workspace_root}/target/release/kaspa-threshold-service}"
 
 require_env() {
   local name="$1"

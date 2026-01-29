@@ -28,7 +28,7 @@ def detect_paths(repo_root: pathlib.Path) -> dict[str, str]:
     workspace_root = (repo_root / "../..").resolve()
     out: dict[str, str] = {}
 
-    igra_bin = (repo_root / "target/release/kaspa-threshold-service").resolve()
+    igra_bin = (workspace_root / "target/release/kaspa-threshold-service").resolve()
     if igra_bin.exists():
         out["IGRA_BIN"] = str(igra_bin)
 

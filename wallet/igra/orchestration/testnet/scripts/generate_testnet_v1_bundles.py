@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+WORKSPACE_ROOT = REPO_ROOT.parents[1]
 TEMPLATE_PATH = REPO_ROOT / "orchestration/testnet/templates/igra-signer-testnet-v1.toml"
 ENV_EXAMPLE_PATH = REPO_ROOT / "orchestration/testnet/.env-example"
 ADMIN_TOOLS_NODE_MODULES = REPO_ROOT / "orchestration/testnet/admin/.tools/hyperlane-cli/node_modules"
@@ -259,7 +260,7 @@ def main() -> int:
     env_example_template = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
 
     # Best-effort binary path suggestions (filled into .env-example).
-    suggested_igra_bin = str((REPO_ROOT / "target/release/kaspa-threshold-service").resolve())
+    suggested_igra_bin = str((WORKSPACE_ROOT / "target/release/kaspa-threshold-service").resolve())
     suggested_kaspad_bin = str((REPO_ROOT / "../.." / "target-igra-testnet/release/kaspad").resolve())
     suggested_hyp_repo = pathlib.Path(os.path.expanduser("~/Source/personal/hyperlane-monorepo"))
     suggested_hyp_validator = str((suggested_hyp_repo / "target-igra-testnet/release/validator").resolve())

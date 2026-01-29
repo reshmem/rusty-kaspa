@@ -21,14 +21,14 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-cd "${repo_root}"
+igra_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+workspace_root="$(cd "${igra_root}/../.." && pwd)"
+cd "${workspace_root}"
 
 echo "Building Igra binaries (release, locked)..."
 RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-service --bin kaspa-threshold-service
 RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-core --bin devnet-keygen
 
 echo "Built:"
-echo "  ${repo_root}/target/release/kaspa-threshold-service"
-echo "  ${repo_root}/target/release/devnet-keygen"
-
+echo "  ${workspace_root}/target/release/kaspa-threshold-service"
+echo "  ${workspace_root}/target/release/devnet-keygen"
