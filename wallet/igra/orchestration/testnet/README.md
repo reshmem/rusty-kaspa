@@ -24,8 +24,7 @@ Prereqs:
 From the repo root:
 
 1) Build binaries you will distribute/run:
-   - `cargo build -p igra-service --bin kaspa-threshold-service --release`
-   - `cargo build -p igra-core --bin devnet-keygen --release`
+   - `orchestration/testnet/scripts/build_igra_binaries.sh`
 
 2) Generate bundles (writes into `orchestration/testnet/bundles/`):
    - `python3 orchestration/testnet/scripts/generate_testnet_v1_bundles.py`
@@ -43,6 +42,7 @@ See:
 
 ## Build helpers
 
+- Build Igra binaries: `orchestration/testnet/scripts/build_igra_binaries.sh --help`
 - Build kaspa node (`kaspad`): `orchestration/testnet/scripts/build_kaspa_node.sh --help`
 - Build Hyperlane agents (reshmem fork): `orchestration/testnet/scripts/build_hyperlane_agents.sh --help`
 - Update generated bundle `.env` with detected binaries: `orchestration/testnet/scripts/update_bundle_env_example.py --help`

@@ -93,6 +93,7 @@ Foundry (optional but recommended):
 If operators build locally, they also need:
 - Rust toolchain (`rustup`, stable)
 - A working C toolchain (for some deps)
+- Rusty-Kaspa native build prerequisites (Protobuf + LLVM/Clang), if building Kaspa binaries from source
 
 macOS:
 - Install Rust via `rustup` (recommended)
@@ -101,7 +102,29 @@ Ubuntu:
 - Install build essentials: `sudo apt-get install -y build-essential pkg-config`
 - Install Rust via `rustup` (recommended)
 
+### 3.1) Rusty-Kaspa prerequisites (from repo README)
+
+If you plan to build Kaspa components from source (e.g. `kaspad`, gRPC, RocksDB, WASM targets), you also need:
+
+Linux (Ubuntu/Debian):
+- General prerequisites:
+  - `sudo apt install curl git build-essential libssl-dev pkg-config`
+- Protobuf (for gRPC):
+  - `sudo apt install protobuf-compiler libprotobuf-dev`
+- Clang/LLVM toolchain (RocksDB + WASM secp256k1 builds):
+  - `sudo apt-get install clang-format clang-tidy clang-tools clang clangd libc++-dev libc++1 libc++abi-dev libc++abi1 libclang-dev libclang1 liblldb-dev libllvm-ocaml-dev libomp-dev libomp5 lld lldb llvm-dev llvm-runtime llvm python3-clang`
+
+macOS:
+- Protobuf (for gRPC): `brew install protobuf`
+- LLVM (Homebrew; Xcode LLVM doesn’t support WASM targets): `brew install llvm`
+  - If building WASM, you may need to add Homebrew LLVM to your env (example for Apple Silicon):
+    - `export PATH="/opt/homebrew/opt/llvm/bin:$PATH"`
+    - `export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"`
+    - `export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"`
+    - `export AR=/opt/homebrew/opt/llvm/bin/llvm-ar`
+
 Build helpers (from this repo):
+- `orchestration/testnet/scripts/build_igra_binaries.sh`
 - `orchestration/testnet/scripts/build_kaspa_node.sh`
 - `orchestration/testnet/scripts/build_hyperlane_agents.sh`
 
@@ -114,11 +137,11 @@ These one-liners install a **superset** of tools (covers admin + signer + local 
 ### macOS (Homebrew)
 
 ```bash
-/bin/bash -lc 'command -v brew >/dev/null || { echo "Homebrew is required. Install it from https://brew.sh and re-run." >&2; exit 1; }; brew update && brew install git node awscli python@3 jq foundry pkg-config && (xcode-select -p >/dev/null 2>&1 || xcode-select --install || true) && (command -v rustup >/dev/null 2>&1 || curl https://sh.rustup.rs -sSf | sh -s -- -y) && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
+/bin/bash -lc 'command -v brew >/dev/null || { echo "Homebrew is required. Install it from https://brew.sh and re-run." >&2; exit 1; }; brew update && brew install git node awscli python@3 jq foundry pkg-config protobuf llvm && (xcode-select -p >/dev/null 2>&1 || xcode-select --install || true) && (command -v rustup >/dev/null 2>&1 || curl https://sh.rustup.rs -sSf | sh -s -- -y) && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
 ```
 
 ### Ubuntu (apt)
 
 ```bash
-bash -lc 'set -euo pipefail; sudo apt-get update && sudo apt-get install -y git curl ca-certificates jq python3 python3-venv build-essential pkg-config unzip && (command -v aws >/dev/null 2>&1 || { tmp="$(mktemp -d)"; curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${tmp}/awscliv2.zip"; (cd "${tmp}" && unzip -q awscliv2.zip && sudo ./aws/install); rm -rf "${tmp}"; }) && curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs && curl -L https://foundry.paradigm.xyz | bash && "$HOME/.foundry/bin/foundryup" && curl https://sh.rustup.rs -sSf | sh -s -- -y && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
+bash -lc 'set -euo pipefail; sudo apt-get update && sudo apt-get install -y git curl ca-certificates jq python3 python3-venv build-essential pkg-config libssl-dev protobuf-compiler libprotobuf-dev clang lld llvm libclang-dev unzip && (command -v aws >/dev/null 2>&1 || { tmp="$(mktemp -d)"; curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${tmp}/awscliv2.zip"; (cd "${tmp}" && unzip -q awscliv2.zip && sudo ./aws/install); rm -rf "${tmp}"; }) && curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs && curl -L https://foundry.paradigm.xyz | bash && "$HOME/.foundry/bin/foundryup" && curl https://sh.rustup.rs -sSf | sh -s -- -y && source "$HOME/.cargo/env" && rustup toolchain install stable && rustup default stable'
 ```
