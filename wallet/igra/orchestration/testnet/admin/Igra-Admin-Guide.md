@@ -41,6 +41,17 @@ For testnet-v1 we publish this registry to S3 so every operator can sync it loca
   - group_id (derived from public config)
   - registry + checkpoints (public read)
 
+## 0.2 Quick local smoke test (recommended)
+
+If you want a single command that boots a full local stack (Anvil + Hyperlane core + kaspad + 5 signer stacks),
+use:
+
+- `orchestration/testnet/admin/scripts/boostrap.sh --anvil`
+
+Notes:
+- `--anvil` forces `IGRA_EVM_RPC_URL=http://127.0.0.1:8545` (ignores any stale `IGRA_EVM_RPC_URL` in your shell).
+- The script writes local state under `orchestration/testnet/admin/.tmp/`.
+
 ---
 
 ## 1) Prerequisites (admin machine)

@@ -1,1 +1,4 @@
 target-codex/
+orchestration/testnet/admin/.tmp/
+orchestration/testnet/admin/.tools/
+orchestration/testnet/bundles/

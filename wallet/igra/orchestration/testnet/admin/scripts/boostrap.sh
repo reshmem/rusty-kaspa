@@ -48,11 +48,28 @@ mkdir -p "${tmp_dir}"
 
 IGRA_SECRETS_PASSPHRASE="${IGRA_SECRETS_PASSPHRASE:-passphrase}"
 HYP_EVM_DEPLOYER_KEY_HEX="${HYP_EVM_DEPLOYER_KEY_HEX:-0x3121152508ebc49a28759172e856f108879990533dd74f233636c7bfb2c363e3}"
-IGRA_EVM_RPC_URL="${IGRA_EVM_RPC_URL:-http://127.0.0.1:8545}"
+# If we're starting Anvil locally, always use the local JSON-RPC endpoint regardless of the
+# caller's shell environment (some environments may have stale IGRA_EVM_RPC_URL exported).
+if [[ "${ANVIL}" == "true" ]]; then
+  IGRA_EVM_RPC_URL="http://127.0.0.1:8545"
+else
+  IGRA_EVM_RPC_URL="${IGRA_EVM_RPC_URL:-http://127.0.0.1:8545}"
+fi
 
 export IGRA_SECRETS_PASSPHRASE
 export HYP_EVM_DEPLOYER_KEY_HEX
 export IGRA_EVM_RPC_URL
+
+validate_http_url_with_port() {
+  local url="$1"
+  if ! python3 -c 'import sys; from urllib.parse import urlparse; u=urlparse(sys.argv[1]); sys.exit(0 if u.scheme in ("http","https") and u.hostname and u.port else 1)' "${url}"; then
+    echo "invalid IGRA_EVM_RPC_URL: $(printf '%q' "${url}")" >&2
+    echo "hint: export IGRA_EVM_RPC_URL=http://127.0.0.1:8545" >&2
+    return 1
+  fi
+}
+
+validate_http_url_with_port "${IGRA_EVM_RPC_URL}"
 
 require_cmd() {
   local cmd="$1"
@@ -66,6 +83,12 @@ port_listener_pid() {
   local port="$1"
   if command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true
+    return 0
+  fi
+  # Fallback (when lsof isn't installed): detect "in use" by attempting to bind on 127.0.0.1.
+  # We return a non-empty string so callers can treat it as "port is taken" even without a PID.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c $'import socket,sys\np=int(sys.argv[1])\ns=socket.socket()\ntry:\n  s.bind(("127.0.0.1", p))\nexcept OSError:\n  print("in-use")\nfinally:\n  s.close()' "${port}" 2>/dev/null | head -n 1 || true
     return 0
   fi
   echo ""
@@ -94,16 +117,7 @@ kill_pidfile() {
 stop_previous_stack() {
   if [[ -f "${state_file}" ]]; then
     prev_run_dir="$(
-      python3 - <<'PY' "${state_file}"
-import json,sys
-path = sys.argv[1]
-try:
-  with open(path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-  print(data.get("bundles_dir", ""))
-except Exception:
-  print("")
-PY
+      python3 -c $'import json,sys\npath=sys.argv[1]\ntry:\n  with open(path, \"r\", encoding=\"utf-8\") as fh:\n    data=json.load(fh)\n  print(data.get(\"bundles_dir\", \"\"))\nexcept Exception:\n  print(\"\")' "${state_file}" 2>/dev/null || true
     )"
     if [[ -n "${prev_run_dir}" && -d "${prev_run_dir}" ]]; then
       echo "Stopping previous signer stack from: ${prev_run_dir}"
@@ -133,6 +147,10 @@ wait_for_eth_chainid() {
     sleep 1
   done
   echo "EVM JSON-RPC not ready at ${IGRA_EVM_RPC_URL} (expected chainId=${expected_chain_id})" >&2
+  if [[ "${ANVIL}" == "true" && -f "${tmp_dir}/anvil.log" ]]; then
+    echo "anvil log tail (${tmp_dir}/anvil.log):" >&2
+    tail -n 50 "${tmp_dir}/anvil.log" >&2 || true
+  fi
   return 1
 }
 
@@ -158,6 +176,11 @@ start_anvil() {
   require_cmd anvil
   require_cmd curl
   require_cmd python3
+
+  # Safety: ensure --anvil always targets the local JSON-RPC endpoint even if the caller's
+  # shell has a stale/invalid IGRA_EVM_RPC_URL exported.
+  IGRA_EVM_RPC_URL="http://127.0.0.1:8545"
+  export IGRA_EVM_RPC_URL
 
   local port_pid=""
   port_pid="$(port_listener_pid 8545)"
@@ -244,14 +267,7 @@ ensure_hyperlane_agents() {
   local relayer="${repo_dir}/target-igra-testnet/release/relayer"
   local build_info="${repo_dir}/target-igra-testnet/igra-build-info.json"
   if [[ -x "${validator}" && -x "${relayer}" && -f "${build_info}" ]]; then
-    if python3 - <<'PY' "${build_info}" >/dev/null 2>&1; then
-import json,sys
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as fh:
-  data = json.load(fh)
-features = data.get("relayer_features", [])
-sys.exit(0 if "kaspa" in features else 1)
-PY
+    if python3 -c 'import json,sys; path=sys.argv[1]; data=json.load(open(path, "r", encoding="utf-8")); features=data.get("relayer_features", []); sys.exit(0 if "kaspa" in features else 1)' "${build_info}" >/dev/null 2>&1; then
       return 0
     fi
   fi
@@ -413,6 +429,8 @@ main() {
   require_cmd curl
   require_cmd cargo
   require_cmd git
+
+  echo "Using IGRA_EVM_RPC_URL=$(printf '%q' "${IGRA_EVM_RPC_URL}")"
 
   stop_previous_stack
 

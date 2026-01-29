@@ -7,6 +7,10 @@ Each signer must have its own encrypted secrets file at:
 
 No shared secrets file.
 
+For `kaspa-threshold-service`, the passphrase is provided via:
+- `IGRA_SECRETS_PASSPHRASE` (non-interactive; recommended), or
+- `secrets-admin --passphrase ...` (for admin operations).
+
 ## Secret Names (Profile-Based)
 
 Profile format: `signer-XX` (01-99).
@@ -30,14 +34,56 @@ Startup validation enforces: profile index `XX` must match the pubkey position i
 
 ## Tooling
 
-```bash
-# Import + verify mnemonic in a signer secrets file
-export IGRA_SECRETS_PASSPHRASE="devnet-secret"
-./target/debug/secrets-admin --path ./.igra/signer-01/secrets.bin import-mnemonic --profile signer-01 --stdin
-./target/debug/secrets-admin --path ./.igra/signer-01/secrets.bin verify-mnemonic --profile signer-01
-```
+### Build
 
 ```bash
-# Generate one secrets.bin per signer directory
-./target/debug/devnet-keygen --format file-per-signer --output-dir ./.igra --passphrase "devnet-secret" --overwrite
+# Build the core operator tools
+cargo build -p igra-core --bin secrets-admin --release --locked
+cargo build -p igra-core --bin devnet-keygen --release --locked
 ```
+
+Or (testnet orchestration helper):
+
+```bash
+orchestration/testnet/scripts/build_igra_binaries.sh
+```
+
+### `devnet-keygen` (generate per-signer `secrets.bin`)
+
+```bash
+# Generate one secrets.bin per signer directory (production-aligned layout)
+./target/release/devnet-keygen \
+  --format file-per-signer \
+  --output-dir ./.igra \
+  --passphrase "devnet-secret" \
+  --overwrite
+```
+
+This writes:
+- `./.igra/signer-01/secrets.bin`
+- `./.igra/signer-02/secrets.bin`
+- …
+
+### `secrets-admin` (inspect/verify/rotate)
+
+Use `secrets-admin` when you need to:
+- verify that a secrets file contains a valid mnemonic (dev/test only),
+- rotate the *file passphrase* without changing key material,
+- inspect the secret keys stored in a file (careful with `--unsafe-print`).
+
+For testnet-v1 bundles, operators typically only need `secrets-admin` for passphrase rotation
+(the admin pre-generates `secrets.bin` for v1).
+
+Mnemonic import is dev/test-only. On mainnet, mnemonics are forbidden by config policy.
+
+```bash
+export IGRA_SECRETS_PASSPHRASE="devnet-secret"
+
+# List secret names (does not print values)
+./target/release/secrets-admin --path ./.igra/signer-01/secrets.bin list
+
+# Verify mnemonic (dev/test only)
+./target/release/secrets-admin --path ./.igra/signer-01/secrets.bin verify-mnemonic --profile signer-01
+```
+
+Passphrase rotation is documented in `docs/passphrase-rotation.md`.

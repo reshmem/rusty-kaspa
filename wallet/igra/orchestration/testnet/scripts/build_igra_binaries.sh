@@ -7,12 +7,18 @@ Usage:
   build_igra_binaries.sh
 
 Builds the Igra binaries needed for testnet-v1 orchestration:
+  - All igra-service binaries
+  - All igra-core binaries
+
+Notable binaries used by orchestration scripts:
   - kaspa-threshold-service (igra-service)
-  - devnet-keygen (igra-core)  # used by generate_testnet_v1_bundles.py
+  - devnet-keygen (igra-core)   # used by generate_testnet_v1_bundles.py
+  - secrets-admin (igra-core)   # used for secrets.bin inspection/rotation
 
 Outputs (default Cargo locations):
   - target/release/kaspa-threshold-service
   - target/release/devnet-keygen
+  - target/release/secrets-admin
 EOF
 }
 
@@ -31,9 +37,10 @@ echo "Building Igra binaries (release, locked)..."
 CARGO_TARGET_DIR="${workspace_root}/target"
 export CARGO_TARGET_DIR
 
-RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-service --bin kaspa-threshold-service
-RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-core --bin devnet-keygen
+RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-service --bins
+RUSTC_WRAPPER= SCCACHE_DISABLE=1 cargo build --release --locked -p igra-core --bins
 
 echo "Built:"
 echo "  ${workspace_root}/target/release/kaspa-threshold-service"
 echo "  ${workspace_root}/target/release/devnet-keygen"
+echo "  ${workspace_root}/target/release/secrets-admin"

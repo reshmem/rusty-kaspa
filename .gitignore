@@ -1,4 +1,5 @@
 target
+target-igra-testnet/
 web-root
 **/.idea/
 /rust-toolchain

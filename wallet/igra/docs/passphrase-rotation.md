@@ -14,7 +14,7 @@ passphrase_rotation_error_days = 90
 ## Rotate Passphrase
 
 ```bash
-./target/debug/secrets-admin rotate-passphrase \
+./target/release/secrets-admin rotate-passphrase \
   --secrets-file ./.igra/signer-01/secrets.bin \
   --old-passphrase-file /secure/old-pass.txt \
   --new-passphrase-file /secure/new-pass.txt
@@ -23,4 +23,3 @@ passphrase_rotation_error_days = 90
 Notes:
 - For non-interactive runs, set `IGRA_SECRETS_PASSPHRASE` or use `--old-passphrase-file`.
 - Rotation is per-signer because there is one `secrets.bin` per signer.
-
