@@ -13,6 +13,8 @@ Orchestration assets:
 - `orchestration/testnet/README.md`
 Admin runbook:
 - `orchestration/testnet/admin/Igra-Admin-Guide.md`
+Operator runbook:
+- `orchestration/testnet/scripts/run_testnet_v1_signer.sh --help`
 
 ---
 
@@ -34,6 +36,50 @@ Naming and ordering are strict:
 
 Discovery / connectivity goals (testnet-v1):
 - Use Iroh gossip in a production-like way: **pkarr + relay enabled**, with a small static seed set as a safety net.
+
+### 1.1 Operational roles (admin vs signer operators)
+
+This testnet has two distinct human roles:
+
+#### Admin / deployer (one person / small trusted group)
+
+Primary responsibilities:
+- One-time setup and shared infrastructure:
+  - Prepare S3 buckets (registry + checkpoints) and policies.
+  - Deploy Hyperlane core contracts on the origin EVM chain.
+  - Publish the Hyperlane registry to S3 (canonical shared registry).
+- Prepare operator artifacts:
+  - Generate and distribute one per-signer bundle directory for each signer operator.
+- Funding coordination (origin EVM):
+  - Fund the deployer account (for contract deployment).
+  - Fund each operator’s validator + relayer EVM addresses (operators own the keys; admin should fund addresses, not handle private keys).
+
+Admin scripts (entry points):
+- Local smoke stack (recommended): `orchestration/testnet/admin/scripts/boostrap.sh --anvil`
+- AWS S3 bucket bootstrap (optional helper): `orchestration/testnet/admin/scripts/bootstrap_aws_s3.sh --help`
+- Install Hyperlane CLI (local tool dir): `orchestration/testnet/admin/scripts/install_hyperlane_cli.sh --help`
+- Deploy Hyperlane core (writes a local registry dir): `orchestration/testnet/admin/scripts/deploy_hyperlane_core.sh --help`
+- Publish registry to S3: `orchestration/testnet/admin/scripts/publish_hyperlane_registry_s3.sh --help`
+- Provision per-validator IAM users + inject creds into bundles (v1 convenience): `orchestration/testnet/admin/scripts/provision_validator_iam_users.sh --help`
+- Compute EVM address from a private key (no Foundry required): `orchestration/testnet/admin/scripts/evm_address_from_privkey.sh 0x<HEX_KEY>`
+
+Important notes:
+- The full admin runbook (with exact env vars, AWS policies, and sequence) lives in:
+  - `orchestration/testnet/admin/Igra-Admin-Guide.md`
+- Tooling prerequisites are documented in:
+  - `orchestration/testnet/PREREQS.md`
+
+#### Signer operator (one per signer; N=5 in v1)
+
+Each signer operator runs the “per signer” stack described above and is responsible for:
+- Receiving exactly one bundle dir (`signer-0X`) from the admin.
+- Syncing the Hyperlane registry from S3 to the local machine.
+- Running their validator + relayer + kaspad + `kaspa-threshold-service` stack.
+- Publishing validator checkpoints to S3 (either using IAM creds or instance roles on AWS).
+
+Operator scripts (entry points):
+- Sync registry from S3: `orchestration/testnet/scripts/sync_hyperlane_registry.sh --help`
+- Run the full signer stack: `orchestration/testnet/scripts/run_testnet_v1_signer.sh --help`
 
 ---
 
@@ -206,17 +252,13 @@ Hyperlane registry entries are keyed by chain name. We should use stable names:
 
 ---
 
-## 6) Next implementation step (configs + scripts)
+## 6) Where the real runbooks + scripts live (testnet-v1)
 
-After this doc is approved, we will add:
-- `orchestration/testnet/` with:
-  - 5 signer-specific Igra configs (3-of-5)
-  - Hyperlane validator + relayer configs that:
-    - use origin `domainId=0x97B4`
-    - publish checkpoints to S3 prefixes per validator
-    - read registry from S3
-  - bootstrap scripts per signer that start:
-    - (v1) Igra EVM node — **not started locally** (operators point to a shared origin JSON-RPC)
-    - Kaspa node (testnet)
-    - Hyperlane validator + relayer
-    - Igra signer
+The orchestration assets for testnet-v1 already live under:
+- `orchestration/testnet/`
+
+Start here depending on your role:
+- Admin/deployer: `orchestration/testnet/admin/Igra-Admin-Guide.md`
+- Operator/signer: `orchestration/testnet/scripts/run_testnet_v1_signer.sh --help`
+- Directory overview + bundle generation: `orchestration/testnet/README.md`
+- Tooling prerequisites: `orchestration/testnet/PREREQS.md`
